@@ -40,7 +40,7 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# / input kind detection
+# Input kind detection
 # ---------------------------------------------------------------------------
 
 _DATAFRAME_SELECTORS = (
@@ -55,7 +55,7 @@ _DATAFRAME_SELECTORS = (
 
 
 def detect_input_kind(X: Any, x_kind: str | None = None) -> str:
-    """detect the kind of ``X``. ``x_kind`` (the ``X_kind`` splitter keyword) resolves the
+    """Detect the kind of ``X``. ``x_kind`` (the ``X_kind`` splitter keyword) resolves the
     only genuine ambiguity — SMILES strings vs. protein sequences, both ``Sequence[str]``."""
     if x_kind is not None:
         return x_kind
@@ -106,7 +106,7 @@ def input_length(X: Any, x_kind: str) -> int:
 
 
 def resolve_dataframe_columns(df: pd.DataFrame, **selectors: str | None) -> dict[str, Any]:
-    """resolve DataFrame column selectors. Missing columns raise ``ColumnError``. If
+    """Resolve DataFrame column selectors. Missing columns raise ``ColumnError``. If
     ``smiles_col`` is omitted, raise rather than guess a ``"smiles"``-named column."""
     if "smiles_col" not in selectors or selectors.get("smiles_col") is None:
         raise ColumnError(
@@ -170,11 +170,11 @@ class StandardizeConfig:
 
 
 def standardize(mol: Any, config: StandardizeConfig | None = None) -> Any:
-    """the 6-step standardisation pipeline, applied in exact order."""
+    """The 6-step standardisation pipeline, applied in exact order."""
     if config is None:
         config = StandardizeConfig()
     from rdkit import Chem
-    from rdkit.Chem import rdMolStandardize
+    from rdkit.Chem.MolStandardize import rdMolStandardize
 
     m = Chem.Mol(mol)
     Chem.SanitizeMol(m)
@@ -271,7 +271,7 @@ def aggregate_replicates(
     method: Literal["median", "mean", "max", "min", "first", "drop_conflicting"] = "median",
     max_spread: float | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """aggregate replicate measurements sharing ``key_col``. Not part of any splitter — a
+    """Aggregate replicate measurements sharing ``key_col``. Not part of any splitter — a
     standalone preprocessing utility. Returns ``(aggregated, dropped)``."""
     grouped = df.groupby(key_col, sort=False)
     spreads = grouped[value_col].agg(lambda s: s.max() - s.min())

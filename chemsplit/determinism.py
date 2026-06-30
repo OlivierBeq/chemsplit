@@ -140,32 +140,13 @@ def stable_sort(
     seq: Sequence[_T], key: Callable[[_T], object], desc: bool = False
 ) -> list[_T]:
     """A stable sort where equal keys retain ascending-index (original relative) order, even when
-    ``desc=True`` — plain ``sorted(seq, key=key, reverse=True)`` does NOT have this
-    property: it also reverses the relative order of tied elements, which this function avoids.
+    ``desc=True``.
 
-    Implementation: sort ascending first (Python's ``sorted`` is already stable, so ties keep
-    their original relative order for free), then, if descending is requested, reverse the order
-    of the *runs* of equal keys rather than reversing the flattened list — this reverses which
-    group comes first without disturbing intra-group order.
+    Python's ``sorted(..., reverse=True)`` is documented to be stable in this sense (it doesn't
+    reverse the relative order of equal elements), so this is a thin wrapper — used everywhere in
+    chemsplit instead of ad hoc ``sorted(..., reverse=...)`` calls.
     """
-    ascending = sorted(seq, key=key)
-    if not desc:
-        return ascending
-
-    runs: list[list[_T]] = []
-    run_keys: list[object] = []
-    for item in ascending:
-        k = key(item)
-        if runs and run_keys[-1] == k:
-            runs[-1].append(item)
-        else:
-            runs.append([item])
-            run_keys.append(k)
-
-    result: list[_T] = []
-    for run in reversed(runs):
-        result.extend(run)
-    return result
+    return sorted(seq, key=key, reverse=desc)
 
 
 def floor_round(x: float) -> int:

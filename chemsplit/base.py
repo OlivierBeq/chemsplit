@@ -371,16 +371,26 @@ class _Context:
     sizes: _ResolvedSizes
     rng_seeds: SeedBundle
     extra: dict[str, Any] = dataclasses.field(default_factory=dict)
+    raw_features: Any | None = None
+    """When ``X`` was already a feature matrix (detected kind ``"features"``), the matrix itself:
+    there is no ``Featurizer`` to run in that case, so :meth:`get_features` needs somewhere to
+    return it from."""
     _feature_cache: dict[Any, Any] = dataclasses.field(
         default_factory=dict, compare=False, repr=False
     )
 
-    def get_features(self, featurizer: Any) -> Any:
+    def get_features(self, featurizer: Any = None) -> Any:
         """Memoised featurization: cached on
         ``(id(mols), featurizer.name, sorted(featurizer.get_params().items()))`` within one
         ``_run`` call. Takes an already-constructed ``Featurizer`` instance — this module does not
-        import ``chemsplit.featurizers`` itself, keeping core infra decoupled from it.
+        import ``chemsplit.featurizers`` itself, keeping core infra decoupled from it. If ``X`` was
+        already a feature matrix, ``featurizer`` may be omitted (or is ignored) and
+        :attr:`raw_features` is returned directly.
         """
+        if self.raw_features is not None:
+            return self.raw_features
+        if featurizer is None:
+            raise ValueError("get_features() requires a featurizer when X was not already features")
         key = (
             id(self.mols),
             featurizer.name,
@@ -552,6 +562,7 @@ class BaseSplitter(sklearn.base.BaseEstimator, abc.ABC):
                 "forced_discard": pipeline_result.forced_discard,
                 "dedup_group_labels": pipeline_result.dedup_group_labels,
             },
+            raw_features=X if x_kind == "features" else None,
         )
 
         self._check_preconditions(ctx)
@@ -716,6 +727,7 @@ class GroupSplitter(BaseSplitter):
             sequences=None,
             sizes=sizes,
             rng_seeds=bundle,
+            raw_features=X if x_kind == "features" else None,
         )
         return self._group_labels(ctx)
 
