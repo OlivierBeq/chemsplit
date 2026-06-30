@@ -8,6 +8,8 @@ from typing import Literal, Sequence
 import numpy as np
 import scipy.sparse as sp
 
+from chemsplit.determinism import argmax_tiebreak, argmin_tiebreak
+
 EPS = 1e-9
 
 __all__ = [
@@ -18,22 +20,6 @@ __all__ = [
     "spectral_partition",
     "sphere_exclusion",
 ]
-
-
-def _argmax_tiebreak(values: Sequence[float], candidates: Sequence[int]) -> int:
-    """Smallest-index tie-break, per scan ascending, keep the first strict max.
-
-    TODO(integration): replace with ``chemsplit.determinism.argmax_tiebreak`` once that module
-    lands; kept as a local, behaviourally identical inline implementation for now.
-    """
-    best_i = None
-    best_v = -np.inf
-    for i in candidates:
-        v = values[i]
-        if v > best_v:
-            best_v = v
-            best_i = i
-    return best_i
 
 
 def _neighbor_lists(D: np.ndarray, cutoff: float) -> list[np.ndarray]:
@@ -74,7 +60,7 @@ def butina(D: np.ndarray, cutoff: float, reorder: bool = False) -> list[list[int
         while not np.all(assigned):
             live = [i for i in range(n) if not assigned[i]]
             counts = {i: int(np.sum(~assigned[neigh[i]])) if len(neigh[i]) else 0 for i in live}
-            i = _argmax_tiebreak(counts, live)
+            i = argmax_tiebreak(lambda idx: counts[idx], live)
             members = [i] + [int(j) for j in neigh[i] if not assigned[j]]
             for m in members:
                 assigned[m] = True
@@ -100,7 +86,7 @@ def leader(D: np.ndarray, radius: float, order: Sequence[int] | None = None) -> 
             clusters.append([i])
             continue
         dists = [D[i, ldr] for ldr in leaders]
-        best = int(np.argmin(dists))
+        best = argmin_tiebreak(lambda k: dists[k], range(len(leaders)))
         if dists[best] <= radius + EPS:
             clusters[best].append(i)
         else:
@@ -152,7 +138,7 @@ def maxmin_pick(
         picked = list(kennard_stone(D, 2)) if n >= 2 else [0]
     elif init == "most_peripheral":
         mean_dist = D.mean(axis=1)
-        picked = [int(np.argmax(mean_dist))]
+        picked = [argmax_tiebreak(lambda idx: mean_dist[idx], range(n))]
     elif init == "index_zero":
         picked = [0]
     else:  # "random"
@@ -167,7 +153,7 @@ def maxmin_pick(
         candidates = [i for i in range(n) if i not in picked_set]
         if not candidates:
             break
-        next_i = _argmax_tiebreak(mind, candidates)
+        next_i = argmax_tiebreak(lambda idx: mind[idx], candidates)
         picked.append(next_i)
         picked_set.add(next_i)
         mind = np.minimum(mind, D[:, next_i])
@@ -195,7 +181,7 @@ def kennard_stone(D: np.ndarray, n_picks: int) -> list[int]:
         candidates_idx = [i for i in range(n) if i not in picked_set]
         if not candidates_idx:
             break
-        next_i = _argmax_tiebreak(mind, candidates_idx)
+        next_i = argmax_tiebreak(lambda idx: mind[idx], candidates_idx)
         picked.append(next_i)
         picked_set.add(next_i)
         mind = np.minimum(mind, D[:, next_i])
@@ -207,7 +193,8 @@ def _fix_eigenvector_signs(U: np.ndarray) -> np.ndarray:
     U = U.copy()
     for c in range(U.shape[1]):
         col = U[:, c]
-        idx = np.argmax(np.abs(col))
+        abs_col = np.abs(col)
+        idx = argmax_tiebreak(lambda k: abs_col[k], range(len(col)))
         if col[idx] < 0:
             U[:, c] = -col
     return U
