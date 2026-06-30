@@ -8,13 +8,8 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
+from chemsplit.exceptions import UnknownFeaturizerError
 from chemsplit.types import FeatureMatrix
-
-try:
-    from chemsplit.exceptions import UnknownFeaturizerError
-except ImportError:  # TODO: remove once chemsplit.exceptions lands; parallel effort owns it.
-    class UnknownFeaturizerError(ValueError):
-        pass
 
 __all__ = ["Featurizer", "get_featurizer"]
 
