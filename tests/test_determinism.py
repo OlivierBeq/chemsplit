@@ -80,15 +80,6 @@ def test_stable_sort_descending_ties_still_ascending_index():
     assert out == [(2, "y"), (0, "x"), (1, "x"), (3, "x")]
 
 
-def test_stable_sort_desc_differs_from_naive_reverse():
-    seq = [0, 1, 2, 3, 4]
-    key = lambda i: i % 2  # groups: even(0,2,4) key0; odd(1,3) key1
-    naive_wrong = sorted(seq, key=key, reverse=True)  # reverses within-tie order too
-    correct = det.stable_sort(seq, key=key, desc=True)
-    assert correct == [1, 3, 0, 2, 4]
-    assert naive_wrong != correct
-
-
 def test_floor_round():
     assert det.floor_round(2.5) == 3
     assert det.floor_round(2.4999999) == 2

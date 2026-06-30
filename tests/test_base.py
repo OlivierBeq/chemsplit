@@ -51,7 +51,7 @@ class ToyGroupSplitter(GroupSplitter):
         # group by the integer value of column 0 -- a synthetic, deterministic "scaffold key"
         from chemsplit._unionfind import dense_label_encode
 
-        keys = [int(row[0]) for row in ctx.mols]
+        keys = [int(row[0]) for row in ctx.get_features()]
         return dense_label_encode(keys)
 
 
