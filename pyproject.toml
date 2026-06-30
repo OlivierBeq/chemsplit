@@ -1,0 +1,90 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chemsplit"
+dynamic = ["version"]
+description = "A self-contained, scikit-learn-compatible library of dataset-splitting strategies for cheminformatics machine learning."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Olivier J. M. Béquignon", email = "olivier.bequignon.maintainer@gmail.com" },
+]
+keywords = [
+    "cheminformatics",
+    "machine-learning",
+    "dataset-splitting",
+    "scikit-learn",
+    "rdkit",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Typing :: Typed",
+]
+
+dependencies = [
+    "numpy>=1.24,<3",
+    "scipy>=1.10",
+    "scikit-learn>=1.3",
+    "rdkit>=2023.09.1",
+    "pandas>=2.0",
+    "scaffound>=0.0.1",
+]
+
+[project.optional-dependencies]
+umap = ["umap-learn>=0.5.4"]
+hdbscan = ["scikit-learn>=1.3"]
+ga = ["deap>=1.4"]
+bio = ["biopython>=1.81", "parasail>=1.3"]
+mmpa = []
+all = [
+    "chemsplit[umap,hdbscan,ga,bio,mmpa]",
+]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov",
+    "hypothesis>=6.90",
+    "numpydoc",
+]
+
+[project.urls]
+Homepage = "https://github.com/OlivierBeq/chemsplit"
+
+[project.scripts]
+chemsplit = "chemsplit.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "chemsplit.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["chemsplit*"]
+
+[tool.pytest.ini_options]
+minversion = "7.4"
+markers = [
+    "core: fast, no-network tests (< 60s total)",
+    "slow: performance / large-n tests",
+    "network: tests that download real datasets",
+    "extra_umap: requires the umap extra",
+    "extra_ga: requires the ga extra",
+    "extra_bio: requires the bio extra",
+    "golden: byte-exact / tolerance golden-file regression tests",
+]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["chemsplit"]
+omit = ["chemsplit/cli.py"]
+
+[tool.coverage.report]
+fail_under = 90
