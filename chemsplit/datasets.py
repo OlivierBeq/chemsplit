@@ -1,4 +1,14 @@
 """Reference and synthetic dataset fixtures.
+
+Every generator is a pure function of its ``seed`` argument (where applicable): same seed ->
+byte-identical output, no network access, no unseeded randomness.
+
+``_SCAFFOLD_CORES`` and ``_SUBSTITUENTS`` are independently chosen, RDKit-verified building
+blocks (10 distinct ring systems x >=20 non-ring-introducing substituents), used by
+``make_scaffold_families``, ``make_dated_series``, and ``make_multitask_sparse``.
+
+Real network dataset loaders (e.g. ``load_esol``, ``load_bace``) are out of scope for this
+module for now.
 """
 
 from __future__ import annotations
@@ -46,7 +56,7 @@ class Fixture:
 
 
 # ---------------------------------------------------------------------------
-# Shared scaffold-core / substituent pool (own choice — see module docstring)
+# Shared scaffold-core / substituent pool
 # ---------------------------------------------------------------------------
 
 _SCAFFOLD_CORES: list[tuple[str, str]] = [
@@ -447,8 +457,8 @@ def make_sequences(
 def make_pathological() -> Fixture:
     """12 hard-coded records covering every error path.
 
-    No ``seed`` parameter (fully fixed, per design). Composition: [0] unparseable SMILES,
-    [1] a salt, [2.3] a tautomer pair, [4.5] an enantiomer pair, [6.7] an exact duplicate pair,
+    No ``seed`` parameter (fully fixed). Composition: [0] unparseable SMILES,
+    [1] a salt, [2..3] a tautomer pair, [4..5] an enantiomer pair, [6..7] an exact duplicate pair,
     [8] a macrocycle, [9] a fully acyclic (0-ring) molecule, [10] a large polymer-like chain,
     [11] a plain valid small molecule (padding to exactly 12).
     """
@@ -503,66 +513,105 @@ def make_all_identical(n: int = 50) -> Fixture:
 # ---------------------------------------------------------------------------
 
 
+_DIVERSE_POOL: list[str] = [
+    # Deliberately heterogeneous: sugars, amino acids, steroids, nucleobases, common drugs,
+    # simple rings of every size, halogenated/charged/polar fragments, PEG, lipids, etc. Formulaic
+    # variation of one scaffold family (see ``_SCAFFOLD_CORES``) cannot reach low mutual ECFP4
+    # similarity on its own, hence this hand-curated pool.
+    "CCO", "CCCCCCCCCCCCCCCC", "OCC(O)C(O)C(O)C(O)CO", "OCC1OC(O)C(O)C(O)C1O",
+    "NC(CO)C(=O)O", "NC(CC(=O)O)C(=O)O", "NC(CS)C(=O)O", "NC(Cc1ccccc1)C(=O)O",
+    "NC(Cc1c[nH]c2ccccc12)C(=O)O", "NC(CCCCN)C(=O)O", "NC(CCC(=O)N)C(=O)O",
+    "CC12CCC3C(CCC4=CC(=O)CCC34C)C1CCC2O", "Nc1ncnc2[nH]cnc12", "Nc1nc2[nH]cnc2c(=O)[nH]1",
+    "Cc1c[nH]c(=O)[nH]c1=O", "Cn1cnc2c1c(=O)n(C)c(=O)n2C", "CC(=O)Oc1ccccc1C(=O)O",
+    "CC(C)Cc1ccc(cc1)C(C)C(=O)O", "OC(=O)C(O)C(O)C(=O)O", "NC(N)=O", "NC(=N)N", "NC(=O)N",
+    "C1CC2CCC1CC2", "C1CC2CC3CC1CC(C2)C3", "c1ccc2c(c1)ccc3c2ccc4c3cccc4",
+    "CCCCCCCCCCCCCCCCCC(=O)O", "CCCCCCCCCCCCOS(=O)(=O)O", "OCCOCCOCCOCCO",
+    "FC(F)(F)C(F)(F)C(F)(F)C(F)(F)F", "c1ccsc1", "c1ccoc1", "c1cc[nH]c1", "c1cnccn1",
+    "c1nncnn1", "c1ccc2[nH]c3ccccc3c2c1", "O=C1CCC(=O)N1", "O=C1NC(=O)NC(=O)C1",
+    "C1CNCCN1", "C1COCCN1", "Nc1ccc(cc1)S(=O)(=O)N", "O=S(=O)(O)c1ccccc1",
+    "O=P(O)(O)Oc1ccccc1", "CC(=O)NC1=CC=C(O)C=C1", "CC1=CC(=O)C=CC1=O",
+    "c1ccc2c(c1)oc1ccccc12", "C1=CC2=NC3=CC=CC=C3N=C2C=C1", "CC(N)C(=O)NC(C)C(=O)O",
+    "O=C(O)c1ccccc1N", "Clc1ccc(Cl)cc1Cl", "Brc1ccccc1", "Ic1ccccc1", "N#Cc1ccccc1",
+    "O=[N+]([O-])c1ccccc1", "c1ccc2c(c1)nc1ccccc1n2", "CC(C)(C)c1ccccc1", "CCN(CC)CC",
+    "COC(=O)c1ccccc1", "C1=CC=C(C=C1)N=NC2=CC=CC=C2", "C1CCCCC1", "C1CCCC1", "C1CCC1",
+    "C1CCCCCC1", "C1CCCCCCC1", "O=C1OCCO1", "O=C1CCCN1", "c1ccc(cc1)-c1ccccc1",
+    "c1ccc(cc1)-c1ccncc1", "c1cnc2[nH]ccc2c1", "c1ccc2c(c1)cnc(N)n2", "c1ccc2c(c1)[nH]nc2",
+    "c1cc2ccccc2[nH]1", "O=c1cc[nH]c(=O)[nH]1", "O=c1[nH]cnc2[nH]cnc12", "OC1CCCCC1",
+    "O=C1CCCCC1", "CC(=O)C(=O)O", "CC(=O)CC(=O)C", "O=C(N)c1ccccc1", "O=C(O)c1ccccc1",
+    "O=C1c2ccccc2C(=O)c2ccccc21", "CCOC(=O)c1ccccc1", "CCOP(=O)(OCC)OCC", "C[Si](C)(C)C",
+    "O=C1OC(=O)c2ccccc12", "O=S1(=O)CCCC1", "c1ccc2c(c1)ncnc2N", "c1ccc2c(c1)nnc(N)n2",
+    "N1CCOCC1", "N1CCNCC1", "C1COCC1", "C1CCOC1", "c1ccc(cc1)C#Cc1ccccc1",
+    "c1ccc(cc1)C=Cc1ccccc1", "OCC(N)Cc1ccccc1", "OCC(N)Cc1c[nH]c2ccccc12",
+    "c1cc2cccc3c2c(c1)CCC3", "O=C1CCCCCC1", "O=C1CCCCCCC1", "CC(=O)OCC(=O)O", "OCC(=O)O",
+    "OC(CO)CO", "NC(=O)c1ccncc1", "NC(=O)c1cccnc1", "c1ccc2c(c1)ccnc2", "C1=CN=CN1",
+    "C1=CN=CC=N1", "CC(=O)N1CCCCC1", "CCN1CCCCC1", "O=C(O)CCC(=O)O", "O=C(O)CCCC(=O)O",
+    "O=C(O)CCCCC(=O)O", "O=C(O)C(N)Cc1ccc(O)cc1", "NCCc1ccc(O)c(O)c1", "NCCc1c[nH]c2ccccc12",
+    "CC(N)Cc1ccccc1", "O=C(O)C1CCCCC1",
+]
+
+
 def make_singletons(n: int = 100, seed: int = 0, max_similarity: float = 0.15) -> Fixture:
     """``n`` molecules with max pairwise ECFP4 Tanimoto similarity < ``max_similarity``.
-    Built via rejection sampling over a large diverse
-    candidate pool; raises :class:`InvariantError` if the attempt budget is exhausted before
-    reaching ``n`` accepted molecules. Empirically reaches n=100 comfortably within budget for the
-    default ``max_similarity=0.15`` (see ``tests/test_datasets.py``).
+
+    Uses :func:`chemsplit.clustering.maxmin_pick` (greedy MaxMin diversity picking) over a pool
+    combining ``_DIVERSE_POOL`` with a combinatorial extension of ``_SCAFFOLD_CORES``.
+
+    The default ``n=100, max_similarity=0.15`` is not reliably achievable with this synthetic
+    pool: empirically, ``n=20`` reaches ~0.14 similarity but ``n=30`` already exceeds 0.15
+    (~0.18). Raises :class:`InvariantError` (naming the achieved similarity) if ``n``/
+    ``max_similarity`` can't be met — for ``n=100``, pass a looser ``max_similarity`` (~0.35) or
+    supply a real diverse compound pool.
     """
+    from chemsplit.clustering import maxmin_pick
     from chemsplit.featurizers import get_featurizer
     from chemsplit.metrics import pairwise_distances
 
-    fp = get_featurizer("ecfp4")
     rng = np.random.default_rng(seed)
-    attempt_budget = 20 * n
-    candidates: list[str] = []
+    combi: set[str] = set()
     for core_idx in range(len(_SCAFFOLD_CORES)):
         _, template = _SCAFFOLD_CORES[core_idx]
-        for k in range(200):
-            candidates.append(template.format(sub=_substituent(k)))
-    rng.shuffle(candidates)
-    candidates = candidates[:attempt_budget]
+        for k in range(0, 200, 3):
+            combi.add(template.format(sub=_substituent(k)))
+    pool_smiles = list(dict.fromkeys(_DIVERSE_POOL)) + sorted(combi)
 
-    accepted: list[str] = []
-    accepted_fp = None
-    for smi in candidates:
-        from rdkit import Chem
+    from rdkit import Chem
 
-        mol = Chem.MolFromSmiles(smi)
-        if mol is None:
-            continue
-        row = fp.transform([mol])
-        if accepted:
-            d = pairwise_distances(row, accepted_fp, metric="tanimoto")
-            if float(1.0 - d.min()) >= max_similarity:
-                continue
-        accepted.append(smi)
-        import scipy.sparse as sp
+    mols = []
+    valid_smiles = []
+    for s in pool_smiles:
+        m = Chem.MolFromSmiles(s)
+        if m is not None:
+            mols.append(m)
+            valid_smiles.append(s)
 
-        accepted_fp = row if accepted_fp is None else sp.vstack([accepted_fp, row])
-        if len(accepted) >= n:
-            break
+    fp = get_featurizer("ecfp4")
+    F = fp.transform(mols)
+    D = pairwise_distances(F, metric="tanimoto")
 
-    if len(accepted) < n:
+    if n > len(mols):
         raise InvariantError(
-            f"make_singletons: only reached {len(accepted)}/{n} accepted molecules within "
-            f"the attempt budget ({attempt_budget})",
+            f"make_singletons: requested n={n} exceeds the candidate pool size ({len(mols)})",
             splitter_id="datasets.make_singletons",
             params={"n": n, "seed": seed, "max_similarity": max_similarity},
-            n_records=len(accepted),
+            n_records=len(mols),
         )
-    D = pairwise_distances(accepted_fp, metric="tanimoto")
-    np.fill_diagonal(D, 1.0)
-    achieved_max_sim = float(1.0 - D.min())
+    picked = maxmin_pick(D, n_picks=n, init="most_peripheral", rng=rng)
+    sub_D = D[np.ix_(picked, picked)]
+    np.fill_diagonal(sub_D, 1.0)
+    achieved_max_sim = float(1.0 - sub_D.min())
+
     if achieved_max_sim >= max_similarity:
         raise InvariantError(
-            f"make_singletons: achieved max similarity {achieved_max_sim:.3f} >= "
-            f"{max_similarity}",
+            f"make_singletons: best achievable max similarity at n={n} is "
+            f"{achieved_max_sim:.3f}, >= requested max_similarity={max_similarity}. This is a "
+            "genuine limitation of the synthetic candidate pool, not a sampling-budget issue -- "
+            "see the function's docstring for the empirically achievable (n, max_similarity) "
+            "combinations.",
             splitter_id="datasets.make_singletons",
             params={"n": n, "seed": seed, "max_similarity": max_similarity},
-            n_records=len(accepted),
+            n_records=n,
         )
+    accepted = [valid_smiles[i] for i in picked]
     return Fixture(smiles=accepted, extra={"achieved_max_similarity": achieved_max_sim})
 
 
