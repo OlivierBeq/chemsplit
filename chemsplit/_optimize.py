@@ -1,4 +1,10 @@
-"""Independent balanced multi-way partitioning engine. Determinism contract: every backend is either structurally deterministic (no RNG) or takes an explicit ``numpy.random.Generator`` seeded via :func:`chemsplit.determinism.seed_for` — never bare ``random``/``np.random`` module state. ``solver_status`` is one of ``"optimal"``, ``"time_limit_feasible"``, ``"infeasible"``; only the branch-and-bound and MILP backends may report ``"optimal"`` (they carry an optimality certificate), heuristic backends always report ``"time_limit_feasible"`` when they return a solution.
+"""Independent balanced multi-way partitioning engine.
+
+Determinism contract: every backend is either structurally deterministic (no RNG) or takes an
+explicit ``numpy.random.Generator`` seeded via :func:`chemsplit.determinism.seed_for` — never bare
+``random``/``np.random`` module state. ``solver_status`` is one of ``"optimal"``,
+``"time_limit_feasible"``, ``"infeasible"``; only branch-and-bound and MILP may report
+``"optimal"`` (they carry an optimality certificate).
 """
 
 from __future__ import annotations
@@ -118,9 +124,8 @@ def _bucket_sums(item_values: np.ndarray, assignment: np.ndarray, n_buckets: int
 
 
 def _objective(problem: BalanceProblem, assignment: np.ndarray) -> float:
-    """The single objective every backend minimises (documented formula, not the reference
-    design's literal ILP constraint algebra — an independently designed, internally
-    consistent weighted-L1-deviation objective; see the module docstring).
+    """The single objective every backend minimises: an independently designed, internally
+    consistent weighted-L1-deviation objective.
 
     ``objective = size_term + count_term + actives_term`` where:
 
@@ -695,8 +700,16 @@ def _solve_milp(
             diagnostics={"scipy_status": int(res.status), "message": res.message},
         )
 
+    from chemsplit.determinism import argmax_tiebreak
+
     x = res.x[:n_x].reshape(n_items, n_buckets)
-    assignment = np.argmax(x, axis=1).astype(np.int64)  # rounding a near-binary LP relaxation edge
+    # Rounding a near-binary MILP solution to a hard assignment; ties (essentially never seen from
+    # a real solve, but routed through argmax_tiebreak for the same smallest-index determinism
+    # guarantee as everywhere else --).
+    assignment = np.array(
+        [argmax_tiebreak(lambda b, row=x[i]: row[b], range(n_buckets)) for i in range(n_items)],
+        dtype=np.int64,
+    )
     status_map = {0: "optimal", 1: "time_limit_feasible"}
     solver_status = status_map.get(int(res.status), "time_limit_feasible")
     obj = _objective(problem, assignment)
@@ -720,10 +733,9 @@ def _solve_milp(
 
 # Thresholds on n_items*n_buckets, frozen empirically. See
 # tests/test_optimize.py::test_dispatch_thresholds_stable, which pins these values so an
-# accidental edit is caught.
-_DISPATCH_BNB_MAX_BINARIES = 48  # n_items <= 16 guard dominates in practice
-_DISPATCH_MILP_MAX_BINARIES = 3000
-_DISPATCH_LOCAL_SEARCH_ALWAYS = True
+# accidental edit is caught. "auto" never routes to milp above the tiny bnb-eligible regime;
+# milp stays available as an explicit opt-in (used as an exactness oracle in tests).
+_DISPATCH_BNB_MAX_BINARIES = 48  # n_items <= 16 guard (below) dominates in practice
 
 
 def _select_architecture(problem: BalanceProblem) -> ArchitectureName:
@@ -733,8 +745,6 @@ def _select_architecture(problem: BalanceProblem) -> ArchitectureName:
     n_binaries = problem.n_items * problem.n_buckets
     if problem.n_items <= _BNB_MAX_ITEMS and n_binaries <= _DISPATCH_BNB_MAX_BINARIES:
         return "bnb"
-    if n_binaries <= _DISPATCH_MILP_MAX_BINARIES:
-        return "milp"
     return "local_search"
 
 
