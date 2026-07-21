@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import abc
 import dataclasses
+import inspect
 import json
 import re
 from collections.abc import Iterator
@@ -108,6 +109,29 @@ def _decode_index_array(encoded: list[int | list[int]]) -> IndexArray:
     return np.asarray(values, dtype=np.int64)
 
 
+def _canonicalize_params(value: Any) -> Any:
+    """Recursively coerce a ``get_params()`` value tree into JSON-native shapes (I4): tuples ->
+    lists, numpy scalars -> native ``int``/``float``. Many splitters have ``tuple[int, int]``
+    constructor parameters (e.g. ``auto_range``); JSON has no tuple type, so
+    ``SplitResult.params`` must be canonicalized once here rather than every splitter author
+    remembering to avoid tuples. Anything not JSON-representable at all (e.g. a live
+    :class:`~chemsplit.featurizers.Featurizer` instance passed instead of its string alias) is
+    left as-is and will still correctly fail I4 -- that is a genuine caller error, not something
+    this function should paper over.
+    """
+    if isinstance(value, tuple):
+        return [_canonicalize_params(v) for v in value]
+    if isinstance(value, list):
+        return [_canonicalize_params(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _canonicalize_params(v) for k, v in value.items()}
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        return float(value)
+    return value
+
+
 # ---------------------------------------------------------------------------
 # SplitResult
 # ---------------------------------------------------------------------------
@@ -129,6 +153,10 @@ class SplitResult:
     metadata: dict[str, Any]
 
     def __post_init__(self) -> None:
+        # Canonicalize params (tuples -> lists, numpy scalars -> native) before I4 checks it for
+        # JSON round-trip -- universal regardless of which code path constructed this SplitResult
+        # (frozen dataclass, so this is the one place that can normalize every construction site).
+        object.__setattr__(self, "params", _canonicalize_params(self.params))
         self._check_i1()
         self._check_i2()
         self._check_i3()
@@ -440,9 +468,72 @@ class BaseSplitter(sklearn.base.BaseEstimator, abc.ABC):
         self.verbose = verbose
         self._validate_base_params()
 
+    @classmethod
+    def _get_param_names(cls) -> list[str]:
+        """Collect constructor parameter names across the FULL MRO, not just ``cls.__init__``.
+
+        Every splitter's ``__init__`` in this codebase is ``def __init__(self, *, <own params>,
+        **base)``, forwarding ``**base`` up to ``BaseSplitter.__init__`` (and, for
+        ``GroupSplitter`` subclasses, through an intermediate ``size_tolerance``/
+        ``group_assignment`` layer too). ``sklearn.base.BaseEstimator``'s default
+        ``_get_param_names`` only introspects ``cls.__init__``'s own signature — it does not know
+        the ``**base`` kwarg is absorbed by a parent ``__init__`` — so it silently drops every
+        inherited parameter (``train_size``, ``test_size``, ``random_state``,...). That breaks
+        both real sklearn compatibility (``clone()``, ``GridSearchCV(cv=...)``) and
+        ``SplitResult``'s I4 invariant, since a caller who only sees ``{"shuffle": True}``
+        cannot reconstruct the estimator, and a raw ``random_state=Generator`` slipping through
+        undetected elsewhere is exactly the kind of gap this is meant to close.
+
+        Walk ``cls.__mro__`` and, for every class that defines its own ``__init__`` (i.e.
+        ``"__init__" in klass.__dict__``, so mixins like ``SimilarityParamsMixin`` are included
+        too), collect every parameter that is not ``self``, ``*args``, or ``**kwargs``.
+        """
+        names: set[str] = set()
+        for klass in cls.__mro__:
+            init = klass.__dict__.get("__init__")
+            if init is None:
+                continue
+            for p in inspect.signature(init).parameters.values():
+                if p.name == "self":
+                    continue
+                if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
+                    continue
+                names.add(p.name)
+        return sorted(names)
+
+    @staticmethod
+    def _sanitize_params(raw: dict[str, Any]) -> dict[str, Any]:
+        """Coerce a ``get_params()`` dict into the JSON-serialisable, round-trip-safe form
+        ``SplitResult``'s I4 invariant requires.
+
+        ``numpy`` scalars are unwrapped to native Python. Objects with no natural JSON
+        representation (e.g. a live ``numpy.random.Generator`` passed as ``random_state``, or a
+        ``Featurizer`` instance passed instead of its string alias) fall back to ``repr(value)`` —
+        callers should ADDITIONALLY overwrite such a key with its reproducible resolved form
+        (e.g. ``params["random_state"] = ctx.extra["resolved_seed"]``) since a repr string alone
+        cannot reconstruct the estimator; this function only guarantees the dict *serializes*.
+        """
+
+        def _safe(v: Any) -> Any:
+            if v is None or isinstance(v, (bool, int, float, str)):
+                return v
+            if isinstance(v, np.generic):
+                return v.item()
+            if isinstance(v, (list, tuple)):
+                return [_safe(x) for x in v]
+            if isinstance(v, dict):
+                return {str(k): _safe(x) for k, x in v.items()}
+            try:
+                json.dumps(v)
+                return v
+            except (TypeError, ValueError):
+                return repr(v)
+
+        return {k: _safe(v) for k, v in raw.items()}
+
     def _validate_base_params(self) -> None:
         if isinstance(self.n_splits, bool) or not isinstance(self.n_splits, (int, np.integer)):
-            if self.n_splits != "auto":  # subclasses may special-case "auto"/"loo"
+            if self.n_splits not in ("auto", "loo"):  # subclasses may special-case these
                 raise ParameterError(f"n_splits must be a positive int, got {self.n_splits!r}")
         elif self.n_splits < 1:
             raise ParameterError(f"n_splits must be >= 1, got {self.n_splits!r}")
@@ -731,8 +822,20 @@ class GroupSplitter(BaseSplitter):
         )
         return self._group_labels(ctx)
 
+    def _group_metadata(self, ctx: _Context, labels: IndexArray) -> dict[str, Any]:
+        """Splitter-specific ``SplitResult.metadata`` contributions (e.g. ``n_clusters``,
+        ``cluster_sizes``, algorithm diagnostics).
+
+        Called once per :meth:`_partition` with the FULL (pre-discard) group-label array
+        ``_group_labels`` returned. No-op by default; concrete splitters override. Merged under
+        ``extra_metadata`` — do not use the keys ``"fold_index"``, ``"n_splits"``, or
+        ``"realised_sizes"``, which :meth:`_build_result`/the k-fold path already own.
+        """
+        return {}
+
     def _partition(self, ctx: _Context) -> list[SplitResult]:
         labels_full = self._group_labels(ctx)
+        group_metadata = self._group_metadata(ctx, labels_full)
         forced_discard = np.asarray(
             sorted(ctx.extra.get("forced_discard", [])), dtype=np.int64
         )
@@ -771,7 +874,11 @@ class GroupSplitter(BaseSplitter):
                         test=test,
                         discard=forced_discard,
                         groups=labels_full,
-                        extra_metadata={"fold_index": k, "n_splits": n_splits},
+                        extra_metadata={
+                            **group_metadata,
+                            "fold_index": k,
+                            "n_splits": n_splits,
+                        },
                     )
                 )
             return results
@@ -788,7 +895,7 @@ class GroupSplitter(BaseSplitter):
             test=test,
             discard=forced_discard,
             groups=labels_full,
-            extra_metadata={},
+            extra_metadata=group_metadata,
         )
         self._check_size_tolerance(result, ctx)
         return [result]
@@ -824,7 +931,7 @@ class GroupSplitter(BaseSplitter):
             discard=np.sort(discard),
             groups=groups,
             splitter_id=self.splitter_id,
-            params=self.get_params(),
+            params=_canonicalize_params(self.get_params()),
             n_records=ctx.n,
             metadata=metadata,
         )

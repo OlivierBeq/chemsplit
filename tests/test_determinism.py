@@ -24,7 +24,7 @@ def test_seed_for_different_purpose_or_k_differ():
 
 def test_make_seed_bundle_int_vs_none_vs_generator():
     b_int = det.make_seed_bundle(7)
-    assert b_int.resolved_seed is None
+    assert b_int.resolved_seed == 7  # resolved_seed is always populated, not just for random_state=None
     b_none = det.make_seed_bundle(None)
     assert isinstance(b_none.resolved_seed, int)
 
