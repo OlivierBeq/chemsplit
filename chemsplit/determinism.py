@@ -79,15 +79,17 @@ def make_seed_bundle(random_state: int | np.random.Generator | None) -> SeedBund
         return SeedBundle(root=root, resolved_seed=int(root.entropy))
     if isinstance(random_state, np.random.Generator):
         state = random_state.bit_generator.state["state"]["state"]
-        root = np.random.SeedSequence(entropy=int(state))
-        return SeedBundle(root=root)
+        resolved = int(state)
+        root = np.random.SeedSequence(entropy=resolved)
+        return SeedBundle(root=root, resolved_seed=resolved)
     if isinstance(random_state, bool) or not isinstance(random_state, (int, np.integer)):
         raise TypeError(
             "random_state must be an int, a numpy.random.Generator, or None; "
             f"got {type(random_state).__name__}"
         )
-    root = np.random.SeedSequence(entropy=int(random_state))
-    return SeedBundle(root=root)
+    resolved = int(random_state)
+    root = np.random.SeedSequence(entropy=resolved)
+    return SeedBundle(root=root, resolved_seed=resolved)
 
 
 def seeded_python_random(bundle: SeedBundle, purpose: str, k: int = 0) -> random.Random:
