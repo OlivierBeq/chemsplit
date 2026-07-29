@@ -1,3 +1,4 @@
+import json
 from typing import ClassVar
 
 import numpy as np
@@ -211,18 +212,32 @@ def test_split_result_i3_groups_not_first_appearance():
         )
 
 
-def test_split_result_i4_non_json_serialisable_params():
-    from chemsplit.exceptions import InvariantError
-
-    with pytest.raises(InvariantError):
-        SplitResult(
-            train=_arr(0),
-            valid=_arr(),
-            test=_arr(1),
-            discard=_arr(),
-            groups=None,
-            splitter_id="random",
-            params={"bad": object()},
-            n_records=2,
-            metadata={},
-        )
+def test_split_result_i4_non_json_native_params_are_stringified():
+    """``params`` is "JSON-serialisable, fully resolved" -- an audit record, not a
+    reconstruction mechanism. A constructor argument that isn't natively JSON-representable (a
+    live object, a callable, a numpy array/tuple/scalar) is stringified/canonicalized rather than
+    making I4 impossible to satisfy for any splitter with a non-trivial parameter type (e.g. the
+    embedding family's ``LatentSpaceSplitter(embedding=<callable>)``)."""
+    sentinel = object()
+    result = SplitResult(
+        train=_arr(0),
+        valid=_arr(),
+        test=_arr(1),
+        discard=_arr(),
+        groups=None,
+        splitter_id="random",
+        params={
+            "bad": sentinel,
+            "a_tuple": (1, 2),
+            "a_numpy_int": np.int64(3),
+            "a_numpy_array": np.array([1.0, 2.0]),
+        },
+        n_records=2,
+        metadata={},
+    )
+    assert result.params["bad"] == str(sentinel)
+    assert result.params["a_tuple"] == [1, 2]
+    assert result.params["a_numpy_int"] == 3 and isinstance(result.params["a_numpy_int"], int)
+    assert result.params["a_numpy_array"].startswith("<ndarray")
+    # Now genuinely JSON-round-trippable, per I4.
+    json.loads(json.dumps(result.params))

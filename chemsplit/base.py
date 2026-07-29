@@ -114,11 +114,19 @@ def _canonicalize_params(value: Any) -> Any:
     lists, numpy scalars -> native ``int``/``float``. Many splitters have ``tuple[int, int]``
     constructor parameters (e.g. ``auto_range``); JSON has no tuple type, so
     ``SplitResult.params`` must be canonicalized once here rather than every splitter author
-    remembering to avoid tuples. Anything not JSON-representable at all (e.g. a live
-    :class:`~chemsplit.featurizers.Featurizer` instance passed instead of its string alias) is
-    left as-is and will still correctly fail I4 -- that is a genuine caller error, not something
-    this function should paper over.
+    remembering to avoid tuples.
+
+    ``SplitResult.params`` is meant to be "JSON-serialisable, fully resolved" -- it is an audit
+    record, not a reconstruction mechanism (``get_params()``/``clone()`` serve that role
+    separately, and are left untouched by this function). So a constructor argument that
+    json.dumps cannot represent natively (a live :class:`~chemsplit.featurizers.Featurizer`
+    instance passed instead of its string alias, a callable ``embedding=`` function, an array) is
+    stringified rather than left to fail I4 -- e.g. ``"<function...>"``/``"<Featurizer...>"`` is
+    still useful provenance, and silently raising for every splitter with a non-trivial parameter
+    type would make I4 impractical to satisfy.
     """
+    if isinstance(value, (type(None), bool, int, float, str)):
+        return value
     if isinstance(value, tuple):
         return [_canonicalize_params(v) for v in value]
     if isinstance(value, list):
@@ -129,6 +137,12 @@ def _canonicalize_params(value: Any) -> Any:
         return int(value)
     if isinstance(value, np.floating):
         return float(value)
+    if isinstance(value, np.ndarray):
+        return f"<ndarray shape={value.shape} dtype={value.dtype}>"
+    try:
+        json.dumps(value)
+    except (TypeError, ValueError):
+        return str(value)
     return value
 
 
