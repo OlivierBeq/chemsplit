@@ -651,6 +651,15 @@ class BaseSplitter(sklearn.base.BaseEstimator, abc.ABC):
                 "resolved_seed": bundle.resolved_seed,
                 "forced_discard": pipeline_result.forced_discard,
                 "dedup_group_labels": pipeline_result.dedup_group_labels,
+                # Minimal, additive core-infra gap-fill (documented, not a design deviation): the
+                # "interactions" input kind (Sequence[tuple[compound_key, target_key]]) is
+                # correctly *detected* by preprocess.detect_input_kind but has no dedicated
+                # parsing/standardisation path in run_pipeline (mols/smiles stay None for it, by
+                # design — interaction records identify entities by opaque key, not by molecule).
+                # Splitters that accept "interactions" need the raw tuples themselves, which
+                # nothing else on _Context otherwise carries; stash them here rather than adding a
+                # new _Context field, to keep this a one-line, backward-compatible addition.
+                "raw_interactions": list(X) if x_kind == "interactions" else None,
             },
             raw_features=X if x_kind == "features" else None,
         )
@@ -812,9 +821,9 @@ class GroupSplitter(BaseSplitter):
             smiles=pipeline_result.smiles,
             y=y,
             groups_in=None,
-            dates=None,
-            targets=None,
-            sequences=None,
+            dates=kw.get("dates"),
+            targets=kw.get("targets"),
+            sequences=kw.get("sequences"),
             sizes=sizes,
             rng_seeds=bundle,
             raw_features=X if x_kind == "features" else None,
