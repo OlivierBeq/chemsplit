@@ -10,7 +10,7 @@ import numpy as np
 from chemsplit._fp_similarity import SimilarityParamsMixin, compute_distance_matrix
 from chemsplit._unionfind import dense_label_encode
 from chemsplit.base import GroupSplitter, Strictness, _Context
-from chemsplit.determinism import seed_for
+from chemsplit.determinism import argmax_tiebreak, seed_for
 from chemsplit.exceptions import (
     CircularityWarning,
     DegenerateGroupingError,
@@ -126,7 +126,8 @@ def _fix_sign(Z: np.ndarray) -> np.ndarray:
     Z = np.asarray(Z, dtype=np.float64).copy()
     for c in range(Z.shape[1]):
         col = Z[:, c]
-        idx = int(np.argmax(np.abs(col)))  # over a plain positional column index, not tie-sensitive
+        abs_col = np.abs(col)
+        idx = argmax_tiebreak(lambda k: abs_col[k], range(len(col)))
         if col[idx] < 0:
             Z[:, c] = -col
     return Z
@@ -536,8 +537,8 @@ class ProjectionSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitte
 
 
 class LatentSpaceSplitter(_ClusterCountMixin, GroupSplitter):
-    """Clusters in an embedding supplied by the caller (``latent_space``) -- a
-    ChemBERTa/GNN/VAE representation, not one chemsplit computes itself.
+    """Clusters in an embedding supplied by the caller (``latent_space``) -- a ChemBERTa/GNN/VAE
+    representation, not one chemsplit computes itself.
 
     Parameters
     ----------

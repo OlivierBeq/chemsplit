@@ -520,30 +520,15 @@ class BaseSplitter(sklearn.base.BaseEstimator, abc.ABC):
         """Coerce a ``get_params()`` dict into the JSON-serialisable, round-trip-safe form
         ``SplitResult``'s I4 invariant requires.
 
-        ``numpy`` scalars are unwrapped to native Python. Objects with no natural JSON
-        representation (e.g. a live ``numpy.random.Generator`` passed as ``random_state``, or a
-        ``Featurizer`` instance passed instead of its string alias) fall back to ``repr(value)`` —
-        callers should ADDITIONALLY overwrite such a key with its reproducible resolved form
-        (e.g. ``params["random_state"] = ctx.extra["resolved_seed"]``) since a repr string alone
-        cannot reconstruct the estimator; this function only guarantees the dict *serializes*.
+        Thin wrapper around the module-level :func:`_canonicalize_params` (which
+        ``SplitResult.__post_init__`` already applies to ``params`` unconditionally, so calling
+        this explicitly before constructing a ``SplitResult`` is optional belt-and-suspenders, not
+        required) — kept as a distinct method, rather than merged away, only so existing call
+        sites that reference ``self._sanitize_params(...)`` don't need touching. New splitter code
+        should generally just pass raw ``get_params()`` output straight into ``SplitResult`` and
+        rely on ``__post_init__``'s automatic canonicalization instead of calling this explicitly.
         """
-
-        def _safe(v: Any) -> Any:
-            if v is None or isinstance(v, (bool, int, float, str)):
-                return v
-            if isinstance(v, np.generic):
-                return v.item()
-            if isinstance(v, (list, tuple)):
-                return [_safe(x) for x in v]
-            if isinstance(v, dict):
-                return {str(k): _safe(x) for k, x in v.items()}
-            try:
-                json.dumps(v)
-                return v
-            except (TypeError, ValueError):
-                return repr(v)
-
-        return {k: _safe(v) for k, v in raw.items()}
+        return {k: _canonicalize_params(v) for k, v in raw.items()}
 
     def _validate_base_params(self) -> None:
         if isinstance(self.n_splits, bool) or not isinstance(self.n_splits, (int, np.integer)):
