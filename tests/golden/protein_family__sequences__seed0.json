@@ -1,0 +1,4 @@
+{
+  "split_result_json": "{\"discard\":[],\"groups\":[0,0,0,0,0,1,1,1,1,1,2,2,2,2,2,3,3,3,3,3],\"metadata\":{\"realised_sizes\":{\"test\":5,\"train\":15,\"valid\":0}},\"n_records\":20,\"params\":{\"family_labels\":[0,0,0,0,0,1,1,1,1,1,2,2,2,2,2,3,3,3,3,3],\"group_assignment\":\"greedy_desc\",\"n_jobs\":1,\"n_splits\":1,\"random_state\":0,\"size_tolerance\":0.05,\"test_size\":null,\"train_size\":null,\"valid_size\":null,\"verbose\":0},\"schema\":\"chemsplit/split/1\",\"splitter_id\":\"protein_family\",\"test\":[[15,19]],\"train\":[[0,14]],\"valid\":[]}",
+  "tier": "exact"
+}

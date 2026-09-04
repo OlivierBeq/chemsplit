@@ -1,0 +1,4 @@
+{
+  "split_result_json": "{\"discard\":[],\"groups\":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,2,2,2,1,1,1,1,1,1,1,1,1,1,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,4,4,4,4,4,4,4,4,4],\"metadata\":{\"group_sizes\":[20,20,20,10,10],\"largest_group_frac\":0.25,\"n_groups\":5,\"realised_sizes\":{\"test\":20,\"train\":60,\"valid\":0},\"singleton_frac\":0.0},\"n_records\":80,\"params\":{\"group_assignment\":\"greedy_desc\",\"include_chirality\":false,\"n_jobs\":1,\"n_splits\":1,\"on_empty_scaffold\":\"own_group\",\"random_state\":0,\"size_tolerance\":0.05,\"test_size\":null,\"train_size\":null,\"valid_size\":null,\"verbose\":0},\"schema\":\"chemsplit/split/1\",\"splitter_id\":\"generic_scaffold\",\"test\":[[30,39],[70,79]],\"train\":[[0,29],[40,69]],\"valid\":[]}",
+  "tier": "exact"
+}
