@@ -84,6 +84,12 @@ class TestRingSystems:
         systems = scaffolds.ring_systems(macro, max_ring_size=12)
         assert systems == []
 
+    def test_exocyclic_carbonyl_double_bond_is_kept(self):
+        mol = _smi("O=C1CCCCC1")  # cyclohexanone
+        systems = scaffolds.ring_systems(mol)
+        assert len(systems) == 1
+        assert "O" in systems[0] and "=" in systems[0]
+
 
 class TestScaffoldTreeLevels:
     @pytest.mark.parametrize("smi", ["c1ccccc1", "C1CC2CCC1CC2", "c1ccncc1"])
@@ -106,3 +112,45 @@ class TestScaffoldTreeLevels:
         mol = _smi("c1ccccc1")
         smiles, _ = scaffolds.scaffold_tree_levels(mol, level=0, max_rings=0)
         assert smiles == scaffolds.SENTINEL_TOO_COMPLEX
+
+    # -- two SEPARATE (non-fused) ring clusters connected by a linker, one of the two clusters
+    # actually gets removed: exercises _cluster_adjacency's linker-walk, _select_ring_to_remove's
+    # peripheral-selection + all three prune_rule branches, and _remove_cluster's real removal
+    # path. GetMolFrags(..., sanitizeFrags=False) fragments have no ring info until explicitly
+    # perceived, so _remove_cluster must call GetRingInfo() only after that perception step.
+    @pytest.mark.parametrize("prune_rule", ["peripheral_first", "min_rings", "scaffold_tree"])
+    def test_two_linked_rings_prunes_one_ring_away(self, prune_rule):
+        mol = _smi("c1ccccc1CCCc1ccccc1")  # 1,3-diphenylpropane
+        base, _ = scaffolds.scaffold_tree_levels(mol, level=0)
+        base_mol = Chem.MolFromSmiles(base)
+        assert base_mol.GetRingInfo().NumRings() == 2  # two separate (non-fused) benzene rings
+
+        pruned, failed = scaffolds.scaffold_tree_levels(mol, level=1, prune_rule=prune_rule)
+        assert failed is False
+        pruned_mol = Chem.MolFromSmiles(pruned)
+        assert pruned_mol is not None
+        assert pruned_mol.GetRingInfo().NumRings() == 1  # exactly one ring removed
+
+        # A second level is a no-op: _ring_count(s) <= 1 breaks the loop immediately (only one
+        # ring remains, and the algorithm never prunes down to zero rings).
+        pruned2, failed2 = scaffolds.scaffold_tree_levels(mol, level=2, prune_rule=prune_rule)
+        assert failed2 is False
+        assert pruned2 == pruned
+
+    def test_two_directly_bonded_rings_prunes_one_ring_away(self):
+        # Biphenyl: two ring clusters joined by a direct bond (no linker chain atoms in between),
+        # exercising _cluster_adjacency's direct-bond short-circuit rather than the linker walk.
+        mol = _smi("c1ccc(-c2ccccc2)cc1")
+        pruned, failed = scaffolds.scaffold_tree_levels(mol, level=1, prune_rule="peripheral_first")
+        assert failed is False
+        pruned_mol = Chem.MolFromSmiles(pruned)
+        assert pruned_mol is not None
+        assert pruned_mol.GetRingInfo().NumRings() == 1
+
+    def test_ring_clusters_empty_for_acyclic(self):
+        assert scaffolds._ring_clusters(_smi("CCCCCC")) == []
+
+    def test_select_ring_to_remove_none_for_single_cluster(self):
+        # A lone (or fully-fused, single-cluster) ring system has nothing peripheral to prune.
+        assert scaffolds._select_ring_to_remove(_smi("c1ccccc1"), "peripheral_first") is None
+        assert scaffolds._select_ring_to_remove(_smi("c1ccc2c(c1)CCC2"), "min_rings") is None

@@ -132,3 +132,89 @@ class TestSpectralPartition:
         l1 = clustering.spectral_partition(W, n_clusters=2, random_state=0)
         l2 = clustering.spectral_partition(W, n_clusters=2, random_state=0)
         assert np.array_equal(l1, l2)
+
+
+class TestMaxMinPickInitModes:
+    def test_kennard_stone_init(self):
+        D = _blob_distance_matrix()
+        picks = clustering.maxmin_pick(D, n_picks=2, init="kennard_stone")
+        assert len(picks) == 2
+
+    def test_most_peripheral_init(self):
+        D = _blob_distance_matrix()
+        picks = clustering.maxmin_pick(D, n_picks=1, init="most_peripheral")
+        assert len(picks) == 1
+
+    def test_random_init_requires_rng(self):
+        D = _blob_distance_matrix()
+        with pytest.raises(AssertionError):
+            clustering.maxmin_pick(D, n_picks=2, init="random", rng=None)
+
+    def test_random_init_with_rng(self):
+        D = _blob_distance_matrix()
+        rng = np.random.default_rng(0)
+        picks = clustering.maxmin_pick(D, n_picks=3, init="random", rng=rng)
+        assert len(set(picks)) == 3
+
+
+class TestKennardStoneSmallN:
+    def test_n_less_than_two(self):
+        D = np.zeros((1, 1))
+        assert clustering.kennard_stone(D, n_picks=1) == [0]
+
+
+class TestSpectralPartitionLaplacianVariants:
+    @pytest.mark.parametrize("laplacian", ["unnormalized", "rw", "sym"])
+    def test_all_laplacian_variants_produce_valid_two_way_labels(self, laplacian):
+        # Exact blob-separation correctness for the default "sym" Laplacian is already asserted
+        # by test_separates_two_blobs above; this only needs to exercise the "unnormalized"/"rw"
+        # code paths (spectral_partition's laplacian branch) and confirm a well-formed 2-cluster
+        # labeling comes out, not assert every variant agrees on this exact toy dataset.
+        D = _spectral_blob_distance_matrix()
+        W = np.exp(-(D**2))
+        np.fill_diagonal(W, 0.0)
+        labels = clustering.spectral_partition(W, n_clusters=2, laplacian=laplacian, random_state=0)
+        assert len(labels) == 6
+        assert set(labels.tolist()) <= {0, 1}
+
+    @pytest.mark.slow
+    def test_large_active_set_uses_sparse_eigsh_path(self):
+        # len(active) >= 50 routes through scipy.sparse.linalg.eigsh instead of the dense
+        # np.linalg.eigh fallback -- build two well-separated 30-point blobs (60 active vertices).
+        rng = np.random.default_rng(1)
+        pts = np.vstack(
+            [
+                rng.normal(loc=[0, 0], scale=0.05, size=(30, 2)),
+                rng.normal(loc=[5, 5], scale=0.05, size=(30, 2)),
+            ]
+        )
+        D = np.linalg.norm(pts[:, None,:] - pts[None,:,:], axis=-1)
+        W = np.exp(-(D**2))
+        np.fill_diagonal(W, 0.0)
+        labels = clustering.spectral_partition(W, n_clusters=2, random_state=0)
+        assert len(set(labels[:30].tolist())) == 1
+        assert len(set(labels[30:].tolist())) == 1
+        assert labels[0] != labels[30]
+
+
+class TestMaxMinPickAndKennardStoneExhaustion:
+    def test_maxmin_pick_n_picks_exceeds_n_stops_early(self):
+        D = _blob_distance_matrix()  # n=6
+        picks = clustering.maxmin_pick(D, n_picks=100, init="index_zero")
+        assert len(picks) == 6  # exhausted all candidates, loop breaks rather than erroring
+
+    def test_kennard_stone_n_picks_exceeds_n_stops_early(self):
+        D = _blob_distance_matrix()
+        picks = clustering.kennard_stone(D, n_picks=100)
+        assert len(picks) == 6
+
+
+class TestSpectralPartitionSparseInput:
+    def test_accepts_sparse_affinity_matrix(self):
+        import scipy.sparse as sp
+
+        D = _spectral_blob_distance_matrix()
+        W = np.exp(-(D**2))
+        np.fill_diagonal(W, 0.0)
+        labels = clustering.spectral_partition(sp.csr_matrix(W), n_clusters=2, random_state=0)
+        assert len(labels) == 6
