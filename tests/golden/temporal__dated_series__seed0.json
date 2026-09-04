@@ -1,0 +1,4 @@
+{
+  "split_result_json": "{\"discard\":[],\"groups\":null,\"metadata\":{\"cut_date\":\"2018-08-08\",\"embargo\":\"0\",\"n_embargoed\":0,\"n_ties_at_cut\":1,\"realised_sizes\":{\"test\":20,\"train\":80,\"valid\":0},\"test_date_range\":[\"2018-12-23\",\"2019-08-06\"],\"train_date_range\":[\"2015-01-03\",\"2018-08-08\"],\"valid_cut_date\":null,\"window_index\":null},\"n_records\":100,\"params\":{\"cut_date\":null,\"embargo\":0,\"mode\":\"single\",\"n_jobs\":1,\"n_splits\":1,\"n_windows\":5,\"random_state\":0,\"test_size\":null,\"tie_policy\":\"train\",\"train_size\":null,\"valid_cut_date\":null,\"valid_size\":null,\"verbose\":0,\"window\":\"365D\"},\"schema\":\"chemsplit/split/1\",\"splitter_id\":\"temporal\",\"test\":[[80,99]],\"train\":[[0,79]],\"valid\":[]}",
+  "tier": "exact"
+}
