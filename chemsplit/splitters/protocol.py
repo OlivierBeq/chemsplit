@@ -193,7 +193,15 @@ class GroupKFoldSplitter(GroupSplitter):
 
         if ctx.groups_in is not None:
             return dense_label_encode(ctx.groups_in.tolist())
-        grouper = _resolve_splitter(self.grouper, "grouper")
+        grouper_template = _resolve_splitter(self.grouper, "grouper")
+        # Re-seed after resolving (same fix as NestedCVSplitter/ApplicabilityDomainSplitter):
+        # a resolved string/instance grouper is not otherwise controlled by this splitter's own
+        # random_state. Only matters for a seed-needing grouper (e.g. a KMeans-based one); a
+        # seed-free grouper like Murcko-scaffold grouping is unaffected either way.
+        grouper_seed = int(
+            seed_for(ctx.rng_seeds, "groupkfold.grouper_seed", 0).integers(0, 2**31 - 1)
+        )
+        grouper = _clone_with_overrides(grouper_template, random_state=grouper_seed)
         sub_X = _select_ctx_X(ctx)
         return np.asarray(grouper.compute_groups(sub_X, ctx.y), dtype=np.int64)
 
@@ -506,9 +514,18 @@ class NestedCVSplitter(BaseSplitter):
         return outer.get_n_splits(X, y, groups)
 
     def _partition(self, ctx: _Context) -> list[SplitResult]:
-        outer = _resolve_splitter(self.outer_splitter, "outer_splitter")
+        outer_template = _resolve_splitter(self.outer_splitter, "outer_splitter")
         inner_template = _resolve_splitter(self.inner_splitter, "inner_splitter")
         sub_X = _select_ctx_X(ctx)
+
+        # Re-seed the resolved outer splitter from THIS splitter's own rng_seeds -- resolving a
+        # string/instance design via _resolve_splitter does not itself derive a seed (a bare
+        # `get_splitter("random")` defaults to random_state=None, i.e. OS entropy), so without
+        # this, NestedCVSplitter's own random_state would not actually control the outer split at
+        # all. Bug found and fixed while building the golden-file baseline: the same fixture+seed
+        # produced a different outer split on every re-run.
+        outer_seed = int(seed_for(ctx.rng_seeds, "nestedcv.outer_seed", 0).integers(0, 2**31 - 1))
+        outer = _clone_with_overrides(outer_template, random_state=outer_seed)
 
         results: list[SplitResult] = []
         outer_results = outer.split_result(sub_X, ctx.y)
@@ -725,7 +742,12 @@ class ApplicabilityDomainSplitter(BaseSplitter):
                 random_state=seed0,
             )
         else:
-            outer = _resolve_splitter(self.base_splitter, "base_splitter")
+            # Re-seed after resolving, same reasoning/fix as NestedCVSplitter above: resolving a
+            # string/instance design does not itself derive a seed, so without this the outer split
+            # would not be controlled by this splitter's own random_state at all.
+            base_template = _resolve_splitter(self.base_splitter, "base_splitter")
+            seed0 = int(seed_for(ctx.rng_seeds, "ad.base_seed", 0).integers(0, 2**31 - 1))
+            outer = _clone_with_overrides(base_template, random_state=seed0)
 
         sub_X = _select_ctx_X(ctx)
         r = list(outer.split_result(sub_X, ctx.y))[0]

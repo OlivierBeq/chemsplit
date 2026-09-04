@@ -665,6 +665,7 @@ class ScaffoldHopSplitter(GroupSplitter):
             class _ActivesCtx:
                 def __init__(self, mols_):
                     self.mols = mols_
+                    self.n = len(mols_)
                     self._cache: dict[Any, Any] = {}
 
                 def get_features(self, featurizer=None):

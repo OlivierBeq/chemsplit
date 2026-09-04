@@ -1,0 +1,4 @@
+{
+  "split_result_json": "{\"discard\":[],\"groups\":[0,1,2,1,1,0,0,0,1,1,0,1,2,0,0,2,0,1,2,2,0,1,3,0,3,4,3,3,3,3,3,3,4,4,4,3,4,4,4,4,5,5,6,6,6,5,5,5,5,5,5,5,5,5,5,5,5,6,6,5,6,6,5,5,7,7,7,7,7,7,7,7,7,7,7,7,5,5,7,5],\"metadata\":{\"graph\":\"knn\",\"n_clusters\":8,\"realised_sizes\":{\"test\":15,\"train\":65,\"valid\":0}},\"n_records\":80,\"params\":{\"assign\":\"kmeans\",\"drop_first\":true,\"featurizer\":\"ecfp4\",\"graph\":\"knn\",\"group_assignment\":\"greedy_desc\",\"knn_k\":20,\"laplacian\":\"sym\",\"max_memory_bytes\":2147483648,\"metric\":\"tanimoto\",\"n_clusters\":8,\"n_jobs\":1,\"n_splits\":1,\"random_state\":0,\"size_tolerance\":0.05,\"test_size\":null,\"threshold\":0.3,\"train_size\":null,\"valid_size\":null,\"verbose\":0},\"schema\":\"chemsplit/split/1\",\"splitter_id\":\"spectral\",\"test\":[1,3,4,8,9,11,17,21,[42,44],57,58,60,61],\"train\":[0,2,[5,7],10,[12,16],[18,20],[22,41],[45,56],59,[62,79]],\"valid\":[]}",
+  "tier": "exact"
+}

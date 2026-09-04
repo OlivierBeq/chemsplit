@@ -1,0 +1,4 @@
+{
+  "split_result_json": "{\"discard\":[],\"groups\":[0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3],\"metadata\":{\"max_cross_similarity\":0.0,\"n_components\":4,\"realised_sizes\":{\"test\":2,\"train\":78,\"valid\":0},\"strategy\":\"graph_component\",\"threshold\":0.4},\"n_records\":80,\"params\":{\"allow_discard\":true,\"featurizer\":\"ecfp4\",\"group_assignment\":\"greedy_desc\",\"max_discard_frac\":0.5,\"max_memory_bytes\":2147483648,\"metric\":\"tanimoto\",\"n_jobs\":1,\"n_splits\":1,\"random_state\":0,\"seed_selection\":\"random\",\"size_tolerance\":0.05,\"strategy\":\"graph_component\",\"test_size\":null,\"threshold\":0.4,\"train_size\":null,\"valid_size\":null,\"verbose\":0},\"schema\":\"chemsplit/split/1\",\"splitter_id\":\"similarity_threshold\",\"test\":[0,40],\"train\":[[1,39],[41,79]],\"valid\":[]}",
+  "tier": "exact"
+}

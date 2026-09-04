@@ -1,0 +1,4 @@
+{
+  "split_result_json": "{\"discard\":[],\"groups\":null,\"metadata\":{\"realised_sizes\":{\"test\":16,\"train\":64,\"valid\":0},\"repeat_index\":0,\"resolved_seed\":0},\"n_records\":80,\"params\":{\"n_jobs\":1,\"n_splits\":10,\"random_state\":0,\"stratify\":false,\"stratify_kwargs\":null,\"test_size\":null,\"train_size\":null,\"valid_size\":null,\"verbose\":0},\"schema\":\"chemsplit/split/1\",\"splitter_id\":\"monte_carlo\",\"test\":[4,5,7,19,[25,27],31,43,45,46,64,66,67,71,75],\"train\":[[0,3],6,[8,18],[20,24],[28,30],[32,42],44,[47,63],65,[68,70],[72,74],[76,79]],\"valid\":[]}",
+  "tier": "exact"
+}

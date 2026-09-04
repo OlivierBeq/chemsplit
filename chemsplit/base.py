@@ -167,10 +167,17 @@ class SplitResult:
     metadata: dict[str, Any]
 
     def __post_init__(self) -> None:
-        # Canonicalize params (tuples -> lists, numpy scalars -> native) before I4 checks it for
-        # JSON round-trip -- universal regardless of which code path constructed this SplitResult
-        # (frozen dataclass, so this is the one place that can normalize every construction site).
+        # Canonicalize params AND metadata (tuples -> lists, numpy scalars -> native) before I4
+        # checks params for JSON round-trip and before to_json() serializes both -- universal
+        # regardless of which code path constructed this SplitResult (frozen dataclass, so this
+        # is the one place that can normalize every construction site). metadata isn't covered by
+        # invariant I4 itself (only params is), but to_json() serializes metadata raw, so a
+        # splitter that puts a numpy scalar (e.g. a float32 threshold) into metadata would
+        # otherwise crash to_json() with "Object of type float32 is not JSON serializable" --
+        # canonicalizing it here, at construction, catches that at the source rather than at
+        # serialization time.
         object.__setattr__(self, "params", _canonicalize_params(self.params))
+        object.__setattr__(self, "metadata", _canonicalize_params(self.metadata))
         self._check_i1()
         self._check_i2()
         self._check_i3()
@@ -644,7 +651,7 @@ class BaseSplitter(sklearn.base.BaseEstimator, abc.ABC):
             groups_in=np.asarray(groups, dtype=np.int64) if groups is not None else None,
             dates=kw.get("dates"),
             targets=kw.get("targets"),
-            sequences=kw.get("sequences"),
+            sequences=kw.get("sequences") or (list(X) if x_kind == "sequences" else None),
             sizes=sizes,
             rng_seeds=bundle,
             extra={
@@ -823,7 +830,7 @@ class GroupSplitter(BaseSplitter):
             groups_in=None,
             dates=kw.get("dates"),
             targets=kw.get("targets"),
-            sequences=kw.get("sequences"),
+            sequences=kw.get("sequences") or (list(X) if x_kind == "sequences" else None),
             sizes=sizes,
             rng_seeds=bundle,
             raw_features=X if x_kind == "features" else None,
