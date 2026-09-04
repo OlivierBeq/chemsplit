@@ -19,81 +19,82 @@ if TYPE_CHECKING:
     from chemsplit.base import BaseSplitter
 
 # ---------------------------------------------------------------------------
-# Import every concrete splitter class, in family + design-ordinal order.
+# Import every concrete splitter class, in family + declared order.
+#
+# Deliberately done inside a function, not at module scope: every splitter family module imports
+# rdkit (and, for a couple of classes, lazily-triggers checks against optional extras) at ITS OWN
+# module-import time, and chemsplit's own performance budget is <400ms for bare
+# `import chemsplit` with "no RDKit imported at package import time". Importing all 46+6 splitter
+# classes here at `import chemsplit.registry` time would defeat that even though each individual
+# family's `import chemsplit.splitters.X` is itself unavoidable eventually — the point is to defer
+# it until a caller actually asks the registry for something (`get_splitter`/`list_splitters`/
+# `SPLITTER_REGISTRY` access), not pay for it on every `import chemsplit`.
 # ---------------------------------------------------------------------------
 
-from chemsplit.splitters.baseline import (
-    KFoldSplitter,
-    MonteCarloSplitter,
-    PredefinedSplitter,
-    RandomSplitter,
-    StratifiedRandomSplitter,
-)
-from chemsplit.splitters.scaffold import (
-    ActivityCliffSplitter,
-    GenericScaffoldSplitter,
-    MatchedMolecularSeriesSplitter,
-    MurckoScaffoldSplitter,
-    RingSystemSplitter,
-    ScaffoldTreeSplitter,
-)
-from chemsplit.splitters.similarity import (
-    BalancedMultiTaskSplitter,
-    ButinaSplitter,
-    DensityClusterSplitter,
-    KMeansClusterSplitter,
-    LeaveOneClusterOutSplitter,
-    MaxDissimilaritySplitter,
-    MaxMinSplitter,
-    PerimeterSplitter,
-    SimilarityThresholdSplitter,
-    SpectralSplitter,
-)
-from chemsplit.splitters.embedding import (
-    LatentSpaceSplitter,
-    ProjectionSplitter,
-    UMAPClusterSplitter,
-)
-from chemsplit.splitters.property_ import (
-    AdversarialSplitter,
-    LabelExtrapolationSplitter,
-    MOODSplitter,
-    PropertySplitter,
-    StratifiedDistributionSplitter,
-)
-from chemsplit.splitters.lineage import (
-    PartySplitter,
-    SIMPDSplitter,
-    SourceSplitter,
-    TemporalSplitter,
-)
-from chemsplit.splitters.task import (
-    AVESplitter,
-    ColdDrugSplitter,
-    ColdPairSplitter,
-    ColdTargetSplitter,
-    DecoyBenchmarkSplitter,
-    HiSplitter,
-    LoSplitter,
-    ScaffoldHopSplitter,
-)
-from chemsplit.splitters.biomolecular import (
-    BindingSiteSplitter,
-    ComplexJointSplitter,
-    DepositionDateSplitter,
-    ProteinFamilySplitter,
-    SequenceIdentitySplitter,
-)
 
-# protocol.py is imported lazily inside _protocol_classes() below, not here: every protocol
-# splitter resolves *other* splitters (by id) at construction or split time, and importing
-# it eagerly here would be fine today (no cycle, since protocol.py itself only imports
-# chemsplit.registry lazily inside method bodies) but keeping the import lazy documents the
-# intended direction of the dependency (protocol -> registry, never registry -> protocol at
-# module scope) so a future edit to protocol.py can't accidentally introduce a real cycle.
-
-
-def _protocol_classes() -> list[type["BaseSplitter"]]:
+def _import_all_classes() -> list[type["BaseSplitter"]]:
+    from chemsplit.splitters.baseline import (
+        KFoldSplitter,
+        MonteCarloSplitter,
+        PredefinedSplitter,
+        RandomSplitter,
+        StratifiedRandomSplitter,
+    )
+    from chemsplit.splitters.scaffold import (
+        ActivityCliffSplitter,
+        GenericScaffoldSplitter,
+        MatchedMolecularSeriesSplitter,
+        MurckoScaffoldSplitter,
+        RingSystemSplitter,
+        ScaffoldTreeSplitter,
+    )
+    from chemsplit.splitters.similarity import (
+        BalancedMultiTaskSplitter,
+        ButinaSplitter,
+        DensityClusterSplitter,
+        KMeansClusterSplitter,
+        LeaveOneClusterOutSplitter,
+        MaxDissimilaritySplitter,
+        MaxMinSplitter,
+        PerimeterSplitter,
+        SimilarityThresholdSplitter,
+        SpectralSplitter,
+    )
+    from chemsplit.splitters.embedding import (
+        LatentSpaceSplitter,
+        ProjectionSplitter,
+        UMAPClusterSplitter,
+    )
+    from chemsplit.splitters.property_ import (
+        AdversarialSplitter,
+        LabelExtrapolationSplitter,
+        MOODSplitter,
+        PropertySplitter,
+        StratifiedDistributionSplitter,
+    )
+    from chemsplit.splitters.lineage import (
+        PartySplitter,
+        SIMPDSplitter,
+        SourceSplitter,
+        TemporalSplitter,
+    )
+    from chemsplit.splitters.task import (
+        AVESplitter,
+        ColdDrugSplitter,
+        ColdPairSplitter,
+        ColdTargetSplitter,
+        DecoyBenchmarkSplitter,
+        HiSplitter,
+        LoSplitter,
+        ScaffoldHopSplitter,
+    )
+    from chemsplit.splitters.biomolecular import (
+        BindingSiteSplitter,
+        ComplexJointSplitter,
+        DepositionDateSplitter,
+        ProteinFamilySplitter,
+        SequenceIdentitySplitter,
+    )
     from chemsplit.splitters.protocol import (
         ApplicabilityDomainSplitter,
         ExternalHoldoutSplitter,
@@ -103,7 +104,64 @@ def _protocol_classes() -> list[type["BaseSplitter"]]:
         ThreeWaySplitter,
     )
 
+    # Declared order within each of the 9 families — the single source of truth for
+    # SPLITTER_REGISTRY, list_splitters(), and chemsplit/__init__.py's __all__ ordering.
     return [
+        # baseline
+        RandomSplitter,
+        StratifiedRandomSplitter,
+        KFoldSplitter,
+        MonteCarloSplitter,
+        PredefinedSplitter,
+        # scaffold
+        MurckoScaffoldSplitter,
+        GenericScaffoldSplitter,
+        ScaffoldTreeSplitter,
+        RingSystemSplitter,
+        MatchedMolecularSeriesSplitter,
+        ActivityCliffSplitter,
+        # similarity
+        SimilarityThresholdSplitter,
+        ButinaSplitter,
+        KMeansClusterSplitter,
+        DensityClusterSplitter,
+        SpectralSplitter,
+        MaxMinSplitter,
+        MaxDissimilaritySplitter,
+        PerimeterSplitter,
+        LeaveOneClusterOutSplitter,
+        BalancedMultiTaskSplitter,
+        # embedding
+        UMAPClusterSplitter,
+        ProjectionSplitter,
+        LatentSpaceSplitter,
+        # property
+        PropertySplitter,
+        LabelExtrapolationSplitter,
+        StratifiedDistributionSplitter,
+        MOODSplitter,
+        AdversarialSplitter,
+        # lineage
+        TemporalSplitter,
+        SIMPDSplitter,
+        SourceSplitter,
+        PartySplitter,
+        # task
+        HiSplitter,
+        LoSplitter,
+        ScaffoldHopSplitter,
+        ColdDrugSplitter,
+        ColdTargetSplitter,
+        ColdPairSplitter,
+        AVESplitter,
+        DecoyBenchmarkSplitter,
+        # biomolecular
+        SequenceIdentitySplitter,
+        ProteinFamilySplitter,
+        BindingSiteSplitter,
+        DepositionDateSplitter,
+        ComplexJointSplitter,
+        # protocol
         GroupKFoldSplitter,
         ThreeWaySplitter,
         RepeatedSplitter,
@@ -111,68 +169,6 @@ def _protocol_classes() -> list[type["BaseSplitter"]]:
         ExternalHoldoutSplitter,
         ApplicabilityDomainSplitter,
     ]
-
-
-# Every splitter class, in declared order within each of the 9 families. This list is
-# the single source of truth for SPLITTER_REGISTRY, list_splitters(), and
-# chemsplit/__init__.py's __all__ ordering.
-_ALL_SPLITTER_CLASSES: list[type["BaseSplitter"]] = [
-    # baseline (the baseline family)
-    RandomSplitter,
-    StratifiedRandomSplitter,
-    KFoldSplitter,
-    MonteCarloSplitter,
-    PredefinedSplitter,
-    # scaffold (the scaffold family)
-    MurckoScaffoldSplitter,
-    GenericScaffoldSplitter,
-    ScaffoldTreeSplitter,
-    RingSystemSplitter,
-    MatchedMolecularSeriesSplitter,
-    ActivityCliffSplitter,
-    # similarity (the similarity family)
-    SimilarityThresholdSplitter,
-    ButinaSplitter,
-    KMeansClusterSplitter,
-    DensityClusterSplitter,
-    SpectralSplitter,
-    MaxMinSplitter,
-    MaxDissimilaritySplitter,
-    PerimeterSplitter,
-    LeaveOneClusterOutSplitter,
-    BalancedMultiTaskSplitter,
-    # embedding (the embedding family)
-    UMAPClusterSplitter,
-    ProjectionSplitter,
-    LatentSpaceSplitter,
-    # property (the property family)
-    PropertySplitter,
-    LabelExtrapolationSplitter,
-    StratifiedDistributionSplitter,
-    MOODSplitter,
-    AdversarialSplitter,
-    # lineage (the lineage family)
-    TemporalSplitter,
-    SIMPDSplitter,
-    SourceSplitter,
-    PartySplitter,
-    # task (the task family)
-    HiSplitter,
-    LoSplitter,
-    ScaffoldHopSplitter,
-    ColdDrugSplitter,
-    ColdTargetSplitter,
-    ColdPairSplitter,
-    AVESplitter,
-    DecoyBenchmarkSplitter,
-    # biomolecular (the biomolecular family)
-    SequenceIdentitySplitter,
-    ProteinFamilySplitter,
-    BindingSiteSplitter,
-    DepositionDateSplitter,
-    ComplexJointSplitter,
-    # protocol (the protocol family) appended by _build_registry() below, once importable.
-]
 
 
 def _camel_to_snake(name: str) -> str:
@@ -185,7 +181,7 @@ def _camel_to_snake(name: str) -> str:
 
 
 def _build_registry() -> dict[str, type["BaseSplitter"]]:
-    classes = list(_ALL_SPLITTER_CLASSES) + _protocol_classes()
+    classes = _import_all_classes()
     registry: dict[str, type["BaseSplitter"]] = {}
     seen_ids: set[str] = set()
     for cls in classes:
@@ -206,11 +202,9 @@ SPLITTER_REGISTRY: dict[str, type["BaseSplitter"]] = {}
 
 
 def _ensure_built() -> None:
-    # Deferred build (rather than at module import time) so importing chemsplit.registry doesn't
-    # force-import chemsplit.splitters.protocol before it exists during incremental development,
-    # and — more importantly, permanently — so a first call to get_splitter()/list_splitters()
-    # after chemsplit's own import-time budget has already elapsed doesn't pay for
-    # importing every single splitter family until a caller actually asks the registry for one.
+    # Deferred build (rather than at module import time) so `import chemsplit.registry` itself
+    # stays cheap: importing every single splitter family is only paid for once a caller actually
+    # asks the registry for something.
     if SPLITTER_REGISTRY:
         return
     SPLITTER_REGISTRY.update(_build_registry())
