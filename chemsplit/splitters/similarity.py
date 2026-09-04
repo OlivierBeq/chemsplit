@@ -133,8 +133,7 @@ def _small_partition_check(result: SplitResult, n: int) -> None:
 
 
 class SimilarityThresholdSplitter(_SimilarityGroupBase):
-    """Hard constraint: no test record may exceed ``threshold`` similarity to any train record
-   .
+    """Hard constraint: no test record may exceed ``threshold`` similarity to any train record.
 
     Advantages
     ----------
