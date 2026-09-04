@@ -263,3 +263,200 @@ def test_sklearn_clone_compatible():
     sp = MurckoScaffoldSplitter(train_size=0.7, test_size=0.3, random_state=7)
     cloned = clone(sp)
     assert cloned.get_params() == sp.get_params()
+
+
+# --------------------------------------------------------------------------- coverage additions
+
+
+def test_scaffold_tree_level_above_zero_peripheral_first():
+    sp = ScaffoldTreeSplitter(
+        level=1, prune_rule="peripheral_first", train_size=0.5, test_size=0.5, random_state=0,
+    )
+    result = sp.split_result(MIXED_SMILES)[0]
+    assert result.n_records == len(MIXED_SMILES)
+    assert result.metadata["level"] == 1
+
+
+def test_scaffold_tree_level_above_zero_min_rings():
+    sp = ScaffoldTreeSplitter(
+        level=1, prune_rule="min_rings", train_size=0.5, test_size=0.5, random_state=0,
+    )
+    result = sp.split_result(MIXED_SMILES)[0]
+    assert result.n_records == len(MIXED_SMILES)
+
+
+def test_scaffold_tree_level_above_zero_scaffold_tree_rule():
+    sp = ScaffoldTreeSplitter(
+        level=1, prune_rule="scaffold_tree", train_size=0.5, test_size=0.5, random_state=0,
+    )
+    result = sp.split_result(MIXED_SMILES)[0]
+    assert result.n_records == len(MIXED_SMILES)
+
+
+def test_scaffold_tree_max_rings_validation():
+    with pytest.raises(ParameterError):
+        ScaffoldTreeSplitter(max_rings=0)
+    with pytest.raises(ParameterError):
+        ScaffoldTreeSplitter(prune_rule="bogus")
+    with pytest.raises(ParameterError):
+        ScaffoldTreeSplitter(level=99, max_rings=5)
+
+
+def test_ring_system_csk_key_mode():
+    sp = RingSystemSplitter(key="csk", train_size=0.5, test_size=0.5, random_state=0)
+    result = sp.split_result(MIXED_SMILES)[0]
+    assert result.n_records == len(MIXED_SMILES)
+
+
+def test_ring_system_ring_size_profile_key_mode():
+    sp = RingSystemSplitter(key="ring_size_profile", train_size=0.5, test_size=0.5, random_state=0)
+    result = sp.split_result(MIXED_SMILES)[0]
+    assert result.n_records == len(MIXED_SMILES)
+
+
+def test_ring_system_invalid_key_and_linkage():
+    with pytest.raises(ParameterError):
+        RingSystemSplitter(key="bogus")
+    with pytest.raises(ParameterError):
+        RingSystemSplitter(linkage="bogus")
+
+
+def test_ring_system_any_shared_own_group_empty_ring_singletons():
+    # Two acyclic molecules (empty ring-key sets) with any_shared linkage + own_group policy: each
+    # must become its own singleton group, exercising the empty-ring-set "next_singleton" path.
+    sp = RingSystemSplitter(
+        linkage="any_shared", on_empty_scaffold="own_group",
+        train_size=0.6, test_size=0.4, random_state=0,
+    )
+    result = sp.split_result(ACYCLIC + BENZENE_FAMILY)[0]
+    assert result.n_records == len(ACYCLIC) + len(BENZENE_FAMILY)
+
+
+def test_ring_system_degenerate_cluster_warning_and_error():
+    # 100% sharing one ring system -> DegenerateGroupingError (>95%).
+    all_benzene = [f"c1ccccc1{'C' * i}" for i in range(1, 21)]
+    sp_err = RingSystemSplitter(linkage="any_shared", train_size=0.5, test_size=0.5, random_state=0)
+    with pytest.raises(DegenerateGroupingError):
+        sp_err.split_result(all_benzene)
+
+    # 70% sharing one ring system (7 benzene-linked + 3 pyridine-linked) -> DegenerateClusterWarning
+    # (>60%, <=95%), not an error.
+    mixed = [f"c1ccccc1{'C' * i}" for i in range(1, 8)] + [f"c1ccncc1{'C' * i}" for i in range(1, 4)]
+    sp_warn = RingSystemSplitter(linkage="any_shared", train_size=0.5, test_size=0.5, random_state=0)
+    with pytest.warns(Warning):
+        sp_warn.split_result(mixed)
+
+
+def test_matched_molecular_series_max_pairs_exceeded_raises():
+    from chemsplit.exceptions import ScalabilityError
+
+    series = [f"c1ccccc1{'C' * i}" for i in range(2, 12)]  # one big homologous series
+    sp = MatchedMolecularSeriesSplitter(max_pairs=2, min_series_size=2)
+    with pytest.raises(ScalabilityError):
+        sp.split_result(series)
+
+
+def test_matched_molecular_series_discard_boundary_removes_boundary_records():
+    sp = MatchedMolecularSeriesSplitter(
+        enforce="discard_boundary", min_series_size=2,
+        train_size=0.5, test_size=0.5, random_state=0,
+    )
+    result = sp.split_result(BENZENE_FAMILY + PYRIDINE_FAMILY)[0]
+    assert "boundary_discarded" in result.metadata
+
+
+def test_matched_molecular_series_invalid_params():
+    with pytest.raises(ParameterError):
+        MatchedMolecularSeriesSplitter(max_cuts=0)
+    with pytest.raises(ParameterError):
+        MatchedMolecularSeriesSplitter(min_series_size=1)
+    with pytest.raises(ParameterError):
+        MatchedMolecularSeriesSplitter(enforce="bogus")
+    with pytest.raises(ParameterError):
+        MatchedMolecularSeriesSplitter(max_pairs=0)
+
+
+def test_activity_cliff_similarity_scaffold_mode():
+    smiles = ["c1ccccc1C", "c1ccccc1CC", "CCCCCCCCCCCC", "CCCCCCCCCCCCC"]
+    y = np.array([1.0, 5.0, 1.0, 1.05])
+    sp = ActivityCliffSplitter(
+        similarity="scaffold", fold_change_threshold=10.0, y_scale="log",
+        train_size=0.5, test_size=0.5, random_state=0,
+    )
+    result = sp.split_result(smiles, y=y)[0]
+    assert result.n_records == len(smiles)
+
+
+def test_activity_cliff_similarity_mmp_mode():
+    smiles = ["c1ccccc1C", "c1ccccc1CC", "CCCCCCCCCCCC", "CCCCCCCCCCCCC"]
+    y = np.array([1.0, 5.0, 1.0, 1.05])
+    sp = ActivityCliffSplitter(
+        similarity="mmp", fold_change_threshold=10.0, y_scale="log",
+        train_size=0.5, test_size=0.5, random_state=0,
+    )
+    result = sp.split_result(smiles, y=y)[0]
+    assert result.n_records == len(smiles)
+
+
+def test_activity_cliff_similarity_substructure_mode():
+    smiles = ["c1ccccc1C", "c1ccccc1CC", "CCCCCCCCCCCC", "CCCCCCCCCCCCC"]
+    y = np.array([1.0, 5.0, 1.0, 1.05])
+    sp = ActivityCliffSplitter(
+        similarity="substructure", fold_change_threshold=10.0, y_scale="log",
+        train_size=0.5, test_size=0.5, random_state=0,
+    )
+    result = sp.split_result(smiles, y=y)[0]
+    assert result.n_records == len(smiles)
+
+
+def test_activity_cliff_linear_y_scale():
+    smiles = ["c1ccccc1C", "c1ccccc1CC", "CCCCCCCCCCCC", "CCCCCCCCCCCCC"]
+    y = np.array([1.0, 20.0, 1.0, 1.05])
+    sp = ActivityCliffSplitter(
+        y_scale="linear", fold_change_threshold=5.0, similarity_threshold=0.3,
+        train_size=0.5, test_size=0.5, random_state=0,
+    )
+    result = sp.split_result(smiles, y=y)[0]
+    assert result.n_records == len(smiles)
+
+
+def test_activity_cliff_balanced_target():
+    smiles = ["c1ccccc1C", "c1ccccc1CC", "c1ccccc1CCC", "c1ccccc1CCCC",
+              "CCCCCCCCCCCC", "CCCCCCCCCCCCC"]
+    y = np.array([1.0, 5.0, 1.0, 5.0, 1.0, 1.02])
+    sp = ActivityCliffSplitter(
+        cliff_target="balanced", fold_change_threshold=10.0, y_scale="log",
+        similarity_threshold=0.3, train_size=0.5, test_size=0.5, random_state=0,
+    )
+    result = sp.split_result(smiles, y=y)[0]
+    assert result.n_records == len(smiles)
+
+
+def test_activity_cliff_keep_partners_together_false():
+    smiles = ["c1ccccc1C", "c1ccccc1CC", "CCCCCCCCCCCC", "CCCCCCCCCCCCC"]
+    y = np.array([1.0, 5.0, 1.0, 1.05])
+    sp = ActivityCliffSplitter(
+        keep_cliff_partners_together=False, fold_change_threshold=10.0, y_scale="log",
+        similarity_threshold=0.3, train_size=0.5, test_size=0.5, random_state=0,
+    )
+    result = sp.split_result(smiles, y=y)[0]
+    assert result.n_records == len(smiles)
+
+
+def test_activity_cliff_substructure_scalability_guard():
+    from chemsplit.exceptions import ScalabilityError
+
+    smiles = ["CCCC"] * 2
+    y = np.array([1.0, 5.0])
+    sp = ActivityCliffSplitter(similarity="substructure", allow_slow=False)
+    # Force n past the guard by monkeypatching ctx.n indirectly is awkward; instead verify the
+    # guard constant is respected by directly calling the internal helper on a large synthetic n.
+    from chemsplit.splitters.scaffold import ActivityCliffSplitter as ACS
+
+    class _FakeCtx:
+        n = 5001
+        mols = None
+
+    inst = ACS(similarity="substructure", allow_slow=False)
+    with pytest.raises(ScalabilityError):
+        inst._candidate_pairs(_FakeCtx(), [None] * 5001)

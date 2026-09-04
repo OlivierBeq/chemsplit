@@ -237,3 +237,235 @@ class TestBalancedMultiTaskSplitter:
         r2 = s2.split_result(smiles, y=y)[0]
         assert list(r1.train) == list(r2.train)
         assert list(r1.test) == list(r2.test)
+
+
+# --------------------------------------------------------------------------- coverage additions
+
+
+class TestSimilarityThresholdSplitterStrategies:
+    def test_greedy_prune_strategy(self):
+        splitter = SimilarityThresholdSplitter(
+            threshold=0.3, strategy="greedy_prune", train_size=0.5, test_size=0.5,
+            allow_discard=True, random_state=0,
+        )
+        result = splitter.split_result(SMILES_20)[0]
+        assert result.n_records == 20
+
+    def test_greedy_prune_disallow_discard_raises_when_needed(self):
+        splitter = SimilarityThresholdSplitter(
+            threshold=0.01, strategy="greedy_prune", train_size=0.5, test_size=0.5,
+            allow_discard=False, max_discard_frac=0.0, random_state=0,
+        )
+        with pytest.raises(ConstraintUnsatisfiableError):
+            splitter.split_result(SMILES_20)
+
+    @pytest.mark.parametrize("seed_selection", ["random", "most_central", "most_peripheral"])
+    def test_seeded_growth_strategy(self, seed_selection):
+        splitter = SimilarityThresholdSplitter(
+            threshold=0.3, strategy="seeded_growth", seed_selection=seed_selection,
+            train_size=0.5, test_size=0.5, random_state=0,
+        )
+        result = splitter.split_result(SMILES_20)[0]
+        assert result.n_records == 20
+
+    def test_max_discard_frac_validation(self):
+        with pytest.raises(ParameterError):
+            SimilarityThresholdSplitter(max_discard_frac=1.5)
+
+
+class TestButinaSplitterSingletonPolicies:
+    def test_nearest_cluster_singleton_policy(self):
+        splitter = ButinaSplitter(
+            cutoff=0.15, singleton_policy="nearest_cluster", train_size=0.5, test_size=0.5, random_state=0,
+        )
+        groups = splitter.compute_groups(SMILES_20)
+        assert groups.shape[0] == 20
+
+    def test_shared_group_singleton_policy(self):
+        splitter = ButinaSplitter(
+            cutoff=0.15, singleton_policy="shared_group", train_size=0.5, test_size=0.5, random_state=0,
+        )
+        groups = splitter.compute_groups(SMILES_20)
+        assert groups.shape[0] == 20
+
+    def test_nearest_cluster_falls_back_when_no_non_singleton(self):
+        # All-singleton case: nearest_cluster's fallback-to-own_group warning fires, and the
+        # splitter then still (correctly) raises DegenerateGroupingError since every record ends
+        # up its own group -- both are exercised together here.
+        features = np.eye(10, dtype=np.uint8)
+        splitter = ButinaSplitter(
+            cutoff=0.5, singleton_policy="nearest_cluster", train_size=0.5, test_size=0.5, random_state=0,
+        )
+        with pytest.warns(Warning), pytest.raises(DegenerateGroupingError):
+            splitter.compute_groups(features)
+
+    def test_reorder_true(self):
+        splitter = ButinaSplitter(cutoff=0.4, reorder=True, train_size=0.5, test_size=0.5, random_state=0)
+        groups = splitter.compute_groups(SMILES_20)
+        assert groups.shape[0] == 20
+
+    def test_sparse_algorithm(self):
+        splitter = ButinaSplitter(cutoff=0.4, algorithm="sparse", train_size=0.5, test_size=0.5, random_state=0)
+        groups = splitter.compute_groups(SMILES_20)
+        assert groups.shape[0] == 20
+
+    def test_invalid_cutoff_is_and_singleton_policy(self):
+        with pytest.raises(ParameterError):
+            ButinaSplitter(cutoff_is="bogus")
+        with pytest.raises(ParameterError):
+            ButinaSplitter(singleton_policy="bogus")
+
+
+class TestKMeansClusterSplitterMore:
+    def test_minibatch_kmeans_algorithm(self):
+        splitter = KMeansClusterSplitter(
+            n_clusters=2, algorithm="minibatch_kmeans", train_size=0.5, test_size=0.5, random_state=0,
+        )
+        groups = splitter.compute_groups(SMILES_20)
+        assert len(set(groups.tolist())) >= 1
+
+    def test_birch_algorithm(self):
+        splitter = KMeansClusterSplitter(n_clusters=2, algorithm="birch", train_size=0.5, test_size=0.5, random_state=0)
+        groups = splitter.compute_groups(SMILES_20)
+        assert len(set(groups.tolist())) >= 1
+
+    def test_agglomerative_ward_euclidean(self):
+        splitter = KMeansClusterSplitter(
+            n_clusters=2, algorithm="agglomerative", linkage="ward", metric="euclidean",
+            train_size=0.5, test_size=0.5, random_state=0,
+        )
+        groups = splitter.compute_groups(SMILES_20)
+        assert len(set(groups.tolist())) >= 1
+
+    def test_auto_n_clusters_n_over_50(self):
+        splitter = KMeansClusterSplitter(n_clusters="auto", auto_rule="n_over_50", train_size=0.5, test_size=0.5, random_state=0)
+        groups = splitter.compute_groups(SMILES_20)
+        assert groups.shape[0] == 20
+
+    def test_auto_n_clusters_silhouette(self):
+        splitter = KMeansClusterSplitter(
+            n_clusters="auto", auto_rule="silhouette", auto_range=(2, 4),
+            train_size=0.5, test_size=0.5, random_state=0,
+        )
+        groups = splitter.compute_groups(SMILES_20)
+        assert groups.shape[0] == 20
+
+
+class TestDensityClusterSplitterNoisePolicies:
+    def test_noise_policy_test_forces_noise_into_test(self):
+        smiles = ["CCCCCC", "CCCCCCC", "CCCCCCCC", "CCCCCCCCC", "CCCCCCCCCC", "c1ccccc1N"]
+        splitter = DensityClusterSplitter(
+            eps=0.15, min_samples=2, noise_policy="test", train_size=0.5, test_size=0.5, random_state=0,
+        )
+        result = splitter.split_result(smiles)[0]
+        assert 5 in result.test.tolist()
+        assert 5 not in result.train.tolist()
+
+    def test_noise_policy_train_forces_noise_into_train(self):
+        smiles = ["CCCCCC", "CCCCCCC", "CCCCCCCC", "CCCCCCCCC", "CCCCCCCCCC", "c1ccccc1N"]
+        splitter = DensityClusterSplitter(
+            eps=0.15, min_samples=2, noise_policy="train", train_size=0.5, test_size=0.5, random_state=0,
+        )
+        result = splitter.split_result(smiles)[0]
+        assert 5 in result.train.tolist()
+        assert 5 not in result.test.tolist()
+
+    def test_noise_policy_discard(self):
+        smiles = ["CCCCCC", "CCCCCCC", "CCCCCCCC", "CCCCCCCCC", "CCCCCCCCCC", "c1ccccc1N"]
+        splitter = DensityClusterSplitter(
+            eps=0.15, min_samples=2, noise_policy="discard", train_size=0.5, test_size=0.5, random_state=0,
+        )
+        result = splitter.split_result(smiles)[0]
+        assert 5 in result.discard.tolist()
+
+    def test_noise_policy_distribute(self):
+        smiles = ["CCCCCC", "CCCCCCC", "CCCCCCCC", "CCCCCCCCC", "CCCCCCCCCC", "c1ccccc1N"]
+        splitter = DensityClusterSplitter(
+            eps=0.15, min_samples=2, noise_policy="distribute", train_size=0.5, test_size=0.5, random_state=0,
+        )
+        result = splitter.split_result(smiles)[0]
+        assert result.n_records == 6
+
+    def test_hdbscan_algorithm(self):
+        splitter = DensityClusterSplitter(
+            algorithm="hdbscan", min_cluster_size=2, train_size=0.5, test_size=0.5, random_state=0,
+        )
+        groups = splitter.compute_groups(SMILES_20)
+        assert groups.shape[0] == 20
+
+    def test_all_noise_raises(self):
+        features = np.eye(10, dtype=np.uint8) * 255
+        splitter = DensityClusterSplitter(eps=1e-9, min_samples=5, noise_policy="own_groups", random_state=0)
+        with pytest.raises((DegenerateGroupingError, ConstraintUnsatisfiableError)):
+            splitter.compute_groups(features)
+
+
+class TestSpectralSplitterMore:
+    def test_threshold_graph(self):
+        splitter = SpectralSplitter(n_clusters=2, graph="threshold", threshold=0.2, train_size=0.5, test_size=0.5, random_state=0)
+        groups = splitter.compute_groups(SMILES_20)
+        assert len(set(groups.tolist())) >= 1
+
+    def test_full_graph(self):
+        splitter = SpectralSplitter(n_clusters=2, graph="full", train_size=0.5, test_size=0.5, random_state=0)
+        groups = splitter.compute_groups(SMILES_20)
+        assert len(set(groups.tolist())) >= 1
+
+    def test_rw_laplacian(self):
+        splitter = SpectralSplitter(n_clusters=2, laplacian="rw", knn_k=5, train_size=0.5, test_size=0.5, random_state=0)
+        groups = splitter.compute_groups(SMILES_20)
+        assert len(set(groups.tolist())) >= 1
+
+    def test_unnormalized_laplacian_does_not_drop_first(self):
+        splitter = SpectralSplitter(
+            n_clusters=2, laplacian="unnormalized", drop_first=False, knn_k=5,
+            train_size=0.5, test_size=0.5, random_state=0,
+        )
+        groups = splitter.compute_groups(SMILES_20)
+        assert len(set(groups.tolist())) >= 1
+
+    def test_discretize_assign(self):
+        splitter = SpectralSplitter(n_clusters=2, assign="discretize", knn_k=5, train_size=0.5, test_size=0.5, random_state=0)
+        groups = splitter.compute_groups(SMILES_20)
+        assert len(set(groups.tolist())) >= 1
+
+
+class TestLeaveOneClusterOutSplitterMore:
+    def test_own_fold_small_cluster_policy(self):
+        splitter = LeaveOneClusterOutSplitter(
+            clusterer=ButinaSplitter(cutoff=0.15, random_state=0),
+            small_cluster_policy="own_fold", max_folds=None,
+        )
+        results = splitter.split_result(SMILES_20)
+        assert len(results) >= 1
+
+    def test_pool_small_cluster_policy(self):
+        splitter = LeaveOneClusterOutSplitter(
+            clusterer=ButinaSplitter(cutoff=0.15, random_state=0),
+            small_cluster_policy="pool", max_folds=None,
+        )
+        results = splitter.split_result(SMILES_20)
+        assert len(results) >= 1
+
+    def test_fold_order_size_asc_and_index(self):
+        for order in ("size_asc", "index"):
+            splitter = LeaveOneClusterOutSplitter(
+                clusterer=ButinaSplitter(cutoff=0.15, random_state=0),
+                fold_order=order, max_folds=None,
+            )
+            results = splitter.split_result(SMILES_20)
+            assert len(results) >= 1
+
+    def test_get_n_splits_with_x(self):
+        splitter = LeaveOneClusterOutSplitter(
+            clusterer=ButinaSplitter(cutoff=0.15, random_state=0), max_folds=None,
+        )
+        n = splitter.get_n_splits(SMILES_20)
+        assert n == len(splitter.split_result(SMILES_20))
+
+    def test_max_folds_caps_fold_count(self):
+        splitter = LeaveOneClusterOutSplitter(
+            clusterer=ButinaSplitter(cutoff=0.15, random_state=0), max_folds=1,
+        )
+        results = splitter.split_result(SMILES_20)
+        assert len(results) == 1

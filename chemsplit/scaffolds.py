@@ -148,7 +148,13 @@ SENTINEL_TOO_COMPLEX = "\x00TOO_COMPLEX\x00"
 
 
 def _ring_count(mol: "Chem.rdchem.Mol") -> int:
-    return mol.GetRingInfo().NumRings()
+    try:
+        return mol.GetRingInfo().NumRings()
+    except RuntimeError:
+        # scaffound's submols aren't always sanitized enough to have ring info precomputed
+        # (RDKit's "RingInfo not initialized" precondition); GetSSSR() computes and caches it.
+        Chem.GetSSSR(mol)
+        return mol.GetRingInfo().NumRings()
 
 
 def _ring_clusters(mol: "Chem.rdchem.Mol") -> list[tuple[frozenset, tuple]]:
