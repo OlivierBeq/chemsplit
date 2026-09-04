@@ -6,6 +6,8 @@ from __future__ import annotations
 import subprocess
 import sys
 
+import pytest
+
 
 def _run(code: str) -> str:
     result = subprocess.run(
@@ -51,3 +53,19 @@ def test_dir_matches_all():
     import chemsplit
 
     assert sorted(dir(chemsplit)) == sorted(set(chemsplit.__all__))
+
+
+def test_unknown_attribute_raises_attribute_error():
+    import chemsplit
+
+    with pytest.raises(AttributeError, match="not_a_real_name"):
+        chemsplit.not_a_real_name
+
+
+def test_lazy_attribute_resolves_and_caches():
+    import chemsplit
+
+    cls1 = chemsplit.ButinaSplitter
+    cls2 = chemsplit.ButinaSplitter
+    assert cls1 is cls2
+    assert cls1.__name__ == "ButinaSplitter"
