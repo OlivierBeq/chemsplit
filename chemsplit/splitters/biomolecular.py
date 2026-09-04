@@ -535,7 +535,10 @@ class ComplexJointSplitter(BaseSplitter):
 
     def _sequence_labels(self, ctx: Any) -> IndexArray:
         if self.sequence_grouper is not None:
-            return self.sequence_grouper.compute_groups(ctx.sequences)
+            # Without X_kind="sequences", a bare list[str] defaults to being interpreted as
+            # SMILES -- protein sequences would otherwise
+            # fail to parse as molecules.
+            return self.sequence_grouper.compute_groups(ctx.sequences, X_kind="sequences")
         if ctx.sequences is None:
             raise ParameterError("ComplexJointSplitter needs ctx.sequences to derive a default sequence grouping")
         use_parasail = True

@@ -240,3 +240,114 @@ def test_complex_joint_deterministic():
 def test_complex_joint_invalid_mode():
     with pytest.raises(ParameterError):
         ComplexJointSplitter(mode="bogus", random_state=0)
+
+
+# --------------------------------------------------------------------------- coverage additions
+
+
+def test_sequence_identity_param_validation():
+    with pytest.raises(ParameterError):
+        SequenceIdentitySplitter(identity_threshold=1.5)
+    with pytest.raises(ParameterError):
+        SequenceIdentitySplitter(algorithm="bogus")
+
+
+def test_sequence_identity_hamming_algorithm_explicit():
+    seqs = make_sequences(n=20, families=4, identity_within=0.9, seed=0).sequences
+    sp = SequenceIdentitySplitter(algorithm="hamming", train_size=0.5, test_size=0.5, random_state=0)
+    result = sp.split_result(seqs, X_kind="sequences")[0]
+    assert result.n_records == 20
+
+
+def test_sequence_identity_degenerate_error_and_warning():
+    from chemsplit.exceptions import DegenerateGroupingError
+
+    seqs = ["MKV" + "A" * 30] * 20
+    sp_err = SequenceIdentitySplitter(identity_threshold=0.5, train_size=0.5, test_size=0.5, random_state=0)
+    with pytest.raises(DegenerateGroupingError):
+        sp_err.split_result(seqs, X_kind="sequences")
+
+
+def test_protein_family_wrong_length_raises():
+    F = np.random.default_rng(0).standard_normal((20, 4))
+    sp = ProteinFamilySplitter(family_labels=["a", "b"], train_size=0.5, test_size=0.5)
+    with pytest.raises(ParameterError):
+        sp.split_result(F, X_kind="features")
+
+
+# --------------------------------------------------------------------------- BindingSiteSplitter
+
+
+def test_binding_site_invalid_representation_and_cutoff():
+    with pytest.raises(ParameterError):
+        BindingSiteSplitter(representation="bogus")
+    with pytest.raises(ParameterError):
+        BindingSiteSplitter(cutoff=1.5)
+
+
+def test_binding_site_pocket_sequence_requires_sequences():
+    from chemsplit.exceptions import LabelError as LE
+
+    sp = BindingSiteSplitter(representation="pocket_sequence", train_size=0.5, test_size=0.5)
+    with pytest.raises(LE):
+        sp.split_result(np.random.default_rng(0).standard_normal((10, 4)), X_kind="features")
+
+
+def test_binding_site_degenerate_error_and_warning():
+    from chemsplit.exceptions import DegenerateGroupingError
+
+    F = np.zeros((20, 4))
+    sp_err = BindingSiteSplitter(cutoff=0.99, train_size=0.5, test_size=0.5, random_state=0)
+    with pytest.raises(DegenerateGroupingError):
+        sp_err.split_result(F, X_kind="features")
+
+
+# --------------------------------------------------------------------------- DepositionDateSplitter
+
+
+def test_deposition_date_requires_cut_date():
+    fx = make_dated_series(n=40, seed=0)
+    sp = DepositionDateSplitter()
+    with pytest.raises(ParameterError):
+        sp.split_result(fx.smiles, dates=fx.dates)
+
+
+def test_deposition_date_sequence_identity_pruning():
+    fx = make_dated_series(n=40, seed=0)
+    seqs = make_sequences(n=40, families=4, identity_within=0.95, seed=0).sequences
+    cut = str(np.sort(fx.dates)[20])
+    sp = DepositionDateSplitter(cut_date=cut, sequence_identity_ceiling=0.3)
+    result = sp.split_result(fx.smiles, dates=fx.dates, sequences=seqs)[0]
+    assert result.n_records == 40
+
+
+# --------------------------------------------------------------------------- ComplexJointSplitter
+
+
+def test_complex_joint_explicit_groupers():
+    from chemsplit.splitters.similarity import ButinaSplitter
+
+    fx = make_scaffold_families(n_scaffolds=10, per_scaffold=10, seed=0)
+    seqs = make_sequences(n=100, families=10, identity_within=0.9, seed=0).sequences
+    sp = ComplexJointSplitter(
+        ligand_grouper=ButinaSplitter(cutoff=0.4, random_state=0),
+        sequence_grouper=SequenceIdentitySplitter(identity_threshold=0.6, random_state=0),
+        random_state=0, train_size=0.8, test_size=0.2,
+    )
+    result = sp.split_result(fx.smiles, sequences=seqs)[0]
+    assert result.n_records == 100
+
+
+def test_complex_joint_no_mols_raises():
+    seqs = make_sequences(n=20, families=4, identity_within=0.9, seed=0).sequences
+    F = np.random.default_rng(0).standard_normal((20, 4))
+    sp = ComplexJointSplitter(random_state=0, train_size=0.5, test_size=0.5)
+    with pytest.raises(ParameterError):
+        sp.split_result(F, X_kind="features", sequences=seqs)
+
+
+def test_complex_joint_no_sequences_raises():
+    fx = make_scaffold_families(n_scaffolds=5, per_scaffold=4, seed=0)
+    sp = ComplexJointSplitter(random_state=0, train_size=0.5, test_size=0.5)
+    with pytest.raises(ParameterError):
+        sp.split_result(fx.smiles)
