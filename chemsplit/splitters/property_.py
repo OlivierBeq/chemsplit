@@ -8,12 +8,12 @@ directly.
 from __future__ import annotations
 
 import math
-from typing import Any, Callable, Literal, Sequence
+from typing import Any, Callable, ClassVar, Literal, Sequence
 
 import numpy as np
 
 from chemsplit._fp_similarity import SimilarityParamsMixin, compute_similarity_matrix
-from chemsplit.base import BaseSplitter, SplitResult, _Context
+from chemsplit.base import BaseSplitter, SplitResult, Strictness, _Context
 from chemsplit.determinism import argmin_tiebreak, seed_for, stable_sort
 from chemsplit.exceptions import ConfigurationError, ConstraintUnsatisfiableError, InputError, LabelError, ParameterError
 
@@ -271,12 +271,18 @@ class PropertySplitter(BaseSplitter):
 
     splitter_id = "property"
     family = "property"
-    strictness = "strict"
+    strictness: ClassVar[Strictness] = Strictness.STRICT
     group_forming = False
     requires_labels = False
     accepts = ("smiles", "mol", "features")
     extras: tuple[str,...] = ()
     deterministic_method = True
+    # Conservative class-level default: True only when tie_policy != "random", which is an
+    # instance-level (constructor-parameter-dependent) fact, not a class-level one -- ClassVar
+    # metadata cannot express "depends on how this instance was constructed" (a prior @property
+    # implementation here returned a bool per-instance, which broke class-level introspection
+    # like registry.list_splitters() reading cls.deterministic_without_seed without an instance).
+    deterministic_without_seed = False
     order_invariant = False
 
     def __init__(
@@ -297,10 +303,6 @@ class PropertySplitter(BaseSplitter):
             raise ParameterError(f"invalid direction {direction!r}")
         if tie_policy not in ("by_index", "random", "keep_together"):
             raise ParameterError(f"invalid tie_policy {tie_policy!r}")
-
-    @property
-    def deterministic_without_seed(self) -> bool:  # type: ignore[override]
-        return self.tie_policy != "random"
 
     def _partition(self, ctx: _Context) -> list[SplitResult]:
         v = _resolve_descriptor_values(ctx, self.property, self.property_values)
@@ -379,12 +381,15 @@ class LabelExtrapolationSplitter(BaseSplitter):
 
     splitter_id = "label_extrapolation"
     family = "property"
-    strictness = "extrapolative"
+    strictness: ClassVar[Strictness] = Strictness.EXTRAPOLATIVE
     group_forming = False
     requires_labels = True
     accepts = ("smiles", "mol", "features", "interactions", "sequences")
     extras: tuple[str,...] = ()
     deterministic_method = True
+    # See PropertySplitter's identical note above: conservative class-level default, since the
+    # real answer depends on the instance's tie_policy.
+    deterministic_without_seed = False
     order_invariant = False
 
     def __init__(
@@ -403,10 +408,6 @@ class LabelExtrapolationSplitter(BaseSplitter):
         self.tie_policy = tie_policy
         if direction not in ("high_test", "low_test", "extremes_test"):
             raise ParameterError(f"invalid direction {direction!r}")
-
-    @property
-    def deterministic_without_seed(self) -> bool:  # type: ignore[override]
-        return self.tie_policy != "random"
 
     def _check_preconditions(self, ctx: _Context) -> None:
         y = np.asarray(ctx.y)
@@ -511,7 +512,7 @@ class StratifiedDistributionSplitter(BaseSplitter):
 
     splitter_id = "stratified_distribution"
     family = "property"
-    strictness = "optimistic"
+    strictness: ClassVar[Strictness] = Strictness.OPTIMISTIC
     group_forming = False
     requires_labels = True
     accepts = ("smiles", "mol", "features", "interactions", "sequences")
@@ -729,7 +730,7 @@ class MOODSplitter(SimilarityParamsMixin, BaseSplitter):
 
     splitter_id = "mood"
     family = "property"
-    strictness = "strict"
+    strictness: ClassVar[Strictness] = Strictness.STRICT
     group_forming = False
     requires_labels = False
     accepts = ("smiles", "mol", "features")
@@ -870,7 +871,7 @@ class AdversarialSplitter(SimilarityParamsMixin, BaseSplitter):
 
     splitter_id = "adversarial"
     family = "property"
-    strictness = "strict"
+    strictness: ClassVar[Strictness] = Strictness.STRICT
     group_forming = False
     requires_labels = False
     accepts = ("smiles", "mol", "features")
