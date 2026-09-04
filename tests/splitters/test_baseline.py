@@ -285,3 +285,194 @@ def test_predefined_fold_column():
     fold0 = results[0]
     assert fold0.test.tolist() == [0, 1]
     assert set(fold0.train.tolist()) == {2, 3, 4, 5}
+
+
+# --------------------------------------------------------------------------- coverage additions
+
+
+def test_stratified_multitask_first():
+    X = _X(40)
+    y = np.column_stack([np.arange(40) % 4, np.arange(40) % 2])
+    sp = StratifiedRandomSplitter(multitask="first", train_size=0.7, test_size=0.3, random_state=0)
+    result = sp.split_result(X, y)[0]
+    assert result.n_records == 40
+
+
+def test_stratified_multitask_iterative():
+    X = _X(40)
+    y = np.column_stack([np.arange(40) % 4, np.arange(40) % 2]).astype(np.float64)
+    sp = StratifiedRandomSplitter(multitask="iterative", train_size=0.7, test_size=0.3, random_state=0)
+    result = sp.split_result(X, y)[0]
+    assert result.n_records == 40
+
+
+def test_stratified_multitask_invalid():
+    with pytest.raises(ParameterError):
+        StratifiedRandomSplitter(multitask="bogus")
+
+
+def test_stratified_y_with_inf_raises():
+    X = _X(10)
+    y = np.array([1.0, 2.0, float("inf"), 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0])
+    sp = StratifiedRandomSplitter(train_size=0.7, test_size=0.3, random_state=0)
+    with pytest.raises(LabelError):
+        sp.split_result(X, y)
+
+
+def test_stratified_regression_uniform_binning():
+    X = _X(50)
+    y = np.random.default_rng(0).standard_normal(50)
+    sp = StratifiedRandomSplitter(binning="uniform", train_size=0.7, test_size=0.3, random_state=0)
+    result = sp.split_result(X, y)[0]
+    assert result.n_records == 50
+
+
+def test_stratified_regression_kmeans_binning():
+    X = _X(50)
+    y = np.random.default_rng(0).standard_normal(50)
+    sp = StratifiedRandomSplitter(binning="kmeans", n_bins=4, train_size=0.7, test_size=0.3, random_state=0)
+    result = sp.split_result(X, y)[0]
+    assert result.n_records == 50
+
+
+def test_stratified_binning_invalid():
+    with pytest.raises(ParameterError):
+        StratifiedRandomSplitter(binning="bogus")
+
+
+def test_stratified_on_small_stratum_raise():
+    X = _X(10)
+    y = np.array([0, 0, 0, 0, 0, 0, 0, 0, 0, 1])  # class 1 has only 1 member
+    sp = StratifiedRandomSplitter(on_small_stratum="raise", train_size=0.7, test_size=0.3, random_state=0)
+    with pytest.raises(LabelError):
+        sp.split_result(X, y)
+
+
+def test_stratified_on_small_stratum_ignore():
+    X = _X(10)
+    y = np.array([0, 0, 0, 0, 0, 0, 0, 0, 0, 1])
+    sp = StratifiedRandomSplitter(on_small_stratum="ignore", train_size=0.7, test_size=0.3, random_state=0)
+    result = sp.split_result(X, y)[0]
+    assert result.n_records == 10
+
+
+def test_stratified_on_small_stratum_invalid():
+    with pytest.raises(ParameterError):
+        StratifiedRandomSplitter(on_small_stratum="bogus")
+
+
+def test_stratified_task_invalid():
+    with pytest.raises(ParameterError):
+        StratifiedRandomSplitter(task="bogus")
+
+
+def test_stratified_n_bins_and_min_per_stratum_validation():
+    with pytest.raises(ParameterError):
+        StratifiedRandomSplitter(n_bins=1)
+    with pytest.raises(ParameterError):
+        StratifiedRandomSplitter(min_per_stratum=0)
+
+
+# --------------------------------------------------------------------------- KFoldSplitter
+
+
+def test_kfold_stratified():
+    X = _X(40)
+    y = np.arange(40) % 4
+    sp = KFoldSplitter(n_splits=4, stratify=True, random_state=0)
+    results = sp.split_result(X, y)
+    assert len(results) == 4
+    for r in results:
+        assert r.train.size + r.test.size == 40
+
+
+def test_kfold_n_splits_type_validation():
+    with pytest.raises(ParameterError):
+        KFoldSplitter(n_splits="bogus")
+    with pytest.raises(ParameterError):
+        KFoldSplitter(n_splits=1)
+
+
+def test_kfold_shuffle_and_stratify_type_validation():
+    with pytest.raises(ParameterError):
+        KFoldSplitter(shuffle="yes")
+    with pytest.raises(ParameterError):
+        KFoldSplitter(stratify="yes")
+
+
+def test_kfold_stratify_kwargs_without_stratify_raises():
+    with pytest.raises(ParameterError):
+        KFoldSplitter(stratify=False, stratify_kwargs={"n_bins": 5})
+
+
+def test_kfold_get_n_splits_loo_without_x():
+    sp = KFoldSplitter(n_splits="loo")
+    assert sp.get_n_splits() == 1
+
+
+def test_kfold_get_n_splits_loo_with_x():
+    X = _X(15)
+    sp = KFoldSplitter(n_splits="loo")
+    assert sp.get_n_splits(X) == 15
+
+
+# --------------------------------------------------------------------------- MonteCarloSplitter
+
+
+def test_montecarlo_stratified():
+    X = _X(40)
+    y = np.arange(40) % 4
+    sp = MonteCarloSplitter(n_splits=3, stratify=True, train_size=0.7, test_size=0.3, random_state=0)
+    results = sp.split_result(X, y)
+    assert len(results) == 3
+
+
+def test_montecarlo_n_splits_validation():
+    with pytest.raises(ParameterError):
+        MonteCarloSplitter(n_splits=0)
+
+
+# --------------------------------------------------------------------------- PredefinedSplitter
+
+
+def test_predefined_mapping_index_assigned_twice_raises():
+    X = _X(5)
+    sp = PredefinedSplitter(assignment={"train": [0, 1, 2], "test": [2, 3]})
+    with pytest.raises(ParameterError):
+        sp.split_result(X)
+
+
+def test_predefined_mapping_unknown_partition_name_raises():
+    X = _X(5)
+    sp = PredefinedSplitter(assignment={"bogus": [0, 1]})
+    with pytest.raises(ParameterError):
+        sp.split_result(X)
+
+
+def test_predefined_sequence_wrong_length_raises():
+    X = _X(5)
+    sp = PredefinedSplitter(assignment=["train", "test"])
+    with pytest.raises(ParameterError):
+        sp.split_result(X)
+
+
+def test_predefined_fold_column_wrong_length_raises():
+    X = _X(5)
+    sp = PredefinedSplitter(fold_column=[0, 1])
+    with pytest.raises(ParameterError):
+        sp.split_result(X)
+
+
+def test_predefined_fold_column_no_nonnegative_ids_raises():
+    X = _X(5)
+    sp = PredefinedSplitter(fold_column=[-1, -1, -1, -1, -1])
+    with pytest.raises(ParameterError):
+        sp.split_result(X)
+
+
+def test_predefined_fold_column_empty_fold_raises():
+    X = _X(4)
+    sp = PredefinedSplitter(fold_column=[0, 0, 0, 0])
+    # every record has fold id 0 -> that fold's "test" is everything, "train" is empty
+    with pytest.raises(EmptyPartitionError):
+        sp.split_result(X)

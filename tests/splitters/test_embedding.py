@@ -203,3 +203,161 @@ def test_latent_space_splitter_non_finite_raises():
     )
     with pytest.raises(Exception):
         splitter.split_result(bad, X_kind="features")
+
+
+# --------------------------------------------------------------------------- coverage additions
+
+
+def test_umap_splitter_n_over_50_auto_rule(smiles_60):
+    splitter = UMAPClusterSplitter(
+        n_clusters="auto", auto_rule="n_over_50", train_size=0.7, test_size=0.3, random_state=0, n_neighbors=5,
+    )
+    [result] = splitter.split_result(smiles_60)
+    assert result.metadata["n_clusters"] >= 1
+
+
+def test_umap_splitter_silhouette_auto_rule(smiles_60):
+    splitter = UMAPClusterSplitter(
+        n_clusters="auto", auto_rule="silhouette", auto_range=(2, 4),
+        train_size=0.7, test_size=0.3, random_state=0, n_neighbors=5,
+    )
+    [result] = splitter.split_result(smiles_60)
+    assert result.metadata["n_clusters"] >= 1
+
+
+def test_umap_splitter_kmeans_algorithm(smiles_60):
+    splitter = UMAPClusterSplitter(
+        cluster_algorithm="kmeans", train_size=0.7, test_size=0.3, random_state=0, n_neighbors=5,
+    )
+    [result] = splitter.split_result(smiles_60)
+    assert result.metadata["n_clusters"] >= 1
+
+
+def test_umap_splitter_hdbscan_algorithm(smiles_60):
+    splitter = UMAPClusterSplitter(
+        cluster_algorithm="hdbscan", train_size=0.7, test_size=0.3, random_state=0, n_neighbors=5,
+    )
+    [result] = splitter.split_result(smiles_60)
+    assert result.metadata["n_clusters"] >= 1
+
+
+def test_umap_splitter_n_components_and_neighbors_validation():
+    with pytest.raises(ParameterError):
+        UMAPClusterSplitter(n_components=0)
+    with pytest.raises(ParameterError):
+        UMAPClusterSplitter(n_neighbors=1)
+    with pytest.raises(ParameterError):
+        UMAPClusterSplitter(min_dist=1.5)
+
+
+def test_cluster_count_mixin_validation():
+    with pytest.raises(ParameterError):
+        UMAPClusterSplitter(n_clusters=1)
+    with pytest.raises(ParameterError):
+        UMAPClusterSplitter(cluster_algorithm="bogus")
+    with pytest.raises(ParameterError):
+        UMAPClusterSplitter(auto_rule="bogus")
+    with pytest.raises(ParameterError):
+        UMAPClusterSplitter(auto_range=(5, 2))
+
+
+# --------------------------------------------------------------------------- ProjectionSplitter
+
+
+def test_projection_tsne_method(features_60):
+    splitter = ProjectionSplitter(
+        method="tsne", n_components=2, tsne_perplexity=5,
+        train_size=0.7, test_size=0.3, random_state=0,
+    )
+    [result] = splitter.split_result(features_60)
+    assert result.metadata["method"] == "tsne"
+    assert result.metadata["nondeterministic_method"] is True
+
+
+def test_projection_mds_method(features_60):
+    splitter = ProjectionSplitter(method="mds", n_components=2, train_size=0.7, test_size=0.3, random_state=0)
+    [result] = splitter.split_result(features_60)
+    assert result.metadata["method"] == "mds"
+
+
+def test_projection_kernel_pca_method(features_60):
+    splitter = ProjectionSplitter(method="kernel_pca", n_components=2, train_size=0.7, test_size=0.3, random_state=0)
+    [result] = splitter.split_result(features_60)
+    assert result.metadata["method"] == "kernel_pca"
+
+
+def test_projection_axis_cut_mode(features_60):
+    splitter = ProjectionSplitter(mode="axis_cut", n_components=2, train_size=0.6, test_size=0.4, random_state=0)
+    [result] = splitter.split_result(features_60)
+    assert result.n_records == 60
+
+
+def test_projection_axis_cut_mode_with_valid(features_60):
+    splitter = ProjectionSplitter(
+        mode="axis_cut", n_components=2, train_size=0.5, valid_size=0.2, test_size=0.3, random_state=0,
+    )
+    [result] = splitter.split_result(features_60)
+    assert result.valid.size > 0
+
+
+def test_projection_grid_mode(features_60):
+    splitter = ProjectionSplitter(mode="grid", n_components=2, grid_bins=3, train_size=0.6, test_size=0.4, random_state=0)
+    [result] = splitter.split_result(features_60)
+    assert result.n_records == 60
+
+
+def test_projection_invalid_mode_and_params():
+    with pytest.raises(ParameterError):
+        ProjectionSplitter(mode="bogus")
+    with pytest.raises(ParameterError):
+        ProjectionSplitter(n_components=0)
+    with pytest.raises(ParameterError):
+        ProjectionSplitter(grid_bins=1)
+
+
+def test_projection_n_components_too_large_raises(features_60):
+    splitter = ProjectionSplitter(n_components=59, train_size=0.7, test_size=0.3, random_state=0)
+    with pytest.raises(ParameterError):
+        splitter.split_result(features_60)
+
+
+def test_projection_tsne_perplexity_too_large_raises(features_60):
+    splitter = ProjectionSplitter(method="tsne", tsne_perplexity=50, train_size=0.7, test_size=0.3, random_state=0)
+    with pytest.raises(ParameterError):
+        splitter.split_result(features_60)
+
+
+# --------------------------------------------------------------------------- LatentSpaceSplitter
+
+
+def test_latent_space_splitter_zscore_normalize(features_60):
+    splitter = LatentSpaceSplitter(
+        normalize="zscore", train_size=0.7, test_size=0.3, random_state=0, independence_declared=True,
+    )
+    [result] = splitter.split_result(features_60, X_kind="features")
+    assert result.n_records == 60
+
+
+def test_latent_space_splitter_none_normalize(features_60):
+    splitter = LatentSpaceSplitter(
+        normalize="none", train_size=0.7, test_size=0.3, random_state=0, independence_declared=True,
+    )
+    [result] = splitter.split_result(features_60, X_kind="features")
+    assert result.n_records == 60
+
+
+def test_latent_space_splitter_default_embedding_uses_raw_features(features_60):
+    splitter = LatentSpaceSplitter(train_size=0.7, test_size=0.3, random_state=0, independence_declared=True)
+    [result] = splitter.split_result(features_60, X_kind="features")
+    assert result.n_records == 60
+
+
+def test_latent_space_splitter_invalid_normalize():
+    with pytest.raises(ParameterError):
+        LatentSpaceSplitter(normalize="bogus")
+
+
+def test_latent_space_splitter_circularity_warning_when_not_declared(features_60):
+    splitter = LatentSpaceSplitter(train_size=0.7, test_size=0.3, random_state=0, independence_declared=False)
+    with pytest.warns(CircularityWarning):
+        splitter.split_result(features_60, X_kind="features")
