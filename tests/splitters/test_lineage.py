@@ -239,3 +239,138 @@ def test_party_label_skew_requires_labels():
     sp = PartySplitter(synthesis="label_skew", n_parties=4, held_out_party=0, random_state=0)
     with pytest.raises(InputError):
         sp.split_result(fx.smiles)
+
+
+# --------------------------------------------------------------------------- coverage additions
+
+
+def test_temporal_tie_policy_discard():
+    fx = make_dated_series(n=100, seed=0)
+    dates = fx.extra["dates"] if hasattr(fx, "extra") and fx.extra else fx.dates
+    cut = np.sort(dates)[50]
+    sp = TemporalSplitter(cut_date=str(cut), tie_policy="discard", train_size=None, test_size=None, random_state=0)
+    result = sp.split_result(fx.smiles, dates=dates)[0]
+    assert result.n_records == 100
+
+
+def test_temporal_valid_size_auto_without_valid_cut_date():
+    fx = make_dated_series(n=100, seed=0)
+    dates = fx.dates if hasattr(fx, "dates") else fx.extra["dates"]
+    cut = np.sort(dates)[60]
+    sp = TemporalSplitter(cut_date=str(cut), valid_size=0.1, train_size=0.6, test_size=0.3, random_state=0)
+    result = sp.split_result(fx.smiles, dates=dates)[0]
+    assert result.valid.size > 0
+
+
+def test_simpd_explicit_clusterer_instance():
+    from chemsplit.splitters.similarity import ButinaSplitter
+
+    if not HAS_DEAP:
+        pytest.skip("deap not installed")
+    fx = make_scaffold_families(n_scaffolds=10, per_scaffold=20, seed=0)  # n=200
+    y = np.random.default_rng(0).standard_normal(len(fx.smiles))
+    sp = SIMPDSplitter(
+        cluster_for_g_sim=ButinaSplitter(cutoff=0.4, random_state=0),
+        population_size=6, n_generations=1,
+        train_size=0.7, test_size=0.3, random_state=0,
+    )
+    result = sp.split_result(fx.smiles, y=y)[0]
+    assert result.n_records == 200
+
+
+# --------------------------------------------------------------------------- SourceSplitter
+
+
+def test_source_col_not_implemented_raises():
+    sp = SourceSplitter(source_col="lab", train_size=0.5, test_size=0.5)
+    with pytest.raises(ParameterError):
+        sp.split_result(["CCCC", "CCCCC", "CCCCCC", "CCCCCCC"])
+
+
+def test_source_none_raises_input_error():
+    sp = SourceSplitter(train_size=0.5, test_size=0.5)
+    with pytest.raises(InputError):
+        sp.split_result(["CCCC", "CCCCC", "CCCCCC", "CCCCCCC"])
+
+
+def test_source_wrong_length_raises():
+    sp = SourceSplitter(source=["a", "b"], train_size=0.5, test_size=0.5)
+    with pytest.raises(InputError):
+        sp.split_result(["CCCC", "CCCCC", "CCCCCC", "CCCCCCC"])
+
+
+def test_source_small_source_policy_pool():
+    smiles = ["CCCC", "CCCCC", "CCCCCC", "CCCCCCC", "CCCCCCCC", "CCCCCCCCC"]
+    source = ["a", "a", "a", "b", "c", "d"]  # b/c/d are singletons
+    sp = SourceSplitter(
+        source=source, min_source_size=2, small_source_policy="pool",
+        train_size=0.5, test_size=0.5, random_state=0,
+    )
+    result = sp.split_result(smiles)[0]
+    assert result.n_records == 6
+
+
+def test_source_invalid_small_source_policy_and_min_size():
+    with pytest.raises(ParameterError):
+        SourceSplitter(small_source_policy="bogus")
+    with pytest.raises(ParameterError):
+        SourceSplitter(min_source_size=0)
+
+
+def test_source_degenerate_error_and_warning():
+    from chemsplit.exceptions import DegenerateGroupingError
+
+    smiles = ["CCCC"] * 20
+    source_all_same = ["lab_a"] * 20
+    sp_err = SourceSplitter(source=source_all_same, train_size=0.5, test_size=0.5, random_state=0)
+    with pytest.raises(DegenerateGroupingError):
+        sp_err.split_result(smiles)
+
+    source_mostly_same = ["lab_a"] * 14 + ["lab_b"] * 6
+    sp_warn = SourceSplitter(source=source_mostly_same, train_size=0.5, test_size=0.5, random_state=0)
+    with pytest.warns(Warning):
+        sp_warn.split_result(smiles)
+
+
+# --------------------------------------------------------------------------- PartySplitter
+
+
+def test_party_label_skew_success():
+    fx = make_scaffold_families(n_scaffolds=10, per_scaffold=20, seed=0)
+    y = np.random.default_rng(0).standard_normal(len(fx.smiles))
+    sp = PartySplitter(synthesis="label_skew", n_parties=4, held_out_party=0, random_state=0)
+    result = sp.split_result(fx.smiles, y)[0]
+    assert result.metadata["per_party_label_mean"] is not None
+
+
+def test_party_held_out_party_explicit_with_valid():
+    fx = make_scaffold_families(n_scaffolds=10, per_scaffold=20, seed=0)
+    party = [i % 5 for i in range(len(fx.smiles))]
+    sp = PartySplitter(
+        party=party, n_parties=5, held_out_party=1, valid_size=0.1, train_size=0.6, test_size=0.3, random_state=0,
+    )
+    [result] = sp.split_result(fx.smiles)
+    assert result.metadata["held_out_party"] == 1
+
+
+def test_party_held_out_party_out_of_range_raises():
+    fx = make_scaffold_families(n_scaffolds=10, per_scaffold=20, seed=0)
+    party = [i % 4 for i in range(len(fx.smiles))]
+    sp = PartySplitter(party=party, n_parties=4, held_out_party=99, random_state=0)
+    with pytest.raises(ParameterError):
+        sp.split_result(fx.smiles)
+
+
+def test_party_chemical_overlap_matrix_none_for_features_input():
+    party = [i % 4 for i in range(40)]
+    F = np.random.default_rng(0).standard_normal((40, 8))
+    sp = PartySplitter(party=party, n_parties=4, held_out_party=0, random_state=0)
+    result = sp.split_result(F)[0]
+    assert result.metadata["chemical_overlap_matrix"] is None
+
+
+def test_party_synthesis_invalid():
+    with pytest.raises(ParameterError):
+        PartySplitter(synthesis="bogus")
+    with pytest.raises(ParameterError):
+        PartySplitter(n_parties=0)
