@@ -90,6 +90,23 @@ def test_cli_split_and_audit(tmp_path, mols_csv, capsys):
     assert "flags" in report or "n_train" in report
 
 
+def test_python_dash_m_chemsplit_list():
+    """Exercises chemsplit/__main__.py's ``if __name__ == "__main__":`` guard directly (calling
+    ``cli.main()`` in-process, as the other tests here do, never actually runs that module as
+    ``__main__``)."""
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-m", "chemsplit", "list"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == cli.EXIT_OK
+    assert "random" in result.stdout
+
+
 def test_cli_split_unknown_splitter_exits_validation(tmp_path, mols_csv):
     rc = cli.main(
         [
