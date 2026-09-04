@@ -481,8 +481,7 @@ def _quantile_bins(v: np.ndarray, n_bins: int) -> np.ndarray:
 
 
 class StratifiedDistributionSplitter(BaseSplitter):
-    """Match the full label *distribution* (not just class balance) between train and test (design
-   .3, ``E.3``).
+    """Match the full label *distribution* (not just class balance) between train and test.
 
     Parameters
     ----------
@@ -793,13 +792,15 @@ class MOODSplitter(SimilarityParamsMixin, BaseSplitter):
 
         target = _distance_stat(F_deploy, F_data, self.distance_stat, self.knn_k, self.metric)
 
+        cand_X = ctx.mols if ctx.mols is not None else (ctx.smiles if ctx.smiles is not None else ctx.raw_features)
+
         results = []
         errors: dict[str, str] = {}
         scores: list[list[Any]] = []
         for i, cand in enumerate(self.candidates):
             cid = getattr(cand, "splitter_id", type(cand).__name__)
             try:
-                r = cand.split_result(ctx.smiles if ctx.mols is None else ctx.mols, ctx.y)[0]
+                r = cand.split_result(cand_X, ctx.y)[0]
                 obs = _distance_stat(F_data[r.test], F_data[r.train], self.distance_stat, self.knn_k, self.metric)
                 score = _discrepancy(obs, target, self.discrepancy, self.n_bins)
                 results.append((cid, score, r))

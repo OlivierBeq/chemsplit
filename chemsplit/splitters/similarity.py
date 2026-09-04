@@ -5,6 +5,7 @@ Every splitter here operates on a fingerprint/feature distance or similarity mat
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any, ClassVar, Literal
 
 import numpy as np
@@ -682,7 +683,10 @@ class DensityClusterSplitter(_SimilarityGroupBase):
             if self.noise_policy == "discard":
                 forced = noise.tolist()
             elif self.noise_policy in ("test", "train"):
-                pass  # handled via a shared pseudo-group below
+                # Cluster labels alone can't force a group into a *specific* partition (assign_groups
+                # only balances by size); record the noise indices here so _partition can move them
+                # into the target partition after the normal group-based assignment runs.
+                self._last_noise_idx = noise.copy()
             elif self.noise_policy == "distribute" and (labels != -1).any():
                 core_idx = np.nonzero(labels != -1)[0]
                 for i in noise:
@@ -712,6 +716,33 @@ class DensityClusterSplitter(_SimilarityGroupBase):
 
     def _group_metadata(self, ctx: _Context, labels: IndexArray) -> dict[str, Any]:
         return getattr(self, "_last_meta", {})
+
+    def _partition(self, ctx: _Context) -> list[SplitResult]:
+        results = super()._partition(ctx)
+        if self.noise_policy not in ("test", "train"):
+            return results
+        noise_idx = getattr(self, "_last_noise_idx", np.array([], dtype=np.int64))
+        if noise_idx.size == 0:
+            return results
+        noise_set = set(noise_idx.tolist())
+        fixed = []
+        for r in results:
+            train = set(r.train.tolist()) - noise_set
+            valid = set(r.valid.tolist()) - noise_set
+            test = set(r.test.tolist()) - noise_set
+            if self.noise_policy == "test":
+                test |= noise_set
+            else:
+                train |= noise_set
+            fixed.append(
+                dataclasses.replace(
+                    r,
+                    train=np.asarray(sorted(train), dtype=np.int64),
+                    valid=np.asarray(sorted(valid), dtype=np.int64),
+                    test=np.asarray(sorted(test), dtype=np.int64),
+                )
+            )
+        return fixed
 
 
 # ---------------------------------------------------------------------------
