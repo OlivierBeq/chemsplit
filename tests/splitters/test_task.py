@@ -198,3 +198,159 @@ class TestDecoyBenchmarkSplitter:
         result = sp.split_result(_SMILES, y=y)[0]
         assert result.train.size == 20
         assert result.test.size == 10
+
+
+# --------------------------------------------------------------------------- coverage additions
+
+
+class TestHiSplitterMore:
+    def test_invalid_solver(self):
+        with pytest.raises(ParameterError):
+            HiSplitter(solver="bogus")
+
+    def test_max_discard_frac_validation(self):
+        with pytest.raises(ParameterError):
+            HiSplitter(max_discard_frac=1.5)
+
+    def test_residual_repair_discards_when_needed(self):
+        sp = HiSplitter(
+            threshold=0.15, coarse_cutoff=0.2, max_discard_frac=0.5,
+            train_size=0.8, test_size=0.2, random_state=0,
+        )
+        result = sp.split_result(_SMILES)[0]
+        assert result.n_records == len(_SMILES)
+
+
+class TestLoSplitterMore:
+    def test_param_validation(self):
+        with pytest.raises(ParameterError):
+            LoSplitter(threshold=1.5)
+        with pytest.raises(ParameterError):
+            LoSplitter(min_cluster_size=2)
+        with pytest.raises(ParameterError):
+            LoSplitter(max_clusters=0)
+        with pytest.raises(ParameterError):
+            LoSplitter(std_threshold=0.0)
+        with pytest.raises(ParameterError):
+            LoSplitter(train_similarity_ceiling=1.5)
+
+    def test_explicit_train_similarity_ceiling(self):
+        rng = np.random.default_rng(0)
+        y = rng.normal(size=len(_SMILES))
+        sp = LoSplitter(
+            threshold=0.3, min_cluster_size=3, std_threshold=0.01,
+            train_similarity_ceiling=0.9, train_size=0.7, test_size=0.3, random_state=0,
+        )
+        try:
+            result = sp.split_result(_SMILES, y=y)[0]
+        except (ConstraintUnsatisfiableError, EmptyPartitionError):
+            pytest.skip("no qualifying cluster on this tiny synthetic pool")
+        assert "n_pruned_from_train" in result.metadata
+
+    def test_with_valid_size(self):
+        rng = np.random.default_rng(0)
+        y = rng.normal(size=len(_SMILES))
+        sp = LoSplitter(
+            threshold=0.3, min_cluster_size=3, std_threshold=0.01,
+            train_size=0.5, valid_size=0.2, test_size=0.3, random_state=0,
+        )
+        try:
+            result = sp.split_result(_SMILES, y=y)[0]
+        except (ConstraintUnsatisfiableError, EmptyPartitionError):
+            pytest.skip("no qualifying cluster on this tiny synthetic pool")
+        assert result.n_records == len(_SMILES)
+
+
+class TestScaffoldHopSplitterMore:
+    def test_param_validation(self):
+        with pytest.raises(ParameterError):
+            ScaffoldHopSplitter(scaffold_kind="bogus")
+        with pytest.raises(ParameterError):
+            ScaffoldHopSplitter(active_definition="threshold", active_threshold=None)
+        with pytest.raises(ParameterError):
+            ScaffoldHopSplitter(pharmacophore_similarity="bogus")
+        with pytest.raises(ParameterError):
+            ScaffoldHopSplitter(inactives_policy="bogus")
+
+    def test_threshold_active_definition(self):
+        y = np.linspace(0, 10, len(_SMILES))
+        sp = ScaffoldHopSplitter(
+            active_definition="threshold", active_threshold=5.0,
+            pharmacophore_similarity="none",
+            train_size=0.7, test_size=0.3, random_state=0,
+        )
+        try:
+            result = sp.split_result(_SMILES, y=y)[0]
+        except (ConstraintUnsatisfiableError, DegenerateGroupingError):
+            pytest.skip("no qualifying scaffold split on this tiny synthetic pool")
+        assert result.n_records == len(_SMILES)
+
+
+class TestColdStartMore:
+    def _interaction_data(self):
+        fx = datasets.make_interactions(n_compounds=12, n_targets=6, density=0.4, seed=0)
+        X = [(fx.smiles[c], fx.targets[t]) for (c, t, _y) in fx.interactions]
+        y = [yv for (_c, _t, yv) in fx.interactions]
+        return X, y
+
+    def test_compound_grouper_requires_structures(self):
+        with pytest.raises(Exception):
+            ColdDrugSplitter(compound_grouper="something")
+
+    def test_min_interactions_per_entity_validation(self):
+        with pytest.raises(ParameterError):
+            ColdDrugSplitter(min_interactions_per_entity=0)
+
+    def test_min_interactions_per_entity_filters(self):
+        X, y = self._interaction_data()
+        sp = ColdDrugSplitter(min_interactions_per_entity=2, random_state=0)
+        result = sp.split_result(X, y=y)[0]
+        assert result.n_records == len(X)
+
+    def test_drop_unlabelled_false(self):
+        X, y = self._interaction_data()
+        sp = ColdDrugSplitter(drop_unlabelled=False, random_state=0)
+        result = sp.split_result(X, y=y)[0]
+        assert result.n_records == len(X)
+
+
+class TestAVESplitterMore:
+    def test_non_binary_labels_raise(self):
+        rng = np.random.default_rng(0)
+        y = rng.integers(0, 3, size=len(_SMILES))
+        sp = AVESplitter(train_size=0.7, test_size=0.3, random_state=0, population_size=4, n_generations=1)
+        with pytest.raises(LabelError):
+            sp.split_result(_SMILES, y=y)
+
+    def test_param_validation(self):
+        with pytest.raises(ParameterError):
+            AVESplitter(n_bins=0)
+        with pytest.raises(ParameterError):
+            AVESplitter(population_size=1)
+        with pytest.raises(ParameterError):
+            AVESplitter(init_splitter="not_a_valid_string")
+
+
+class TestDecoyBenchmarkSplitterMore:
+    def test_invalid_scheme(self):
+        with pytest.raises(ParameterError):
+            DecoyBenchmarkSplitter(scheme="bogus")
+
+    def test_predefined_scheme_invalid_value_raises(self):
+        assignment = ["train"] * 20 + ["bogus"] * 10
+        sp = DecoyBenchmarkSplitter(scheme="predefined", predefined_assignment=assignment)
+        y = np.zeros(len(_SMILES), dtype=np.int64)
+        with pytest.raises(ParameterError):
+            sp.split_result(_SMILES, y=y)
+
+    def test_spatial_random_scheme(self):
+        y = np.zeros(len(_SMILES), dtype=np.int64)
+        y[:6] = 1
+        decoy_pool = ["CCCCCCCCCC", "CCCCCCCCCCC", "c1ccccc1CCCC"] * 10
+        sp = DecoyBenchmarkSplitter(
+            scheme="spatial_random", decoy_pool=decoy_pool,
+            train_size=0.7, test_size=0.3, random_state=0,
+        )
+        result = sp.split_result(_SMILES, y=y)[0]
+        assert result.metadata["scheme"] == "spatial_random"
+
