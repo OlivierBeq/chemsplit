@@ -64,7 +64,7 @@ def _coerce_dates(dates: Any, n: int) -> np.ndarray:
     return coerced
 
 
-def _parse_offset_days(design: "str | int") -> int:
+def _parse_offset_days(spec: "str | int") -> int:
     """Best-effort parse of a pandas-offset-like string (``"90D"``, ``"6M"``, ``"1Y"``) or a
     plain integer day count, into an integer number of days.
 
@@ -74,20 +74,37 @@ def _parse_offset_days(design: "str | int") -> int:
     the windowing granularity this splitter targets; exact calendar arithmetic can be substituted
     later without changing the public API.
     """
-    if isinstance(design, (int, np.integer)) and not isinstance(design, bool):
-        return int(design)
-    if not isinstance(design, str):
-        raise ParameterError(f"expected a pandas-offset-like string or int, got {design!r}")
-    m = re.fullmatch(r"\s*(\d+)\s*([DWMY])\s*", design.upper())
+    if isinstance(spec, (int, np.integer)) and not isinstance(spec, bool):
+        return int(spec)
+    if not isinstance(spec, str):
+        raise ParameterError(f"expected a pandas-offset-like string or int, got {spec!r}")
+    m = re.fullmatch(r"\s*(\d+)\s*([DWMY])\s*", spec.upper())
     if not m:
-        raise ParameterError(f"could not parse offset string {design!r} (expected e.g. '90D', '6M', '1Y')")
+        raise ParameterError(f"could not parse offset string {spec!r} (expected e.g. '90D', '6M', '1Y')")
     count, unit = int(m.group(1)), m.group(2)
     days_per_unit = {"D": 1, "W": 7, "M": 30, "Y": 365}[unit]
     return count * days_per_unit
 
 
 class TemporalSplitter(BaseSplitter):
-    """Date-cut split: train on the past, test on the future."""
+    """Date-cut split: train on the past, test on the future.
+
+    Advantages
+    ----------
+    - The closest available proxy for prospective performance, since it reproduces the real, entangled correlations between chemistry, assay protocol, project goals, and era that a deployed model actually meets.
+    - Needs no featurization and no parameters beyond the cut date, so there's nothing to tune or argue about.
+    - `embargo` closes the look-ahead leak from assays reporting months after registration — invisible in a naive date cut.
+    - `mode="rolling"`/`"expanding"` produces a performance-over-time curve, which is what a maintenance decision actually needs.
+
+    Pitfalls
+    --------
+    - Confounds several shifts at once — chemistry, assay protocol, target selection, data volume — so a drop shows the model degrades, not *why*. Good for realism, bad for attribution.
+    - Dates are frequently wrong: registration, first-test, publication, and deposition dates differ, and datasets often mix them; the splitter can't detect this.
+    - Public datasets rarely carry usable timestamps — ChEMBL document years are coarse and often unrepresentative of when the work happened. Use `simpd` when dates are absent rather than fabricating them.
+    - The test set is one contiguous era, so it's chemically homogeneous with correlated errors; a single time split carries wide implicit uncertainty. Prefer `mode="rolling"`.
+    - Without `embargo`, slow-reporting assays leak the future into training.
+    - In `"expanding"` mode the training set grows with time, so later windows aren't comparable to earlier ones without normalising for `n_train`.
+    """
 
     splitter_id: ClassVar[str] = "temporal"
     family: ClassVar[str] = "lineage"
@@ -314,6 +331,21 @@ class SIMPDSplitter(BaseSplitter):
     a deterministic rank/crowding-distance sort) and hand-rolls crossover/mutation/tournament
     selection using a dedicated ``random.Random`` instance from
     :func:`chemsplit.determinism.seeded_python_random`.
+
+    Advantages
+    ----------
+    - Makes a time-like evaluation possible on the (most) public datasets that lack usable dates.
+    - Objectives are explicit and measurable, so "this split resembles a real time split" is checkable via `metadata["achieved"]` vs. `targets`, not just asserted.
+    - Multi-objective optimisation surfaces trade-offs instead of collapsing them into one hand-weighted score.
+
+    Pitfalls
+    --------
+    - **Simulates the statistics of a time split, not time itself.** Assay-protocol drift, changing project goals, and genuine unforeseeability aren't reproduced — a model can score well here and still fail prospectively.
+    - Default targets are medians from one published study of specific internal datasets — not universal constants, so applying them to a different therapeutic area is an assumption, not a measurement.
+    - Expensive: hundreds of generations over hundreds of individuals, each needing nearest-neighbour statistics.
+    - The GA is stochastic with conflicting objectives, so different seeds give different splits with similar objective values. Report the seed and `metadata["achieved"]`.
+    - Optimising against label-derived objectives (`delta_active_frac`) uses the labels to design the experiment — disclose it.
+
     """
 
     splitter_id: ClassVar[str] = "simpd"
@@ -613,7 +645,21 @@ class SIMPDSplitter(BaseSplitter):
 
 
 class SourceSplitter(GroupSplitter):
-    """Groups by provenance: document, assay, lab, vendor, plate, or any caller-supplied key."""
+    """Groups by provenance: document, assay, lab, vendor, plate, or any caller-supplied key.
+
+    Advantages
+    ----------
+    - Catches a leak scaffold and cluster splits both miss: one publication contributing a congeneric series measured under one protocol with one systematic offset — any of which is learnable.
+    - Needs no chemistry, featurization, or seed — it's a metadata join.
+    - Composes naturally with `leave_one_cluster_out` (leave-one-source-out) for a per-laboratory error profile, often the most actionable diagnostic available.
+
+    Pitfalls
+    --------
+    - Source metadata is frequently wrong, missing, or inconsistently populated; a `NaN`-heavy source column silently degenerates toward a random split — read `metadata["n_missing_source"]`.
+    - Source sizes are extremely skewed — a handful of large screening campaigns plus a long tail of two-compound papers — so the realised ratio drifts and `SizeToleranceWarning` should be expected.
+    - Grouping by source does **not** guarantee chemical separation — two labs can publish the same series — so it complements rather than replaces a structural split. Combine with `group_k_fold` on a merged grouping.
+    - The chosen hierarchy level changes the experiment — assay-level grouping is much weaker than document-level, which is weaker than lab-level.
+    """
 
     splitter_id: ClassVar[str] = "source"
     family: ClassVar[str] = "lineage"
@@ -730,6 +776,20 @@ class PartySplitter(GroupSplitter):
     Overrides :meth:`_partition` entirely (leave-one-party-out is
     not the standard ``assign_groups`` train/valid/test bucketing every other ``GroupSplitter``
     uses).
+        Advantages
+    ----------
+    - The only way to check whether a federated or consortium model actually helps *each* participant, not just the largest contributor.
+    - Synthesis modes let a public dataset stand in for a consortium with an explicit, tunable non-IID severity.
+    - `chemical_overlap_matrix` quantifies how different the parties really are — the precondition for interpreting any federated result.
+
+    Pitfalls
+    --------
+    - **Never report a pooled average across parties.** It's dominated by the largest party and hides that the model may be useless for everyone else. Report per-party scores; `party_sizes` lets readers weight them.
+    - Synthesised parties model heterogeneity, not real heterogeneity — real pharma datasets differ in assay protocol and target selection, not just chemistry.
+    - `dirichlet_alpha` has no natural value; it must be reported, and results at `alpha=0.1` and `alpha=1.0` aren't comparable.
+    - Party sizes are usually very unequal, so held-out fold sizes vary enormously across folds.
+    - Says nothing about the privacy properties of the training scheme — this is a data split, not a privacy guarantee.
+
     """
 
     splitter_id: ClassVar[str] = "party"
