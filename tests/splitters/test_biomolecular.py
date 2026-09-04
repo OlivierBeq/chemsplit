@@ -28,10 +28,26 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 
-def test_sequence_identity_requires_sequences_kind():
+def test_sequence_identity_derives_sequences_from_x_kind():
+    """``ctx.sequences`` is populated automatically from ``X`` when ``X_kind="sequences"`` is
+    passed without a separate, redundant ``sequences=`` keyword (chemsplit/base.py's ``_run``/
+    ``compute_groups`` -- a caller should not have to supply the same sequence list twice)."""
     sp = SequenceIdentitySplitter(random_state=0)
-    with pytest.raises(LabelError):
-        sp.split_result(["AAA", "AAB", "CCC", "CCD"], X_kind="sequences")
+    result = sp.split_result(["AAAAAAAAAA", "AAAAAAAAAB", "CCCCCCCCCC", "CCCCCCCCCD"], X_kind="sequences")[0]
+    assert result.n_records == 4
+    assert result.groups is not None
+
+
+def test_sequence_identity_without_x_kind_hint_treats_input_as_smiles():
+    """``Sequence[str]`` defaults to SMILES unless ``X_kind="sequences"`` is given -- there
+    is no heuristic disambiguation, so omitting the hint for a sequences-only splitter must fail
+    with InputKindError (detected kind "smiles" not in accepts=("sequences",)), not silently
+    guess right."""
+    from chemsplit.exceptions import InputKindError
+
+    sp = SequenceIdentitySplitter(random_state=0)
+    with pytest.raises(InputKindError):
+        sp.split_result(["AAAAAAAAAA", "AAAAAAAAAB", "CCCCCCCCCC", "CCCCCCCCCD"])
 
 
 def test_sequence_identity_keeps_families_atomic_hamming():

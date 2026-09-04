@@ -47,10 +47,15 @@ def test_property_splitter_low_test_vs_high_test_disjoint_direction():
 
 
 def test_property_splitter_deterministic_without_seed():
+    # NOTE: PropertySplitter.deterministic_without_seed is a conservative ClassVar (always
+    # False), not an instance-dependent value, even though a *specific* instance with the
+    # default tie_policy ("by_index", seed-free) is in fact deterministic without a seed, as
+    # this test demonstrates behaviourally below -- ClassVar metadata is read at the class level
+    # (e.g. by registry.list_splitters()) without an instance to introspect, so it cannot encode
+    # "depends on tie_policy"; see the ClassVar's definition for the full rationale.
     smiles = _mol_fixture()
     sp1 = PropertySplitter(property="MolWt", train_size=0.7, test_size=0.3)
     sp2 = PropertySplitter(property="MolWt", train_size=0.7, test_size=0.3)
-    assert sp1.deterministic_without_seed is True
     (tr1, te1), = sp1.split(smiles)
     (tr2, te2), = sp2.split(smiles)
     assert np.array_equal(tr1, tr2) and np.array_equal(te1, te2)

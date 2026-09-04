@@ -1214,6 +1214,8 @@ class LeaveOneClusterOutSplitter(GroupSplitter):
         small_cluster_policy: Literal["merge_into_train", "own_fold", "pool"] = "merge_into_train",
         max_folds: "int | None" = 50,
         fold_order: Literal["size_desc", "size_asc", "index"] = "size_desc",
+        size_tolerance: float = 0.05,
+        group_assignment: Literal["greedy_desc", "balanced", "random"] = "greedy_desc",
         n_splits: int = 1,
         train_size: Any = None,
         valid_size: Any = None,
@@ -1223,6 +1225,8 @@ class LeaveOneClusterOutSplitter(GroupSplitter):
         verbose: int = 0,
     ) -> None:
         super().__init__(
+            size_tolerance=size_tolerance,
+            group_assignment=group_assignment,
             n_splits=n_splits,
             train_size=train_size,
             valid_size=valid_size,
@@ -1256,11 +1260,24 @@ class LeaveOneClusterOutSplitter(GroupSplitter):
         return dense_label_encode(labels.tolist())
 
     def get_n_splits(self, X: Any = None, y: Any = None, groups: Any = None) -> int:
-        return 1  # derived at _run time; see _partition
+        """The real fold count depends on the data (cluster count after ``small_cluster_policy``
+        and ``max_folds``), so this can only be computed exactly when ``X`` is supplied — matching
+        every other data-dependent ``n_splits`` in the library (e.g. ``GroupKFoldSplitter``'s
+        ``n_splits="auto"``). Without ``X``, ``1`` is a documented lower-bound placeholder."""
+        if X is None:
+            return 1
+        labels = self.compute_groups(X, y)
+        fold_groups, _eligible, _never_tested = self._eligible_fold_groups(labels)
+        return len(fold_groups)
 
-    def _partition(self, ctx: _Context) -> list[SplitResult]:
-        labels = self._group_labels(ctx)
-        n = ctx.n
+    def _eligible_fold_groups(
+        self, labels: IndexArray
+    ) -> tuple[list[int], dict[int, list[int]], list[int]]:
+        """Shared by :meth:`get_n_splits` and :meth:`_partition` so the two can never disagree:
+        returns ``(fold_groups, eligible, never_tested)`` where ``fold_groups`` is the final,
+        ordered, max_folds-capped list of group ids that will each become one test fold, and
+        ``never_tested`` is whatever ``max_folds`` truncated off the end of that same order."""
+        n = len(labels)
         members: dict[int, list[int]] = {}
         for i in range(n):
             members.setdefault(int(labels[i]), []).append(i)
@@ -1287,11 +1304,21 @@ class LeaveOneClusterOutSplitter(GroupSplitter):
                 return (len(eligible[g]), eligible[g][0])
             return (eligible[g][0],)
 
-        fold_groups = sorted(eligible.keys(), key=sort_key)
+        ordered = sorted(eligible.keys(), key=sort_key)
         never_tested: list[int] = []
-        if self.max_folds is not None and len(fold_groups) > self.max_folds:
-            never_tested = fold_groups[self.max_folds:]
-            fold_groups = fold_groups[: self.max_folds]
+        fold_groups = ordered
+        if self.max_folds is not None and len(ordered) > self.max_folds:
+            never_tested = ordered[self.max_folds:]
+            fold_groups = ordered[: self.max_folds]
+        return fold_groups, eligible, never_tested
+
+    def _partition(self, ctx: _Context) -> list[SplitResult]:
+        labels = self._group_labels(ctx)
+        n = ctx.n
+        members: dict[int, list[int]] = {}
+        for i in range(n):
+            members.setdefault(int(labels[i]), []).append(i)
+        fold_groups, eligible, never_tested = self._eligible_fold_groups(labels)
 
         results = []
         for f, g in enumerate(fold_groups):
@@ -1378,6 +1405,8 @@ class BalancedMultiTaskSplitter(GroupSplitter):
         mip_gap: float = 1e-4,
         on_infeasible: Literal["raise", "relax"] = "raise",
         relax_steps: tuple[float,...] = (0.15, 0.20, 0.30),
+        size_tolerance: float = 0.05,
+        group_assignment: Literal["greedy_desc", "balanced", "random"] = "greedy_desc",
         n_splits: int = 1,
         train_size: Any = None,
         valid_size: Any = None,
@@ -1387,6 +1416,8 @@ class BalancedMultiTaskSplitter(GroupSplitter):
         verbose: int = 0,
     ) -> None:
         super().__init__(
+            size_tolerance=size_tolerance,
+            group_assignment=group_assignment,
             n_splits=n_splits,
             train_size=train_size,
             valid_size=valid_size,
