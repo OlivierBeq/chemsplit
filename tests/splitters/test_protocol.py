@@ -162,3 +162,69 @@ class TestApplicabilityDomainSplitter:
     def test_get_n_splits(self):
         s = ApplicabilityDomainSplitter(n_bands=5, random_state=0)
         assert s.get_n_splits() == 5
+
+
+# --------------------------------------------------------------------------- coverage additions
+
+
+def test_group_kfold_requires_grouper_or_groups():
+    sp = GroupKFoldSplitter(n_splits=3)
+    with pytest.raises(Exception):
+        sp.split_result(SMILES_POOL)
+
+
+def test_group_kfold_explicit_groups_in():
+    sp = GroupKFoldSplitter(n_splits=3, random_state=0)
+    groups = [i % 5 for i in range(len(SMILES_POOL))]
+    results = sp.split_result(SMILES_POOL, groups=groups)
+    assert len(results) == 3
+
+
+def test_group_kfold_n_splits_exceeds_n_groups_raises():
+    sp = GroupKFoldSplitter(n_splits=100, grouper=get_splitter("murcko_scaffold"), random_state=0)
+    with pytest.raises(Exception):
+        sp.split_result(SMILES_POOL)
+
+
+def test_group_kfold_get_n_splits_auto_with_x():
+    sp = GroupKFoldSplitter(n_splits="auto", grouper=get_splitter("murcko_scaffold"), random_state=0)
+    n = sp.get_n_splits(SMILES_POOL)
+    assert n >= 1
+
+
+def test_three_way_requires_base_splitter():
+    with pytest.raises(Exception):
+        ThreeWaySplitter()
+
+
+def test_repeated_requires_base_splitter_and_validates_n_repeats():
+    with pytest.raises(Exception):
+        RepeatedSplitter()
+    with pytest.raises(Exception):
+        RepeatedSplitter(base_splitter=RandomSplitter(train_size=0.7, test_size=0.3), n_repeats=0)
+
+
+def test_nested_cv_requires_both_splitters():
+    with pytest.raises(Exception):
+        NestedCVSplitter(outer_splitter=RandomSplitter(train_size=0.7, test_size=0.3))
+    with pytest.raises(Exception):
+        NestedCVSplitter(inner_splitter=RandomSplitter(train_size=0.7, test_size=0.3))
+
+
+def test_nested_cv_get_n_splits_delegates_to_outer():
+    sp = NestedCVSplitter(
+        outer_splitter="random", inner_splitter="random", random_state=0,
+    )
+    assert sp.get_n_splits() == RandomSplitter().get_n_splits()
+
+
+def test_applicability_domain_explicit_base_splitter():
+    base = RandomSplitter(train_size=0.7, test_size=0.3)
+    sp = ApplicabilityDomainSplitter(base_splitter=base, n_bands=3, random_state=0)
+    results = sp.split_result(SMILES_POOL)
+    assert len(results) <= 3
+
+
+def test_applicability_domain_n_bands_validation():
+    with pytest.raises(Exception):
+        ApplicabilityDomainSplitter(n_bands=0)
