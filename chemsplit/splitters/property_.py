@@ -8,14 +8,21 @@ directly.
 from __future__ import annotations
 
 import math
-from typing import Any, Callable, ClassVar, Literal, Sequence
+from collections.abc import Callable, Sequence
+from typing import Any, ClassVar, Literal
 
 import numpy as np
 
-from chemsplit._fp_similarity import SimilarityParamsMixin, compute_similarity_matrix
+from chemsplit._fp_similarity import SimilarityParamsMixin
 from chemsplit.base import BaseSplitter, SplitResult, Strictness, _Context
 from chemsplit.determinism import argmin_tiebreak, seed_for, stable_sort
-from chemsplit.exceptions import ConfigurationError, ConstraintUnsatisfiableError, InputError, LabelError, ParameterError
+from chemsplit.exceptions import (
+    ConfigurationError,
+    ConstraintUnsatisfiableError,
+    InputError,
+    LabelError,
+    ParameterError,
+)
 
 __all__ = [
     "AdversarialSplitter",
@@ -90,7 +97,7 @@ def _build_result(
 
 
 def _resolve_descriptor_values(
-    ctx: _Context, property_: "str | Callable[[Any], float]", property_values: Sequence[float] | None
+    ctx: _Context, property_: str | Callable[[Any], float], property_values: Sequence[float] | None
 ) -> np.ndarray:
     if property_values is not None:
         v = np.asarray(property_values, dtype=np.float64)
@@ -158,7 +165,6 @@ def _select_top_k_with_ties(
         while lo > 0 and v[order[lo - 1]] == boundary_val:
             lo -= 1
         block = order[lo:hi]
-        definite = order[hi:]  # strictly greater than boundary_val -> always selected (empty here)
         # everything strictly greater than boundary_val sits to the right of the block, i.e. none
         # (block already extends to n); definite-selected-outside-block are values > boundary_val
         strictly_beyond = [i for i in order[lo:] if v[i] != boundary_val]
@@ -232,22 +238,15 @@ class PropertySplitter(BaseSplitter):
     become ``test``. The validation band, when requested, is drawn adjacent to ``test`` on the
     train side so early stopping shares the same extrapolation direction as the test evaluation.
 
-    Parameters
-    ----------
-    property: str or callable, default ``"MolWt"``
-        An RDKit descriptor name resolvable through ``rdkit.Chem.Descriptors``, or a callable
-        ``Mol -> float``.
-    direction: {"high_test", "low_test", "extremes_test", "middle_test"}, default "high_test"
-        Which end(s) of the sorted property values become ``test``.
-    property_values: sequence of float, optional
-        Precomputed values, bypassing RDKit descriptor computation.
-    tie_policy: {"by_index", "random", "keep_together"}, default "by_index"
-        How records tied at the cut boundary are resolved.
-
-    Attributes
-    ----------
-    splitter_id: str
-        ``"property"``.
+    :param property: An RDKit descriptor name resolvable through ``rdkit.Chem.Descriptors``, or a
+        callable ``Mol -> float``. Defaults to ``"MolWt"``.
+    :param direction: Which end(s) of the sorted property values become ``test``: one of
+        ``"high_test"``, ``"low_test"``, ``"extremes_test"``, ``"middle_test"``. Defaults to
+        ``"high_test"``.
+    :param property_values: Precomputed values, bypassing RDKit descriptor computation.
+    :param tie_policy: How records tied at the cut boundary are resolved: one of ``"by_index"``,
+        ``"random"``, ``"keep_together"``. Defaults to ``"by_index"``.
+    :ivar splitter_id: ``"property"``.
 
     Advantages
     ----------
@@ -288,7 +287,7 @@ class PropertySplitter(BaseSplitter):
     def __init__(
         self,
         *,
-        property: "str | Callable[[Any], float]" = "MolWt",
+        property: str | Callable[[Any], float] = "MolWt",
         direction: Literal["high_test", "low_test", "extremes_test", "middle_test"] = "high_test",
         property_values: Sequence[float] | None = None,
         tie_policy: Literal["by_index", "random", "keep_together"] = "by_index",
@@ -351,17 +350,15 @@ class PropertySplitter(BaseSplitter):
 class LabelExtrapolationSplitter(BaseSplitter):
     """Train on one part of the label range, test on another.
 
-    Parameters
-    ----------
-    direction: {"high_test", "low_test", "extremes_test"}, default "high_test"
-    task_index: int, default 0
-        Column of ``y`` to extrapolate on, when ``y`` is 2-D.
-    buffer: float or int, default 0.0
-        A gap between train and test in label units (float) or records (int); records inside the
-        buffer go to ``discard``.
-    tie_policy: {"by_index", "random", "keep_together"}, default "keep_together"
-        Default differs from ``property``: splitting a block of identical labels across the
-        boundary is meaningless for a label-based extrapolation.
+    :param direction: One of ``"high_test"``, ``"low_test"``, ``"extremes_test"``. Defaults to
+        ``"high_test"``.
+    :param task_index: Column of ``y`` to extrapolate on, when ``y`` is 2-D. Defaults to 0.
+    :param buffer: A gap between train and test in label units (float) or records (int); records
+        inside the buffer go to ``discard``. Defaults to 0.0.
+    :param tie_policy: How records tied at the cut boundary are resolved: one of ``"by_index"``,
+        ``"random"``, ``"keep_together"``. Defaults to ``"keep_together"``, which differs from
+        ``property``: splitting a block of identical labels across the boundary is meaningless
+        for a label-based extrapolation.
 
     Advantages
     ----------
@@ -397,7 +394,7 @@ class LabelExtrapolationSplitter(BaseSplitter):
         *,
         direction: Literal["high_test", "low_test", "extremes_test"] = "high_test",
         task_index: int = 0,
-        buffer: "float | int" = 0.0,
+        buffer: float | int = 0.0,
         tie_policy: Literal["by_index", "random", "keep_together"] = "keep_together",
         **base: Any,
     ) -> None:
@@ -483,16 +480,15 @@ def _quantile_bins(v: np.ndarray, n_bins: int) -> np.ndarray:
 class StratifiedDistributionSplitter(BaseSplitter):
     """Match the full label *distribution* (not just class balance) between train and test.
 
-    Parameters
-    ----------
-    n_bins: int, default 20
-    binning: {"quantile", "uniform", "kmeans"}, default "quantile"
-    match: {"histogram", "moments", "ks"}, default "histogram"
-        ``"histogram"``: per-bin apportionment (deterministic, always succeeds). ``"moments"``: a
-        seeded local swap hill-climb minimising ``|Δmean| + |Δstd| + |Δskew|``. ``"ks"``: restart
-        with different seeds until the two-sample KS statistic is ``<= max_ks``.
-    max_ks: float, default 0.05
-    max_restarts: int, default 20
+    :param n_bins: Number of bins. Defaults to 20.
+    :param binning: One of ``"quantile"``, ``"uniform"``, ``"kmeans"``. Defaults to
+        ``"quantile"``.
+    :param match: ``"histogram"``: per-bin apportionment (deterministic, always succeeds).
+        ``"moments"``: a seeded local swap hill-climb minimising
+        ``|Δmean| + |Δstd| + |Δskew|``. ``"ks"``: restart with different seeds until the
+        two-sample KS statistic is ``<= max_ks``. Defaults to ``"histogram"``.
+    :param max_ks: Defaults to 0.05.
+    :param max_restarts: Defaults to 20.
 
     Advantages
     ----------
@@ -701,15 +697,12 @@ class MOODSplitter(SimilarityParamsMixin, BaseSplitter):
     matches the train→**deployment** distance distribution (MOOD: "Massive
     Out-Of-Distribution shift" splitter).
 
-    Parameters
-    ----------
-    candidates: sequence of BaseSplitter
-        Already-instantiated candidate splitters — string IDs are not accepted; a
+    :param candidates: Already-instantiated candidate splitters — string IDs are not accepted; a
         ``ParameterError`` names this explicitly.
-    deployment_set: array-like
-        The library you actually intend to screen. Required.
-    distance_stat: {"nn", "knn_mean", "centroid"}, default "nn"
-    discrepancy: {"wasserstein", "ks", "js"}, default "wasserstein"
+    :param deployment_set: The library you actually intend to screen. Required.
+    :param distance_stat: One of ``"nn"``, ``"knn_mean"``, ``"centroid"``. Defaults to ``"nn"``.
+    :param discrepancy: One of ``"wasserstein"``, ``"ks"``, ``"js"``. Defaults to
+        ``"wasserstein"``.
 
     Advantages
     ----------
@@ -741,7 +734,7 @@ class MOODSplitter(SimilarityParamsMixin, BaseSplitter):
     def __init__(
         self,
         *,
-        candidates: "Sequence[BaseSplitter]" = (),
+        candidates: Sequence[BaseSplitter] = (),
         deployment_set: Any = None,
         distance_stat: Literal["nn", "knn_mean", "centroid"] = "nn",
         knn_k: int = 5,
@@ -797,7 +790,7 @@ class MOODSplitter(SimilarityParamsMixin, BaseSplitter):
         results = []
         errors: dict[str, str] = {}
         scores: list[list[Any]] = []
-        for i, cand in enumerate(self.candidates):
+        for _i, cand in enumerate(self.candidates):
             cid = getattr(cand, "splitter_id", type(cand).__name__)
             try:
                 r = cand.split_result(cand_X, ctx.y)[0]
@@ -846,13 +839,11 @@ class AdversarialSplitter(SimilarityParamsMixin, BaseSplitter):
     """Use a train-vs-test discriminator either to *audit* an existing split or to *construct* a
     target covariate shift.
 
-    Parameters
-    ----------
-    mode: {"audit", "construct"}, default "construct"
-    target_auc: float, default 0.75
-    base_splitter: BaseSplitter, default a fresh random split
-    classifier: {"logreg", "gbdt"}, default "logreg"
-    swap_frac: float, default 0.05
+    :param mode: One of ``"audit"``, ``"construct"``. Defaults to ``"construct"``.
+    :param target_auc: Defaults to 0.75.
+    :param base_splitter: Defaults to a fresh random split.
+    :param classifier: One of ``"logreg"``, ``"gbdt"``. Defaults to ``"logreg"``.
+    :param swap_frac: Defaults to 0.05.
 
     Advantages
     ----------
@@ -886,7 +877,7 @@ class AdversarialSplitter(SimilarityParamsMixin, BaseSplitter):
         *,
         mode: Literal["audit", "construct"] = "construct",
         target_auc: float = 0.75,
-        base_splitter: "BaseSplitter | None" = None,
+        base_splitter: BaseSplitter | None = None,
         classifier: Literal["logreg", "gbdt"] = "logreg",
         cv: int = 5,
         max_iter: int = 50,

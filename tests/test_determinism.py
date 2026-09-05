@@ -29,7 +29,7 @@ def test_make_seed_bundle_int_vs_none_vs_generator():
     assert isinstance(b_none.resolved_seed, int)
 
     gen = np.random.default_rng(123)
-    draws_before = gen.integers(0, 10**6, size=3)  # advance the generator
+    gen.integers(0, 10**6, size=3)  # advance the generator
     b_gen = det.make_seed_bundle(gen)
     # a second bundle from a *fresh* generator with the same seed as the original (before being
     # advanced) must reproduce the same root, proving we derive from the generator's current

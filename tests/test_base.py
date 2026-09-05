@@ -387,7 +387,7 @@ class TestSplitResultAccessors:
         assert restored.groups is None
 
     def test_run_length_encoding_collapses_long_runs(self):
-        from chemsplit.base import _encode_index_array, _decode_index_array
+        from chemsplit.base import _decode_index_array, _encode_index_array
 
         arr = np.array([0, 1, 2, 3, 4, 10, 20, 21, 22], dtype=np.int64)
         encoded = _encode_index_array(arr)
@@ -407,7 +407,7 @@ class TestSplitResultAccessors:
         assert encoded == [0, 1, 5, 6]
 
     def test_run_length_round_trip_empty(self):
-        from chemsplit.base import _encode_index_array, _decode_index_array
+        from chemsplit.base import _decode_index_array, _encode_index_array
 
         arr = np.array([], dtype=np.int64)
         assert _encode_index_array(arr) == []

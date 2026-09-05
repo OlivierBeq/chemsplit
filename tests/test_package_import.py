@@ -59,7 +59,7 @@ def test_unknown_attribute_raises_attribute_error():
     import chemsplit
 
     with pytest.raises(AttributeError, match="not_a_real_name"):
-        chemsplit.not_a_real_name
+        _ = chemsplit.not_a_real_name
 
 
 def test_lazy_attribute_resolves_and_caches():

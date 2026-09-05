@@ -5,16 +5,16 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from typing import Any, Callable, Sequence
+from collections.abc import Callable, Sequence
+from typing import Any
 
 import numpy as np
-import pandas as pd
 from scipy import stats as _stats
 
 from chemsplit import __version__ as _CHEMSPLIT_VERSION
 from chemsplit.base import SplitResult
 from chemsplit.featurizers import get_featurizer
-from chemsplit.metrics import nn_distance, pairwise_distances
+from chemsplit.metrics import nn_distance
 
 __all__ = [
     "LeakageReport",
@@ -38,7 +38,7 @@ def _is_smiles_like(X: Any) -> bool:
     return isinstance(X, (list, tuple)) and (len(X) == 0 or isinstance(X[0], str))
 
 
-def _featurize(X: Any, featurizer_spec: "str | Any") -> Any:
+def _featurize(X: Any, featurizer_spec: str | Any) -> Any:
     """Return a feature matrix for ``X``, resolving a string/Featurizer design only if X is SMILES."""
     if _is_smiles_like(X):
         from rdkit import Chem
@@ -49,7 +49,7 @@ def _featurize(X: Any, featurizer_spec: "str | Any") -> Any:
     return X
 
 
-def _mols_or_none(X: Any) -> "list | None":
+def _mols_or_none(X: Any) -> list | None:
     if not _is_smiles_like(X):
         return None
     from rdkit import Chem
@@ -105,7 +105,7 @@ def nn_similarity_profile(
     ref_idx: Sequence[int],
     X: Any,
     *,
-    featurizer: "str | Any" = "ecfp4",
+    featurizer: str | Any = "ecfp4",
     metric: str = "tanimoto",
     n_jobs: int = 1,
 ) -> NNProfile:
@@ -134,7 +134,7 @@ def adversarial_validation(
     test_idx: Sequence[int],
     X: Any,
     *,
-    featurizer: "str | Any" = "ecfp4",
+    featurizer: str | Any = "ecfp4",
     classifier: str = "logreg",
     cv: int = 5,
     random_state: int = 0,
@@ -207,7 +207,7 @@ def y_scramble_control(
     split: SplitResult,
     *,
     n_repeats: int = 20,
-    scorer: "Callable[[np.ndarray, np.ndarray], float] | None" = None,
+    scorer: Callable[[np.ndarray, np.ndarray], float] | None = None,
     random_state: int = 0,
 ) -> dict[str, Any]:
     """Refit ``estimator`` on ``n_repeats`` independent shufflings of the train-side ``y``,
@@ -282,7 +282,7 @@ class LeakageReport:
     n_discard: int
 
     nn_similarity: NNProfile
-    nn_similarity_valid: "NNProfile | None"
+    nn_similarity_valid: NNProfile | None
     max_similarity: float
     frac_test_above: dict[float, float]
     n_exact_duplicates_across: int
@@ -291,17 +291,17 @@ class LeakageReport:
     shared_scaffolds: int
     shared_ring_systems: int
     shared_sources: int
-    shared_mmp_contexts: "int | None"
+    shared_mmp_contexts: int | None
 
-    adversarial_auc: "float | None"
-    adversarial_auc_ci95: "tuple[float, float] | None"
-    label_shift: "dict[str, float] | None"
+    adversarial_auc: float | None
+    adversarial_auc_ci95: tuple[float, float] | None
+    label_shift: dict[str, float] | None
     property_shift: dict[str, float]
 
-    splitter_id: "str | None"
+    splitter_id: str | None
     params: dict[str, Any]
     chemsplit_version: str
-    seed: "int | None"
+    seed: int | None
 
     def summary(self) -> str:
         lines = [
@@ -395,7 +395,7 @@ def _exact_duplicates_across(
         return 0, []
     from rdkit import Chem
 
-    def key(i: int) -> "str | None":
+    def key(i: int) -> str | None:
         mol = Chem.MolFromSmiles(X[i])
         if mol is None:
             return None
@@ -420,8 +420,9 @@ def _exact_duplicates_across(
 def _shared_scaffold_count(train_idx: np.ndarray, test_idx: np.ndarray, X: Any) -> tuple[int, int]:
     if not _is_smiles_like(X):
         return 0, 0
-    from chemsplit.scaffolds import murcko_scaffold, ring_systems
     from rdkit import Chem
+
+    from chemsplit.scaffolds import murcko_scaffold, ring_systems
 
     def scaffold_keys(idx: np.ndarray) -> set[str]:
         keys = set()
@@ -447,8 +448,9 @@ def _shared_scaffold_count(train_idx: np.ndarray, test_idx: np.ndarray, X: Any) 
 def _property_shift(train_idx: np.ndarray, test_idx: np.ndarray, X: Any) -> dict[str, float]:
     if not _is_smiles_like(X):
         return {}
-    from chemsplit.featurizers.descriptors import PhysChemFeaturizer
     from rdkit import Chem
+
+    from chemsplit.featurizers.descriptors import PhysChemFeaturizer
 
     featurizer = PhysChemFeaturizer()
     mols = [Chem.MolFromSmiles(s) for s in X]
@@ -465,12 +467,12 @@ def _property_shift(train_idx: np.ndarray, test_idx: np.ndarray, X: Any) -> dict
 def audit_split(
     split: SplitResult,
     X: Any,
-    y: "np.ndarray | None" = None,
+    y: np.ndarray | None = None,
     *,
-    featurizer: "str | Any" = "ecfp4",
+    featurizer: str | Any = "ecfp4",
     metric: str = "tanimoto",
-    thresholds: "Sequence[float]" = _DEFAULT_THRESHOLDS,
-    sources: "np.ndarray | None" = None,
+    thresholds: Sequence[float] = _DEFAULT_THRESHOLDS,
+    sources: np.ndarray | None = None,
     check_mmp: bool = False,
     adversarial: bool = True,
     n_jobs: int = 1,
@@ -523,8 +525,8 @@ def audit_split(
 
     shared_mmp_contexts = None  # not implemented in this pass; documented gap, see module notes.
 
-    adv_auc: "float | None" = None
-    adv_ci: "tuple[float, float] | None" = None
+    adv_auc: float | None = None
+    adv_ci: tuple[float, float] | None = None
     if adversarial and train_idx.size and test_idx.size:
         adv_auc, adv_ci, _ = adversarial_validation(
             train_idx, test_idx, X, featurizer=featurizer, random_state=random_state

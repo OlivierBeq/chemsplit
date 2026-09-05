@@ -20,9 +20,9 @@ from chemsplit._optimize import BalanceProblem, _objective
 from chemsplit._unionfind import UnionFind, dense_label_encode
 from chemsplit.base import (
     SplitResult,
-    _ResolvedSizes,
     _decode_index_array,
     _encode_index_array,
+    _ResolvedSizes,
     assign_groups,
     resolve_sizes,
 )
@@ -309,7 +309,6 @@ def _fate_map(result, n):
 def test_temporal_splitter_is_order_invariant(perm):
     from chemsplit.splitters.lineage import TemporalSplitter
 
-    rng = np.random.default_rng(0)
     base_dates = np.array(
         ["2020-01-01", "2020-02-01", "2020-03-01", "2020-04-01", "2020-05-01", "2020-06-01",
          "2020-07-01", "2020-08-01", "2020-09-01", "2020-10-01", "2020-11-01", "2020-12-01"],

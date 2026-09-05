@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
 import numpy as np
 
@@ -25,7 +25,7 @@ __all__ = [
 EPS = 1e-9
 
 
-def resolve_featurizer(spec_or_instance: "str | Featurizer", **kw: Any) -> Featurizer:
+def resolve_featurizer(spec_or_instance: str | Featurizer, **kw: Any) -> Featurizer:
     """Thin wrapper around :func:`chemsplit.featurizers.get_featurizer`.
 
     Lets callers that only import ``chemsplit._fp_similarity`` resolve a featurizer without a
@@ -80,7 +80,7 @@ class SimilarityParamsMixin:
     def __init__(
         self,
         *,
-        featurizer: "str | Featurizer" = "ecfp4",
+        featurizer: str | Featurizer = "ecfp4",
         metric: MetricName = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
         n_jobs: int = 1,
@@ -113,7 +113,7 @@ class SimilarityParamsMixin:
 
 def _pairwise(
     ctx: Any,
-    featurizer: "str | Featurizer",
+    featurizer: str | Featurizer,
     metric: MetricName,
     max_memory_bytes: int,
     splitter_name: str,
@@ -127,7 +127,7 @@ def _pairwise(
 
 def compute_distance_matrix(
     ctx: Any,
-    featurizer: "str | Featurizer",
+    featurizer: str | Featurizer,
     metric: MetricName,
     max_memory_bytes: int,
     splitter_name: str,
@@ -139,7 +139,7 @@ def compute_distance_matrix(
 
 def compute_similarity_matrix(
     ctx: Any,
-    featurizer: "str | Featurizer",
+    featurizer: str | Featurizer,
     metric: MetricName,
     max_memory_bytes: int,
     splitter_name: str,

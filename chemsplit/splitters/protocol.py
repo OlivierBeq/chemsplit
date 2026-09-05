@@ -36,7 +36,7 @@ _ACCEPTS: tuple[str,...] = ("smiles", "mol", "features", "interactions", "sequen
 # ---------------------------------------------------------------------------
 
 
-def _resolve_splitter(design: "str | BaseSplitter | None", param_name: str) -> BaseSplitter:
+def _resolve_splitter(design: str | BaseSplitter | None, param_name: str) -> BaseSplitter:
     """Resolve a constructor parameter that names another splitter, either as an already-
     instantiated object or as a registry id/class-name string."""
     if design is None:
@@ -121,18 +121,14 @@ class GroupKFoldSplitter(GroupSplitter):
     """K-fold cross-validation whose folds respect a grouping, so no group straddles a fold
     boundary.
 
-    Parameters
-    ----------
-    grouper: str or GroupSplitter, optional
-        Supplies group labels via its ``compute_groups()``. Ignored if ``groups=`` is passed
-        directly to ``split()``/``split_result()``. Resolved from a registry id if given as
+    :param grouper: Supplies group labels via its ``compute_groups()``. Ignored if ``groups=`` is
+        passed directly to ``split()``/``split_result()``. Resolved from a registry id if given as
         a string (e.g. ``"butina"``).
-    n_splits: int or "auto", default 5
-        Number of folds. ``"auto"`` sets ``n_splits = n_groups`` (leave-one-group-out).
-    **base
-        See :class:`chemsplit.base.GroupSplitter`. ``train_size``/``valid_size``/``test_size``
-        must be left at their default (``None``) — fold sizes come from ``n_splits``, not a size
-        design, mirroring `KFoldSplitter`'s same rule.
+    :param n_splits: Number of folds. ``"auto"`` sets ``n_splits = n_groups``
+        (leave-one-group-out).
+    :param base: See :class:`chemsplit.base.GroupSplitter`. ``train_size``/``valid_size``/
+        ``test_size`` must be left at their default (``None``) — fold sizes come from
+        ``n_splits``, not a size design, mirroring `KFoldSplitter`'s same rule.
 
     Notes
     -----
@@ -169,8 +165,8 @@ class GroupKFoldSplitter(GroupSplitter):
     def __init__(
         self,
         *,
-        grouper: "str | GroupSplitter | None" = None,
-        n_splits: "int | Literal['auto']" = 5,
+        grouper: str | GroupSplitter | None = None,
+        n_splits: int | Literal['auto'] = 5,
         size_tolerance: float = 0.05,
         group_assignment: Literal["greedy_desc", "balanced", "random"] = "greedy_desc",
         **base: Any,
@@ -258,14 +254,10 @@ class ThreeWaySplitter(BaseSplitter):
     """Apply a wrapped splitter's criterion at BOTH boundaries: train<->valid and
     (train union valid)<->test.
 
-    Parameters
-    ----------
-    base_splitter: str or BaseSplitter
-        The splitter whose criterion carves each boundary (e.g. a scaffold splitter, applied
-        first to separate (train+valid) from test, then again — on the (train+valid) subset only
-        — to separate train from valid).
-    **base
-        See :class:`chemsplit.base.BaseSplitter`. ``valid_size`` must be set to something
+    :param base_splitter: The splitter whose criterion carves each boundary (e.g. a scaffold
+        splitter, applied first to separate (train+valid) from test, then again — on the
+        (train+valid) subset only — to separate train from valid).
+    :param base: See :class:`chemsplit.base.BaseSplitter`. ``valid_size`` must be set to something
         non-empty for a genuine three-way split; left at its default it silently degenerates to a
         two-way split with an empty ``valid``.
 
@@ -301,7 +293,7 @@ class ThreeWaySplitter(BaseSplitter):
     deterministic_method: ClassVar[bool] = True
     order_invariant: ClassVar[bool] = False
 
-    def __init__(self, *, base_splitter: "str | BaseSplitter | None" = None, **base: Any) -> None:
+    def __init__(self, *, base_splitter: str | BaseSplitter | None = None, **base: Any) -> None:
         super().__init__(**base)
         self.base_splitter = base_splitter
         if base_splitter is None:
@@ -366,16 +358,11 @@ class RepeatedSplitter(BaseSplitter):
     """Repeat a wrapped splitter under multiple derived seeds, for split-induced variance
     estimation.
 
-    Parameters
-    ----------
-    base_splitter: str or BaseSplitter
-        The splitter to repeat.
-    n_repeats: int, default 10
-        Number of repeats. Each repeat's ``random_state`` is derived independently
+    :param base_splitter: The splitter to repeat.
+    :param n_repeats: Number of repeats. Each repeat's ``random_state`` is derived independently
         (``purpose="repeated.base_seed"``), so results across repeats are decorrelated even if
         ``base_splitter`` was itself constructed with a fixed seed.
-    **base
-        See :class:`chemsplit.base.BaseSplitter`.
+    :param base: See :class:`chemsplit.base.BaseSplitter`.
 
     Advantages
     ----------
@@ -404,7 +391,7 @@ class RepeatedSplitter(BaseSplitter):
     def __init__(
         self,
         *,
-        base_splitter: "str | BaseSplitter | None" = None,
+        base_splitter: str | BaseSplitter | None = None,
         n_repeats: int = 10,
         **base: Any,
     ) -> None:
@@ -452,15 +439,10 @@ class NestedCVSplitter(BaseSplitter):
     produce inner train/valid folds — the sanctioned way to combine hyperparameter selection with
     an honest outer test score.
 
-    Parameters
-    ----------
-    outer_splitter: str or BaseSplitter
-        Determines the outer train/test folds.
-    inner_splitter: str or BaseSplitter
-        Run on each outer fold's train subset only, to produce inner train/valid pairs. A fresh,
-        independently-seeded clone runs per outer fold.
-    **base
-        See :class:`chemsplit.base.BaseSplitter`.
+    :param outer_splitter: Determines the outer train/test folds.
+    :param inner_splitter: Run on each outer fold's train subset only, to produce inner
+        train/valid pairs. A fresh, independently-seeded clone runs per outer fold.
+    :param base: See :class:`chemsplit.base.BaseSplitter`.
 
     Notes
     -----
@@ -497,8 +479,8 @@ class NestedCVSplitter(BaseSplitter):
     def __init__(
         self,
         *,
-        outer_splitter: "str | BaseSplitter | None" = None,
-        inner_splitter: "str | BaseSplitter | None" = None,
+        outer_splitter: str | BaseSplitter | None = None,
+        inner_splitter: str | BaseSplitter | None = None,
         **base: Any,
     ) -> None:
         super().__init__(**base)
@@ -575,18 +557,13 @@ class NestedCVSplitter(BaseSplitter):
 class ExternalHoldoutSplitter(BaseSplitter):
     """Force a caller-supplied external dataset to be the entire test partition.
 
-    Parameters
-    ----------
-    X_external: sequence
-        The external holdout set, in the same accepted form as the main ``X`` (e.g. a list of
-        SMILES). Conceptually appended after the main dataset: its records get global indices
-        ``n. n+m-1``.
-    y_external: array-like, optional
-        Labels for the external set (not otherwise used by this splitter; carried through for
-        the caller's convenience, e.g. for downstream scoring).
-    **base
-        See :class:`chemsplit.base.BaseSplitter`. Size parameters (``train_size`` etc.) are
-        unused — every original record is ``train``, every external record is ``test``.
+    :param X_external: The external holdout set, in the same accepted form as the main ``X``
+        (e.g. a list of SMILES). Conceptually appended after the main dataset: its records get
+        global indices ``n. n+m-1``.
+    :param y_external: Labels for the external set (not otherwise used by this splitter; carried
+        through for the caller's convenience, e.g. for downstream scoring).
+    :param base: See :class:`chemsplit.base.BaseSplitter`. Size parameters (``train_size`` etc.)
+        are unused — every original record is ``train``, every external record is ``test``.
 
     Notes
     -----
@@ -664,16 +641,12 @@ class ApplicabilityDomainSplitter(BaseSplitter):
     """Produce a SERIES of test "bands" at increasing nearest-neighbour distance from train —
     a distance-vs-performance curve, not a single split.
 
-    Parameters
-    ----------
-    base_splitter: str or BaseSplitter, optional
-        Supplies the initial train/test partition (default: ``RandomSplitter`` sized per this
-        wrapper's own ``train_size``/``test_size``).
-    n_bands: int, default 5
-        Number of equal-count bands the test set is cut into, ordered by increasing
+    :param base_splitter: Supplies the initial train/test partition (default: ``RandomSplitter``
+        sized per this wrapper's own ``train_size``/``test_size``).
+    :param n_bands: Number of equal-count bands the test set is cut into, ordered by increasing
         nearest-neighbour distance to train.
-    featurizer: str, default "ecfp4"
-    metric: str, default "tanimoto"
+    :param featurizer: Featurizer alias used to compute nearest-neighbour distances.
+    :param metric: Distance metric used to compute nearest-neighbour distances.
 
     Notes
     -----
@@ -710,7 +683,7 @@ class ApplicabilityDomainSplitter(BaseSplitter):
     def __init__(
         self,
         *,
-        base_splitter: "str | BaseSplitter | None" = None,
+        base_splitter: str | BaseSplitter | None = None,
         n_bands: int = 5,
         featurizer: str = "ecfp4",
         metric: str = "tanimoto",

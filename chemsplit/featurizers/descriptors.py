@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from rdkit import Chem
 
 #: Fixed 12-descriptor order — do not reorder.
 _PHYSCHEM_DESCRIPTORS = (
@@ -21,7 +25,7 @@ class PhysChemFeaturizer:
     def transform(self, mols: Sequence[Any]) -> np.ndarray:
         from rdkit.Chem import Descriptors, rdMolDescriptors
 
-        def num_heteroatoms(mol):
+        def num_heteroatoms(mol: Chem.rdchem.Mol) -> int:
             return sum(1 for atom in mol.GetAtoms() if atom.GetAtomicNum() not in (1, 6))
 
         fns = {

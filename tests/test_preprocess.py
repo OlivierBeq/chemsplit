@@ -215,7 +215,7 @@ def test_aggregate_replicates_max_spread_drops():
     df = pd.DataFrame({"inchikey": ["A", "A", "B", "B"], "y": [1.0, 10.0, 5.0, 5.1]})
     agg, dropped = pp.aggregate_replicates(df, method="median", max_spread=1.0)
     assert set(agg["inchikey"]) == {"B"}
-    assert set(dropped["inchikey"]) == {"A", "A"} or list(dropped["inchikey"]) == ["A", "A"]
+    assert set(dropped["inchikey"]) == {"A"} or list(dropped["inchikey"]) == ["A", "A"]
 
 
 def test_aggregate_replicates_drop_conflicting():
