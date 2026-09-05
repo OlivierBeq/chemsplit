@@ -111,3 +111,7 @@ ignore = [
     "B017",  # `pytest.raises(Exception)` is a deliberate, accepted "this call must fail" pattern
 ]
 "tools/*" = ["ANN"]
+"notebooks/*" = [
+    "ANN",
+    "E402",  # imports interleaved with narrative markdown/setup cells is normal notebook structure
+]
