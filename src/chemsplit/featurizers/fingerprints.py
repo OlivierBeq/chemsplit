@@ -24,6 +24,11 @@ class ECFPFeaturizer:
         self.n_features = n_bits
 
     def transform(self, mols: Sequence[Any]) -> sp.csr_matrix:
+        """Featurize a batch of molecules.
+
+        :param mols: the molecules. A ``None`` entry becomes an all-zero row.
+        :return: the fingerprint matrix, one row per molecule.
+        """
         from rdkit.Chem import rdFingerprintGenerator
 
         gen = rdFingerprintGenerator.GetMorganGenerator(
@@ -54,6 +59,11 @@ class FCFPFeaturizer:
         self.n_features = n_bits
 
     def transform(self, mols: Sequence[Any]) -> sp.csr_matrix:
+        """Featurize a batch of molecules.
+
+        :param mols: the molecules. A ``None`` entry becomes an all-zero row.
+        :return: the fingerprint matrix, one row per molecule.
+        """
         from rdkit.Chem import rdFingerprintGenerator
 
         inv_gen = rdFingerprintGenerator.GetMorganFeatureAtomInvGen()
@@ -78,6 +88,11 @@ class MACCSFeaturizer:
     n_features = 167
 
     def transform(self, mols: Sequence[Any]) -> sp.csr_matrix:
+        """Featurize a batch of molecules.
+
+        :param mols: the molecules. A ``None`` entry becomes an all-zero row.
+        :return: the fingerprint matrix, one row per molecule.
+        """
         from rdkit.Chem import rdMolDescriptors
 
         rows = []
@@ -105,6 +120,11 @@ class RDKitFPFeaturizer:
         self.n_features = n_bits
 
     def transform(self, mols: Sequence[Any]) -> sp.csr_matrix:
+        """Featurize a batch of molecules.
+
+        :param mols: the molecules. A ``None`` entry becomes an all-zero row.
+        :return: the fingerprint matrix, one row per molecule.
+        """
         from rdkit.Chem import rdFingerprintGenerator
 
         gen = rdFingerprintGenerator.GetRDKitFPGenerator(
@@ -131,6 +151,11 @@ class AvalonFeaturizer:
         self.n_features = n_bits
 
     def transform(self, mols: Sequence[Any]) -> sp.csr_matrix:
+        """Featurize a batch of molecules.
+
+        :param mols: the molecules. A ``None`` entry becomes an all-zero row.
+        :return: the fingerprint matrix, one row per molecule.
+        """
         from rdkit.Avalon import pyAvalonTools
 
         rows = []
@@ -155,6 +180,11 @@ class AtomPairFeaturizer:
         self.n_features = n_bits
 
     def transform(self, mols: Sequence[Any]) -> sp.csr_matrix:
+        """Featurize a batch of molecules.
+
+        :param mols: the molecules. A ``None`` entry becomes an all-zero row.
+        :return: the fingerprint matrix, one row per molecule.
+        """
         from rdkit.Chem import rdFingerprintGenerator
 
         gen = rdFingerprintGenerator.GetAtomPairGenerator(fpSize=self.n_bits, countSimulation=False)
@@ -179,6 +209,11 @@ class TopTorsionFeaturizer:
         self.n_features = n_bits
 
     def transform(self, mols: Sequence[Any]) -> sp.csr_matrix:
+        """Featurize a batch of molecules.
+
+        :param mols: the molecules. A ``None`` entry becomes an all-zero row.
+        :return: the fingerprint matrix, one row per molecule.
+        """
         from rdkit.Chem import rdFingerprintGenerator
 
         gen = rdFingerprintGenerator.GetTopologicalTorsionGenerator(fpSize=self.n_bits)

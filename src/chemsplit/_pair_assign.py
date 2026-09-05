@@ -1,18 +1,14 @@
-"""Shared √f two-axis independent group assignment.
-"""
+"""Shared sqrt(f) two-axis independent group assignment."""
 
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 import numpy as np
 
 from chemsplit.base import _ResolvedSizes, assign_groups
 from chemsplit.types import IndexArray
-
-if TYPE_CHECKING:
-    pass
 
 __all__ = ["assign_pair_groups"]
 
@@ -24,19 +20,23 @@ def _axis_train_test(
     mode_assignment: Literal["greedy_desc", "balanced", "random"],
     rng: np.random.Generator,
 ) -> tuple[set[int], set[int]]:
-    """Run a single axis's independent train/test split at fraction ``f_target``.
+    """Run one axis's independent train/test split at fraction ``f_target``.
 
-    Returns ``(train_indices, test_indices)`` as plain ``set[int]`` (every record with a defined
-    label lands in exactly one of the two -- this is a two-bucket-only call into
-    :func:`chemsplit.base.assign_groups`, so there is no third/discard bucket at the axis level;
-    discarding only happens later, from disagreement between the two axes).
+    This is a two-bucket call into :func:`chemsplit.base.assign_groups`, so there is no discard
+    bucket at the axis level; records are only discarded later, where the two axes disagree.
+
+    :param labels: dense group labels for this axis.
+    :param n: the record count.
+    :param f_target: the test fraction to aim for on this axis.
+    :param mode_assignment: how groups are handed to buckets.
+    :param rng: generator for ``mode_assignment="random"``.
+    :return: the train and test index sets. Every labelled record lands in exactly one.
     """
     if n == 0:
         return set(), set()
     n_test = int(round(f_target * n))
     n_test = max(0, min(n, n_test))
-    # assign_groups drops any bucket whose capacity is 0 from its returned dict; guard both ends
-    # so the caller always gets both keys back.
+    # assign_groups omits zero-capacity buckets, so clamp to keep both keys present
     n_test = max(1, min(n - 1, n_test)) if 0 < n_test < n else n_test
     sizes = _ResolvedSizes(n_train=n - n_test, n_valid=0, n_test=n_test)
     result = assign_groups(labels, sizes, mode_assignment, rng)
@@ -54,32 +54,32 @@ def assign_pair_groups(
     mode: Literal["both_novel", "either_novel"] = "both_novel",
     group_assignment: Literal["greedy_desc", "balanced", "random"] = "greedy_desc",
 ) -> dict[str, IndexArray]:
-    """Assign records to train/valid/test by intersecting two independent, √f-sized group axes.
+    """Assign records to train/valid/test by intersecting two independent group axes.
 
-    ``labels_a``/``labels_b`` are dense ``0..g-1`` int64 group-label arrays, same length ``n``,
-    aligned by record (record ``i`` belongs to group ``labels_a[i]`` on axis A and
-    ``labels_b[i]`` on axis B). ``sizes`` gives the overall train/valid/test targets; each axis is
-    independently thinned at ``sqrt(fraction)`` (see module docstring), then the two axes' masks
-    are combined per ``mode``:
+    ``labels_a`` and ``labels_b`` are dense ``0..g-1`` arrays of the same length, aligned by
+    record. Each axis is thinned independently at ``sqrt(fraction)`` so that the intersection
+    lands near the requested overall fraction, then the two axes' masks are combined:
 
-    - ``"both_novel"``: ``test = axis_a_test ∩ axis_b_test``, ``train = axis_a_train ∩
-      axis_b_train``, everything else (the two axes disagree) → ``discard``. This is the strict
-      "novel on both axes" semantics (cold-start pair / joint ligand+sequence splitting).
-    - ``"either_novel"``: ``test = axis_a_test ∪ axis_b_test`` (novel on at least one axis counts
-      as test), ``train = axis_a_train ∩ axis_b_train`` (train stays conservative -- novel on
-      neither axis), everything else → ``discard``.
+    - ``"both_novel"`` intersects both the test masks and the train masks, and discards every
+      record the two axes disagree on. This is the strict "novel on both axes" semantics.
+    - ``"either_novel"`` unions the test masks, so novelty on one axis is enough, while train
+      stays the conservative intersection. The rest is discarded.
 
-    The three-way case (``sizes.n_valid > 0``) extends the same idea: each axis targets
-    ``sqrt(f_valid)``/``sqrt(f_test)`` independently for its valid/test buckets (via two
-    axis-level three-bucket ``assign_groups`` calls), and the three final buckets are formed by
-    pairwise intersection/union of the matching bucket on each axis, in bucket order
-    ``train, valid, test``. This extension follows the same logic as the train/test-only case but
-    is not independently hand-verified -- the train/test-only path is the one covered by
-    hand-checked tests below.
+    The three-way case extends the same idea, with each axis targeting ``sqrt(f_valid)`` and
+    ``sqrt(f_test)`` for its own buckets. That extension follows the two-way logic but only the
+    two-way path is covered by hand-checked tests.
 
-    No rebalancing is attempted after intersection: realized sizes are reported as-is (typical,
-    expected behavior for a doubly-constrained assignment -- see the module docstring's note on why
-    the intersection fraction is only approximately the target).
+    Nothing is rebalanced after intersecting, so the realised sizes are reported as they come
+    out, which for a doubly constrained assignment will not match the request exactly.
+
+    :param labels_a: dense group labels on the first axis.
+    :param labels_b: dense group labels on the second axis.
+    :param sizes: the overall train/valid/test targets.
+    :param rng: generator for ``group_assignment="random"``.
+    :param mode: require novelty on both axes, or on either one.
+    :param group_assignment: how groups are handed to buckets within each axis; see
+        :func:`chemsplit.base.assign_groups`.
+    :return: a mapping from partition name to member indices, plus ``"discard"``.
     """
     n = len(labels_a)
     if len(labels_b) != n:
@@ -95,10 +95,13 @@ def assign_pair_groups(
         train_b, test_b = _axis_train_test(labels_b, n, sqrt_test, group_assignment, rng)
         valid_a = valid_b = set()
     else:
-        # Three-bucket axis split: valid gets sqrt(f_valid), test gets sqrt(f_test), remainder
-        # is train, per axis independently.
-        train_a, valid_a, test_a = _axis_three_way(labels_a, n, sqrt_valid, sqrt_test, group_assignment, rng)
-        train_b, valid_b, test_b = _axis_three_way(labels_b, n, sqrt_valid, sqrt_test, group_assignment, rng)
+        # per axis: valid takes sqrt(f_valid), test sqrt(f_test), the rest is train
+        train_a, valid_a, test_a = _axis_three_way(
+            labels_a, n, sqrt_valid, sqrt_test, group_assignment, rng
+        )
+        train_b, valid_b, test_b = _axis_three_way(
+            labels_b, n, sqrt_valid, sqrt_test, group_assignment, rng
+        )
 
     if mode == "both_novel":
         test = test_a & test_b

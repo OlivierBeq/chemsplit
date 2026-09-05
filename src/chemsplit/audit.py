@@ -29,9 +29,6 @@ _DEFAULT_THRESHOLDS = (0.4, 0.6, 0.8, 0.9, 0.99)
 _QUANTILE_POINTS = (0.0, 0.05, 0.25, 0.5, 0.75, 0.95, 1.0)
 
 
-# -
-# X handling: accept SMILES sequences or an already-featurized matrix
-# -
 
 
 def _is_smiles_like(X: Any) -> bool:
@@ -39,7 +36,7 @@ def _is_smiles_like(X: Any) -> bool:
 
 
 def _featurize(X: Any, featurizer_spec: str | Any) -> Any:
-    """Return a feature matrix for ``X``, resolving a string/Featurizer design only if X is SMILES."""
+    """Featurize ``X``, resolving the featurizer only when ``X`` is not already a matrix."""
     if _is_smiles_like(X):
         from rdkit import Chem
 
@@ -57,9 +54,6 @@ def _mols_or_none(X: Any) -> list | None:
     return [Chem.MolFromSmiles(s) for s in X]
 
 
-# -
-# NNProfile
-# -
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -109,9 +103,18 @@ def nn_similarity_profile(
     metric: str = "tanimoto",
     n_jobs: int = 1,
 ) -> NNProfile:
-    """Nearest-neighbour **distance** profile from each ``query_idx`` record to the nearest
-    ``ref_idx`` record. (Callers wanting a *similarity* profile invert: ``1 - values``, as
-    :func:`audit_split` does for its ``nn_similarity`` field.)
+    """Nearest-neighbour distance from each query record to the closest reference record.
+
+    For a similarity profile, invert the result, as :func:`audit_split` does for its
+    ``nn_similarity`` field.
+
+    :param query_idx: indices of the records to measure from, typically the test set.
+    :param ref_idx: indices of the records to measure to, typically the training set.
+    :param X: the records, as SMILES, molecules or a feature matrix.
+    :param featurizer: featurizer alias or instance.
+    :param metric: the distance metric.
+    :param n_jobs: worker count. Results never depend on it.
+    :return: one distance per query record, in ``query_idx`` order.
     """
     F = _featurize(X, featurizer)
     query_idx = np.asarray(query_idx, dtype=np.int64)
@@ -124,11 +127,6 @@ def nn_similarity_profile(
     return _nn_profile_from_distances(distances)
 
 
-# -
-# adversarial_validation
-# -
-
-
 def adversarial_validation(
     train_idx: Sequence[int],
     test_idx: Sequence[int],
@@ -139,11 +137,20 @@ def adversarial_validation(
     cv: int = 5,
     random_state: int = 0,
 ) -> tuple[float, tuple[float, float], dict[str, Any]]:
-    """Fit a classifier to distinguish train- from test-side records via cross-validation.
+    """Cross-validate a classifier that tries to tell train-side from test-side records.
 
-    Returns ``(mean_auc, (ci_low, ci_high), feature_importances)``. The 95% CI is the 2.5/97.5
-    percentile of the per-fold AUC values (``numpy.percentile(..., method="linear")``), not a
-    parametric interval -- appropriate given the small number of folds typically used.
+    The 95% interval is the 2.5th to 97.5th percentile of the per-fold AUCs, not a parametric
+    interval, which suits the small fold counts typically used.
+
+    :param train_idx: indices on the train side.
+    :param test_idx: indices on the test side.
+    :param X: the records, as SMILES, molecules or a feature matrix.
+    :param featurizer: featurizer alias or instance.
+    :param classifier: ``"logreg"`` or ``"gbdt"``.
+    :param cv: cross-validation folds.
+    :param random_state: seeds the classifier and the fold assignment.
+    :raises ParameterError: if ``classifier`` is unknown.
+    :return: the mean AUC, its interval, and the per-feature importances.
     """
     from sklearn.ensemble import HistGradientBoostingClassifier
     from sklearn.linear_model import LogisticRegression
@@ -195,11 +202,6 @@ def adversarial_validation(
     return mean_auc, (ci_low, ci_high), feature_importances
 
 
-# -
-# y_scramble_control
-# -
-
-
 def y_scramble_control(
     estimator: Any,
     X: Any,
@@ -210,11 +212,22 @@ def y_scramble_control(
     scorer: Callable[[np.ndarray, np.ndarray], float] | None = None,
     random_state: int = 0,
 ) -> dict[str, Any]:
-    """Refit ``estimator`` on ``n_repeats`` independent shufflings of the train-side ``y``,
-    score each on the real test set, and compare to the observed (unscrambled) score.
+    """Compare the observed score against scores from shuffled training labels.
 
-    "Passes" (the model is not simply exploiting a distributional artefact of the split) is
-    defined as the observed score exceeding at least 95% of the scrambled-label scores.
+    The estimator is refit on ``n_repeats`` independent shufflings of the train-side ``y`` and
+    scored on the real test set each time. Passing -- meaning the model is not just exploiting a
+    distributional artefact of the split -- is defined as the observed score beating at least
+    95% of the scrambled ones.
+
+    :param estimator: an sklearn-style estimator, refit per repeat.
+    :param X: the records, passed to the estimator unchanged.
+    :param y: the true labels.
+    :param split: the split to evaluate.
+    :param n_repeats: how many shufflings to run.
+    :param scorer: maps ``(y_true, y_pred)`` to a score, or ``None`` for R² on continuous
+        labels and ROC-AUC on binary ones.
+    :param random_state: seeds the shufflings.
+    :return: the observed score, the scrambled scores, and whether the control passed.
     """
     import copy
 
@@ -263,9 +276,6 @@ def y_scramble_control(
     }
 
 
-# -
-# LeakageReport
-# -
 
 _PHYSCHEM_DESCRIPTORS = (
     "MolWt", "MolLogP", "TPSA", "NumHDonors", "NumHAcceptors", "NumRotatableBonds",
@@ -310,9 +320,11 @@ class LeakageReport:
             f"n_train={self.n_train}  n_valid={self.n_valid}  n_test={self.n_test}  "
             f"n_discard={self.n_discard}",
             f"max cross-partition similarity: {self.max_similarity:.4f}",
-            f"median NN similarity (test->train): {1.0 - self.nn_similarity.quantiles.get(0.5, float('nan')):.4f}",
+            "median NN similarity (test->train): "
+            f"{1.0 - self.nn_similarity.quantiles.get(0.5, float('nan')):.4f}",
             f"exact duplicates across partitions: {self.n_exact_duplicates_across}",
-            f"shared scaffolds: {self.shared_scaffolds}  shared ring systems: {self.shared_ring_systems}",
+            f"shared scaffolds: {self.shared_scaffolds}  "
+            f"shared ring systems: {self.shared_ring_systems}",
         ]
         if self.adversarial_auc is not None:
             lines.append(
@@ -383,9 +395,6 @@ class LeakageReport:
         return out
 
 
-# -
-# helpers for LeakageReport construction
-# -
 
 
 def _exact_duplicates_across(
@@ -458,7 +467,10 @@ def _property_shift(train_idx: np.ndarray, test_idx: np.ndarray, X: Any) -> dict
     out: dict[str, float] = {}
     for j, name in enumerate(_PHYSCHEM_DESCRIPTORS):
         a, b = F[train_idx, j], F[test_idx, j]
-        pooled_std = np.sqrt((a.var(ddof=1) + b.var(ddof=1)) / 2.0) if len(a) > 1 and len(b) > 1 else 0.0
+        if len(a) > 1 and len(b) > 1:
+            pooled_std = np.sqrt((a.var(ddof=1) + b.var(ddof=1)) / 2.0)
+        else:
+            pooled_std = 0.0
         d = 0.0 if pooled_std == 0 else float((b.mean() - a.mean()) / pooled_std)
         out[name] = d
     return out
@@ -479,11 +491,27 @@ def audit_split(
     random_state: int = 0,
     max_memory_bytes: int = 2 * 1024**3,
 ) -> LeakageReport:
-    """Compute a purely descriptive :class:`LeakageReport` for ``split``.
+    """Compute a purely descriptive :class:`LeakageReport` for a split.
 
-    ``X`` may be a SMILES sequence (structural checks -- scaffolds, ring systems, exact duplicates,
-    property shift -- run) or an already-featurized matrix (structural checks that require
-    molecules are skipped and reported as 0/None).
+    Purely descriptive: it never fails a pipeline, it reports what to look at.
+
+    :param split: the split to audit.
+    :param X: the records. SMILES or molecules enable the structural checks -- scaffolds, ring
+        systems, exact duplicates, property shift -- which a feature matrix reports as zero or
+        ``None``.
+    :param y: labels, enabling the label-shift and adversarial statistics.
+    :param featurizer: featurizer alias or instance.
+    :param metric: the distance metric.
+    :param thresholds: the similarity thresholds to count cross-partition pairs at.
+    :param sources: per-record provenance labels, enabling the source-overlap counts.
+    :param check_mmp: also count matched-molecular-pair overlap, which costs an MMPA
+        fragmentation.
+    :param adversarial: run :func:`adversarial_validation` as part of the report.
+    :param n_jobs: worker count. Results never depend on it.
+    :param random_state: seeds the adversarial classifier.
+    :param max_memory_bytes: ceiling on any pairwise matrix.
+    :raises ScalabilityError: if a pairwise matrix would exceed ``max_memory_bytes``.
+    :return: the :class:`LeakageReport`.
     """
     train_idx, test_idx, valid_idx = split.train, split.test, split.valid
 

@@ -24,11 +24,6 @@ __all__ = [
 ArchitectureName = Literal["bnb", "milp", "greedy", "local_search", "anneal"]
 
 
-# -
-# Data model
-# -
-
-
 @dataclass(frozen=True, slots=True)
 class BalanceProblem:
     """Assign ``n_items`` atomic units to ``n_buckets``, minimising weighted deviation from
@@ -40,16 +35,13 @@ class BalanceProblem:
         shape ``(n_items,)``.
     :param bucket_target_size: Target aggregate ``item_size`` per bucket (e.g. ``resolve_sizes``'
         train/valid/test targets, or per-fold targets for k-fold), shape ``(n_buckets,)``.
-    :param size_tolerance: Recorded for callers' feasibility interpretation; not itself enforced
-        as a hard constraint by the heuristic backends (they minimise the weighted deviation,
-        they do not reject solutions outside tolerance -- callers decide feasibility from the
-        returned objective/realised sizes).
-    :param item_task_counts: Per-item, per-task label counts (e.g. non-NaN label count within the
-        item), shape ``(n_items, n_tasks)``. ``None`` when there is no task dimension (e.g. the
-        hit-identification splitter's component-balance problem).
-    :param item_task_actives: Per-item, per-task active/positive counts, shape
-        ``(n_items, n_tasks)``. Only meaningful when ``item_task_counts`` is also given; ignored
-        otherwise.
+    :param size_tolerance: recorded, not enforced. The heuristic backends minimise the
+        weighted deviation rather than rejecting out-of-tolerance solutions, so callers judge
+        feasibility from the returned objective and realised sizes.
+    :param item_task_counts: per-item, per-task label counts, shape ``(n_items, n_tasks)``, or
+        ``None`` where there is no task dimension, as in a component-balance problem.
+    :param item_task_actives: per-item, per-task active counts, shape
+        ``(n_items, n_tasks)``. Ignored unless ``item_task_counts`` is given too.
     :param task_weight: Per-task objective weight, shape ``(n_tasks,)``. Defaults to all-ones
         when omitted but ``item_task_counts`` is given.
     :param task_tolerance: Recorded for callers' feasibility interpretation, mirroring
@@ -99,13 +91,14 @@ class BalanceSolution:
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
-# -
-# Shared objective
-# -
-
-
 def _bucket_sums(item_values: np.ndarray, assignment: np.ndarray, n_buckets: int) -> np.ndarray:
-    """Sum ``item_values`` (shape (n_items,) or (n_items, k)) grouped by ``assignment`` bucket."""
+    """Sum item values per bucket, for the objective every backend shares.
+
+    :param item_values: shape ``(n_items,)`` or ``(n_items, k)``.
+    :param assignment: the bucket each item sits in.
+    :param n_buckets: how many buckets to sum over.
+    :return: the per-bucket sums.
+    """
     if item_values.ndim == 1:
         return np.bincount(assignment, weights=item_values, minlength=n_buckets)
     out = np.zeros((n_buckets, item_values.shape[1]), dtype=np.float64)
@@ -122,9 +115,11 @@ def _objective(problem: BalanceProblem, assignment: np.ndarray) -> float:
 
     ``objective = size_term + count_term + actives_term`` where:
 
-    - ``size_term = sum_b |realised_size[b] - bucket_target_size[b]| / max(1, mean(bucket_target_size))``
+    - ``size_term = sum_b |realised_size[b] - bucket_target_size[b]|
+      / max(1, mean(bucket_target_size))``
     - ``count_term`` (only when ``item_task_counts`` is given) =
-      ``sum_{t,b} task_weight[t] * |realised_count[t,b] - target_share[t,b]| / max(1, task_total[t])``,
+      ``sum_{t,b} task_weight[t] * |realised_count[t,b] - target_share[t,b]|
+      / max(1, task_total[t])``,
       where ``target_share[t,b] = bucket_target_size[b] / sum(bucket_target_size) * task_total[t]``
       (each task's total mass distributed proportionally to bucket size targets).
     - ``actives_term`` -- the same formula applied to ``item_task_actives`` in place of
@@ -171,14 +166,12 @@ def _objective(problem: BalanceProblem, assignment: np.ndarray) -> float:
     return total
 
 
-# -
-# Incremental bucket-state bookkeeping (used by local_search and anneal)
-# -
-
-
 class _BucketState:
-    """Running per-bucket totals, enabling O(n_tasks) delta-objective evaluation of a single
-    item move instead of an O(n_items) full-objective recomputation."""
+    """Running per-bucket totals, used by the local-search and annealing backends.
+
+    They let a single item move be scored in ``O(n_tasks)`` instead of recomputing the whole
+    objective in ``O(n_items)``.
+    """
 
     __slots__ = (
         "problem",
@@ -261,8 +254,13 @@ class _BucketState:
         )
 
     def move_delta(self, item: int, from_bucket: int, to_bucket: int) -> float:
-        """Objective change from moving ``item`` out of ``from_bucket`` into ``to_bucket``,
-        without mutating state."""
+        """Score moving one item between buckets, without mutating state.
+
+        :param item: the item to move.
+        :param from_bucket: its current bucket.
+        :param to_bucket: the proposed bucket.
+        :return: the change in the objective. Negative is an improvement.
+        """
         before = self._size_term(self.bucket_size)
         size = self.bucket_size.copy()
         size[from_bucket] -= self.problem.item_size[item]
@@ -287,6 +285,12 @@ class _BucketState:
         return delta
 
     def apply_move(self, item: int, from_bucket: int, to_bucket: int) -> None:
+        """Move one item between buckets, updating the cached totals.
+
+        :param item: the item to move.
+        :param from_bucket: its current bucket.
+        :param to_bucket: its new bucket.
+        """
         self.bucket_size[from_bucket] -= self.problem.item_size[item]
         self.bucket_size[to_bucket] += self.problem.item_size[item]
         if self.bucket_counts is not None:
@@ -295,11 +299,6 @@ class _BucketState:
         if self.bucket_actives is not None:
             self.bucket_actives[from_bucket] -= self.problem.item_task_actives[item]
             self.bucket_actives[to_bucket] += self.problem.item_task_actives[item]
-
-
-# -
-# Backends
-# -
 
 
 def _solve_greedy(
@@ -696,9 +695,8 @@ def _solve_milp(
     from chemsplit.determinism import argmax_tiebreak
 
     x = res.x[:n_x].reshape(n_items, n_buckets)
-    # Rounding a near-binary MILP solution to a hard assignment; ties (essentially never seen from
-    # a real solve, but routed through argmax_tiebreak for the same smallest-index determinism
-    # guarantee as everywhere else --).
+    # round a near-binary MILP solution to a hard assignment; ties go through
+    # argmax_tiebreak for the usual smallest-index guarantee
     assignment = np.array(
         [argmax_tiebreak(lambda b, row=x[i]: row[b], range(n_buckets)) for i in range(n_items)],
         dtype=np.int64,
@@ -720,14 +718,9 @@ def _solve_milp(
     )
 
 
-# -
-# Dispatcher
-# -
-
-# Thresholds on n_items*n_buckets, frozen empirically. See
-# tests/test_optimize.py::test_dispatch_thresholds_stable, which pins these values so an
-# accidental edit is caught. "auto" never routes to milp above the tiny bnb-eligible regime;
-# milp stays available as an explicit opt-in (used as an exactness oracle in tests).
+# Thresholds on n_items*n_buckets, frozen empirically and pinned by
+# test_dispatch_thresholds_stable. "auto" never routes to milp above the bnb-eligible regime;
+# milp stays an explicit opt-in, and an exactness oracle in tests.
 _DISPATCH_BNB_MAX_BINARIES = 48  # n_items <= 16 guard (below) dominates in practice
 
 
@@ -761,11 +754,25 @@ def solve_balance(
     anneal_t0: float = 1.0,
     anneal_t1: float = 0.01,
 ) -> BalanceSolution:
-    """Solve ``problem``, dispatching to the architecture named (or, for ``"auto"``, selected by
-    the frozen, size-keyed :func:`_select_architecture` lookup table)."""
+    """Solve a balance problem with the named backend.
+
+    :param problem: the problem to solve.
+    :param rng: generator for the stochastic backends, or ``None``.
+    :param time_limit_s: wall-clock limit on the solve.
+    :param architecture: the backend to use, or ``"auto"`` for the frozen, size-keyed
+        :func:`_select_architecture` lookup.
+    :param mip_gap: relative optimality gap at which the MILP backend stops.
+    :param anneal_steps: steps taken by the annealing backend.
+    :param anneal_t0: starting temperature for annealing.
+    :param anneal_t1: final temperature for annealing.
+    :raises ValueError: if ``architecture`` names no known backend.
+    :return: the solution, with the assignment, objective and solver status.
+    """
     name = _select_architecture(problem) if architecture == "auto" else architecture
     if name not in _BACKENDS:
-        raise ValueError(f"unknown architecture {name!r}; expected one of {sorted(_BACKENDS)} or 'auto'")
+        raise ValueError(
+            f"unknown architecture {name!r}; expected one of {sorted(_BACKENDS)} or 'auto'"
+        )
 
     if name == "anneal":
         return _solve_anneal(

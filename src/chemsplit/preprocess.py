@@ -38,9 +38,6 @@ __all__ = [
 ]
 
 
-# -
-# Input kind detection
-# -
 
 _DATAFRAME_SELECTORS = (
     "smiles_col",
@@ -54,8 +51,19 @@ _DATAFRAME_SELECTORS = (
 
 
 def detect_input_kind(X: Any, x_kind: str | None = None) -> str:
-    """Detect the kind of ``X``. ``x_kind`` (the ``X_kind`` splitter keyword) resolves the
-    only genuine ambiguity -- SMILES strings vs. protein sequences, both ``Sequence[str]``."""
+    """Detect what kind of records ``X`` holds.
+
+    The only genuine ambiguity is SMILES against protein sequences, since both arrive as
+    ``Sequence[str]``; ``x_kind`` resolves it.
+
+    :param X: the records.
+    :param x_kind: the caller's ``X_kind`` hint, or ``None`` to infer.
+    :raises InputKindError: if ``X`` is of no recognised kind, or ``x_kind`` names an unknown
+        one.
+    :raises EmptyInputError: if ``X`` is empty.
+    :return: one of ``"smiles"``, ``"mol"``, ``"features"``, ``"sequences"`` or
+        ``"interactions"``.
+    """
     if x_kind is not None:
         return x_kind
 
@@ -95,6 +103,12 @@ def detect_input_kind(X: Any, x_kind: str | None = None) -> str:
 
 
 def input_length(X: Any, x_kind: str) -> int:
+    """Count the records in ``X``.
+
+    :param X: the records.
+    :param x_kind: the detected input kind, which decides how length is read.
+    :return: the record count.
+    """
     if x_kind == "dataframe":
         return len(X)
     import scipy.sparse
@@ -105,8 +119,15 @@ def input_length(X: Any, x_kind: str) -> int:
 
 
 def resolve_dataframe_columns(df: pd.DataFrame, **selectors: str | None) -> dict[str, Any]:
-    """Resolve DataFrame column selectors. Missing columns raise ``ColumnError``. If
-    ``smiles_col`` is omitted, raise rather than guess a ``"smiles"``-named column."""
+    """Resolve column selectors against a frame.
+
+    A missing ``smiles_col`` raises rather than guessing a column named ``"smiles"``.
+
+    :param df: the frame.
+    :param selectors: selector name to column name, e.g. ``smiles_col="SMILES"``.
+    :raises ColumnError: if a named column is absent from ``df``.
+    :return: selector name to the resolved column, with unset selectors omitted.
+    """
     if "smiles_col" not in selectors or selectors.get("smiles_col") is None:
         raise ColumnError(
             "DataFrame input requires an explicit smiles_col= keyword; chemsplit never guesses "
@@ -123,9 +144,6 @@ def resolve_dataframe_columns(df: pd.DataFrame, **selectors: str | None) -> dict
     return out
 
 
-# -
-# Molecule parsing
-# -
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -136,8 +154,14 @@ class ParseFailure:
 
 
 def parse_smiles(s: str) -> Any:
-    """Parse one SMILES string. Returns ``None`` on failure (the caller is responsible for
-    recording a :class:`ParseFailure` -- this function does not raise per-record)."""
+    """Parse one SMILES string.
+
+    Per-record failures are the caller's to record as a :class:`ParseFailure`, so this never
+    raises.
+
+    :param s: the SMILES string.
+    :return: the molecule, or ``None`` if it did not parse.
+    """
     from rdkit import Chem
 
     return Chem.MolFromSmiles(s, sanitize=True)
@@ -154,9 +178,6 @@ def _parse_all(smiles_list: Sequence[str]) -> tuple[list[Any], list[ParseFailure
     return mols, failures
 
 
-# -
-# Standardisation
-# -
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -169,7 +190,12 @@ class StandardizeConfig:
 
 
 def standardize(mol: Any, config: StandardizeConfig | None = None) -> Any:
-    """The 6-step standardisation pipeline, applied in exact order."""
+    """Run the six-step standardisation pipeline, in order.
+
+    :param mol: the molecule.
+    :param config: which steps to apply, or ``None`` for the defaults.
+    :return: the standardised molecule, or ``None`` if a step failed.
+    """
     if config is None:
         config = StandardizeConfig()
     from rdkit import Chem
@@ -220,15 +246,18 @@ def standardize(mol: Any, config: StandardizeConfig | None = None) -> Any:
     return m
 
 
-# -
-# Deduplication
-# -
 
 
 def dedup_key(
     mol: Any, config: StandardizeConfig | None = None
 ) -> tuple[str, bool]:
-    """Returns ``(key, used_fallback)``."""
+    """Compute a molecule's deduplication key.
+
+    :param mol: the molecule.
+    :param config: standardisation settings, or ``None`` for the defaults.
+    :return: the key, and whether the InChIKey fallback was used because the primary key could
+        not be computed.
+    """
     from rdkit import Chem
 
     m = standardize(mol, config)
@@ -243,9 +272,15 @@ def dedup_key(
 def find_duplicates(
     mols: Sequence[Any], config: StandardizeConfig | None = None
 ) -> tuple[dict[str, list[int]], list[int]]:
-    """Returns ``(key -> sorted indices sharing that key, indices that used the InChIKey
-    fallback)``. Only keys shared by >= 2 records are meaningful duplicates, but all keys are
-    returned; callers filter."""
+    """Group molecules by deduplication key.
+
+    Every key is returned, not only the shared ones, so callers filter for themselves.
+
+    :param mols: the molecules.
+    :param config: standardisation settings, or ``None`` for the defaults.
+    :return: key to the sorted indices sharing it, plus the indices that fell back to an
+        InChIKey.
+    """
     keyed: dict[str, list[int]] = {}
     fallbacks: list[int] = []
     for i, mol in enumerate(mols):
@@ -258,9 +293,6 @@ def find_duplicates(
     return keyed, fallbacks
 
 
-# -
-# Replicate aggregation
-# -
 
 
 def aggregate_replicates(
@@ -270,8 +302,21 @@ def aggregate_replicates(
     method: Literal["median", "mean", "max", "min", "first", "drop_conflicting"] = "median",
     max_spread: float | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Aggregate replicate measurements sharing ``key_col``. Not part of any splitter -- a
-    standalone preprocessing utility. Returns ``(aggregated, dropped)``."""
+    """Collapse replicate measurements that share a key.
+
+    A standalone utility: no splitter calls it.
+
+    :param df: the frame to aggregate.
+    :param key_col: the column identifying replicates.
+    :param value_col: the column to aggregate.
+    :param method: how replicates are combined, or ``"drop_conflicting"`` to drop any key whose
+        spread exceeds ``max_spread``.
+    :param max_spread: the spread above which replicates count as conflicting, or ``None`` for
+        no limit.
+    :raises ColumnError: if ``key_col`` or ``value_col`` is absent.
+    :raises ParameterError: if ``method`` is unknown, or ``max_spread`` is negative.
+    :return: the aggregated frame, and the rows dropped from it.
+    """
     grouped = df.groupby(key_col, sort=False)
     spreads = grouped[value_col].agg(lambda s: s.max() - s.min())
     to_drop_keys: set[Any] = set()
@@ -299,11 +344,6 @@ def aggregate_replicates(
     return aggregated, dropped
 
 
-# -
-# The pipeline glue used by BaseSplitter._run (not itself part of this project's public surface)
-# -
-
-
 @dataclasses.dataclass(frozen=True, slots=True)
 class PipelineResult:
     mols: list[Any] | None
@@ -324,6 +364,29 @@ def run_pipeline(
     group_forming: bool = False,
     config: StandardizeConfig | None = None,
 ) -> PipelineResult:
+    """Parse, standardise and deduplicate ``X`` before a split.
+
+    Called by ``BaseSplitter._run``; splitters do not call it themselves.
+
+    :param X: the records.
+    :param y: labels, or ``None``.
+    :param groups: precomputed group labels, or ``None``.
+    :param x_kind: the detected input kind.
+    :param on_parse_error: raise on an unparseable record, discard it, or leave it as ``None``
+        for downstream code to treat as all-zero features.
+    :param standardize: run the standardisation pipeline over the parsed molecules.
+    :param on_duplicates: warn about duplicate records, raise, ignore them, or keep them
+        together as one group.
+    :param group_forming: whether the calling splitter forms groups, which decides whether
+        duplicates can be grouped.
+    :param config: standardisation settings, or ``None`` for the defaults.
+    :raises MoleculeParseError: if a record fails to parse and ``on_parse_error="raise"``.
+    :raises DuplicateRecordError: if duplicates exist and ``on_duplicates="raise"``.
+    :raises ConfigurationError: if ``on_duplicates="group"`` is asked of a splitter that forms
+        no groups.
+    :return: the parsed molecules and SMILES, the labels, the records forced into ``discard``,
+        and the duplicate group labels where duplicates were grouped.
+    """
     if on_duplicates == "group" and not group_forming:
         raise ConfigurationError(
             "on_duplicates='group' is only legal for group-forming splitters"
@@ -351,13 +414,13 @@ def run_pipeline(
                         details={"count": len(failures), "indices": [f.index for f in failures]},
                     )
                 )
-            # "ignore": mols[i] stays None; downstream featurizers must treat None as all-zero
+            # ignore: mols[i] stays None, and featurizers read that as all-zero
     elif x_kind == "mol":
         mols = list(X)
         smiles_list = None
 
     if mols is not None and not standardize:
-        # standardisation is off by default; warn once if the stripped form differs.
+        # standardisation is off by default, so warn once if stripping would change anything
         cfg = config or StandardizeConfig()
         n_differs = 0
         for mol in mols:

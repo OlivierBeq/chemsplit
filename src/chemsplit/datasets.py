@@ -1,14 +1,9 @@
 """Reference and synthetic dataset fixtures.
 
-Every generator is a pure function of its ``seed`` argument (where applicable): same seed ->
-byte-identical output, no network access, no unseeded randomness.
-
-``_SCAFFOLD_CORES`` and ``_SUBSTITUENTS`` are independently chosen, RDKit-verified building
-blocks (10 distinct ring systems x >=20 non-ring-introducing substituents), used by
-``make_scaffold_families``, ``make_dated_series``, and ``make_multitask_sparse``.
-
-Real network dataset loaders (e.g. ``load_esol``, ``load_bace``) are out of scope for this
-module for now.
+Every generator is a pure function of its ``seed``: byte-identical output, no network access,
+no unseeded randomness. The shared building blocks are ten RDKit-verified ring systems and
+twenty-odd non-ring-introducing substituents. Loaders for real networked datasets are out of
+scope here.
 """
 
 from __future__ import annotations
@@ -58,9 +53,6 @@ class Fixture:
     extra: dict[str, Any] = dataclasses.field(default_factory=dict)
 
 
-# -
-# Shared scaffold-core / substituent pool
-# -
 
 _SCAFFOLD_CORES: list[tuple[str, str]] = [
     ("benzene", "c1ccc(cc1){sub}"),
@@ -134,8 +126,8 @@ def _scaffold_family_smiles(
     groups_true: list[int] = []
     for g in range(n_scaffolds):
         _, template = _SCAFFOLD_CORES[g]
-        # Deterministic per-group ordering of substituent indices, then a seeded shuffle so
-        # different seeds still produce a full, exact per_scaffold membership (never fewer).
+        # deterministic substituent order, then a seeded shuffle, so every seed still fills
+        # each group to exactly per_scaffold
         order = list(range(per_scaffold))
         rng.shuffle(order)
         for k in order:
@@ -158,17 +150,16 @@ def _verify_smiles_parse(smiles: list[str], *, context: str) -> None:
         )
 
 
-# -
-# make_linear_series
-# -
-
-
 def make_linear_series(n: int = 200, seed: int = 0) -> Fixture:
     """A congeneric single-scaffold series.
 
-    All ``n`` molecules share one core (benzene); ``y`` is a smooth function of substituent chain
-    length plus seeded Gaussian noise, so it is genuinely predictable from structure (useful as a
-    "sanity" fixture where a reasonable model should do well under any split).
+    Every molecule shares a benzene core, and ``y`` is a smooth function of substituent chain
+    length plus seeded Gaussian noise, so it really is predictable from structure. Useful where
+    a reasonable model should score well under any split.
+
+    :param n: number of records.
+    :param seed: seeds the noise and the substituent draw.
+    :return: the fixture, with ``y`` set.
     """
     rng = np.random.default_rng(seed)
     _, template = _SCAFFOLD_CORES[0]
@@ -181,18 +172,19 @@ def make_linear_series(n: int = 200, seed: int = 0) -> Fixture:
     return Fixture(smiles=smiles, y=y)
 
 
-# -
-# make_scaffold_families
-# -
-
-
 def make_scaffold_families(
     n_scaffolds: int = 10, per_scaffold: int = 20, seed: int = 0
 ) -> Fixture:
-    """The canonical group-forming ground-truth fixture.
+    """Scaffold families with a known ground-truth grouping.
 
-    Exactly ``n_scaffolds`` groups of exactly ``per_scaffold`` molecules, each group sharing one
-    Murcko scaffold. Self-asserts its own ground truth at construction.
+    Produces exactly ``n_scaffolds`` groups of exactly ``per_scaffold`` molecules, each group
+    sharing one Murcko scaffold, and checks that grouping on construction.
+
+    :param n_scaffolds: how many scaffold groups to build.
+    :param per_scaffold: molecules per group.
+    :param seed: seeds the substituent draw.
+    :raises InvariantError: if the generated molecules do not reproduce the intended grouping.
+    :return: the fixture, with ``y`` and ``groups_true`` set.
     """
     smiles, groups_true = _scaffold_family_smiles(n_scaffolds, per_scaffold, seed)
     n = n_scaffolds * per_scaffold
@@ -216,18 +208,19 @@ def make_scaffold_families(
     return Fixture(smiles=smiles, groups_true=groups_true)
 
 
-# -
-# make_two_clusters
-# -
-
-
 def make_two_clusters(n: int = 200, separation: float = 0.9, seed: int = 0) -> Fixture:
     """Two chemically distant molecule families.
 
-    Cluster A is built from ring-rich aromatic cores (benzene/naphthalene/indole/quinoline),
-    cluster B from ring-free/aliphatic-only substituent chains on a saturated core, which reliably
-    yields a large ECFP4 Tanimoto gap between clusters. Self-verified at construction (retries
-    with a perturbed internal seed if the first attempt doesn't hit a clear separation).
+    One cluster is built from ring-rich aromatic cores, the other from aliphatic chains on a
+    saturated core, which reliably leaves a large ECFP4 Tanimoto gap between them. The
+    separation is checked on construction, retrying with a perturbed internal seed if the first
+    attempt falls short.
+
+    :param n: number of records, split evenly between the clusters.
+    :param separation: the minimum between-cluster distance to achieve.
+    :param seed: seeds the construction.
+    :raises InvariantError: if the separation cannot be reached.
+    :return: the fixture, with ``y`` and ``groups_true`` set.
     """
     from chemsplit.featurizers import get_featurizer
     from chemsplit.metrics import pairwise_distances
@@ -281,16 +274,15 @@ def _mean_upper(S: np.ndarray) -> float:
     return float(np.mean(S[iu]))
 
 
-# -
-# make_activity_cliffs
-# -
-
-
 def make_activity_cliffs(n_pairs: int = 50, seed: int = 0) -> Fixture:
-    """50 matched-pair "activity cliffs".
+    """Matched pairs that are activity cliffs by construction.
 
-    Each pair shares one Murcko scaffold (same core) and differs by exactly one substituent;
-    ``y`` (log-scale) differs between the two members of a pair by exactly ``2.0``.
+    Each pair shares a Murcko scaffold and differs by one substituent, and the two members'
+    log-scale ``y`` differ by exactly 2.0.
+
+    :param n_pairs: how many cliff pairs to build. The fixture holds ``2 * n_pairs`` records.
+    :param seed: seeds the substituent draw.
+    :return: the fixture, with ``y`` and ``groups_true`` set, one group per pair.
     """
     rng = np.random.default_rng(seed)
     _, template = _SCAFFOLD_CORES[0]
@@ -311,14 +303,13 @@ def make_activity_cliffs(n_pairs: int = 50, seed: int = 0) -> Fixture:
     )
 
 
-# -
-# make_dated_series
-# -
-
-
 def make_dated_series(n: int = 500, seed: int = 0) -> Fixture:
-    """make_scaffold_families-style scaffold families plus a date column correlated with
-    scaffold group."""
+    """Scaffold families plus a date column correlated with the grouping.
+
+    :param n: number of records.
+    :param seed: seeds the substituent draw and the date jitter.
+    :return: the fixture, with ``y``, ``dates`` and ``groups_true`` set.
+    """
     n_scaffolds = 10
     per_scaffold = max(1, n // n_scaffolds)
     smiles, groups_true = _scaffold_family_smiles(n_scaffolds, per_scaffold, seed)
@@ -332,18 +323,19 @@ def make_dated_series(n: int = 500, seed: int = 0) -> Fixture:
     return Fixture(smiles=smiles, dates=dates, groups_true=groups_true)
 
 
-# -
-# make_multitask_sparse
-# -
-
-
 def make_multitask_sparse(
     n: int = 500, n_tasks: int = 8, density: float = 0.3, seed: int = 0
 ) -> Fixture:
-    """Sparse multi-task labels.
+    """Sparse multi-task labels over scaffold families.
 
-    ``y`` is ``(n, n_tasks)`` with ~``density`` fraction non-NaN; task 0 is deliberately
-    near-empty (only 3 labelled records) to stress-test multi-task balance splitters.
+    Task 0 is deliberately near-empty, with three labelled records, to stress multi-task
+    balance splitters.
+
+    :param n: number of records.
+    :param n_tasks: label columns.
+    :param density: roughly the fraction of entries that are not NaN.
+    :param seed: seeds the label draw.
+    :return: the fixture, with an ``(n, n_tasks)`` ``y`` and ``groups_true`` set.
     """
     n_scaffolds = 10
     per_scaffold = max(1, n // n_scaffolds)
@@ -353,7 +345,7 @@ def make_multitask_sparse(
     y = np.full((n_actual, n_tasks), np.nan, dtype=np.float64)
     mask = rng.random((n_actual, n_tasks)) < density
     y[mask] = rng.normal(0.0, 1.0, size=int(mask.sum()))
-    # Force task 0 to have exactly 3 labelled records (adversarial sparsity).
+    # task 0 gets exactly 3 labelled records, as an adversarially sparse case
     y[:, 0] = np.nan
     sparse_idx = rng.choice(n_actual, size=3, replace=False)
     y[sparse_idx, 0] = rng.normal(0.0, 1.0, size=3)
@@ -369,15 +361,17 @@ def make_multitask_sparse(
     return Fixture(smiles=smiles, y=y, groups_true=groups_true)
 
 
-# -
-# make_interactions
-# -
-
-
 def make_interactions(
     n_compounds: int = 100, n_targets: int = 20, density: float = 0.25, seed: int = 0
 ) -> Fixture:
-    """A compound x target interaction table."""
+    """A compound-by-target interaction table.
+
+    :param n_compounds: distinct compounds.
+    :param n_targets: distinct targets.
+    :param density: roughly the fraction of the matrix that is populated.
+    :param seed: seeds the draw.
+    :return: the fixture, with ``targets`` and ``interactions`` set.
+    """
     n_scaffolds = min(10, n_compounds)
     per_scaffold = max(1, n_compounds // n_scaffolds)
     smiles, groups_true = _scaffold_family_smiles(n_scaffolds, per_scaffold, seed)
@@ -394,9 +388,6 @@ def make_interactions(
     return Fixture(smiles=smiles, targets=targets, interactions=interactions)
 
 
-# -
-# make_sequences
-# -
 
 _AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY"
 
@@ -404,10 +395,17 @@ _AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY"
 def make_sequences(
     n: int = 20, families: int = 4, identity_within: float = 0.8, seed: int = 0
 ) -> Fixture:
-    """Synthetic protein-like sequences in families with a target within-family identity.
-    Identity is Hamming-style (fraction of matching
-    positions against the family ancestor at equal length) -- a documented simplification, not a
-    full alignment-based identity."""
+    """Protein-like sequences grouped into families.
+
+    Identity here is positional -- the fraction of matching positions against the family
+    ancestor, at equal length -- rather than alignment-based.
+
+    :param n: number of sequences.
+    :param families: how many families to spread them over.
+    :param identity_within: the within-family identity to aim for.
+    :param seed: seeds the mutations.
+    :return: the fixture, with ``sequences`` and ``groups_true`` set.
+    """
     rng = np.random.default_rng(seed)
     per_family = n // families
     length = 60
@@ -426,7 +424,7 @@ def make_sequences(
             family_ids.append(f)
 
     groups_true = np.asarray(family_ids, dtype=np.int64)
-    # Self-check: mean within-family identity should be roughly identity_within.
+    # mean within-family identity should land near identity_within
     identities = []
     for f in range(families):
         members = [s for s, g in zip(sequences, family_ids, strict=True) if g == f]
@@ -451,18 +449,14 @@ def make_sequences(
     )
 
 
-# -
-# make_pathological
-# -
-
-
 def make_pathological() -> Fixture:
-    """12 hard-coded records covering every error path.
+    """Twelve fixed records covering every input error path.
 
-    No ``seed`` parameter (fully fixed). Composition: [0] unparseable SMILES,
-    [1] a salt, [2..3] a tautomer pair, [4..5] an enantiomer pair, [6..7] an exact duplicate pair,
-    [8] a macrocycle, [9] a fully acyclic (0-ring) molecule, [10] a large polymer-like chain,
-    [11] a plain valid small molecule (padding to exactly 12).
+    In order: an unparseable SMILES, a salt, a tautomer pair, an enantiomer pair, an exact
+    duplicate pair, a macrocycle, an acyclic molecule, a polymer-like chain, and one plain
+    valid small molecule.
+
+    :return: the fixture. Fully fixed, with no seed.
     """
     smiles = [
         "not_a_smiles(((",  # [0] unparseable
@@ -498,28 +492,22 @@ def make_pathological() -> Fixture:
     return Fixture(smiles=smiles)
 
 
-# -
-# make_all_identical
-# -
-
-
 def make_all_identical(n: int = 50) -> Fixture:
-    """``n`` copies of the same molecule. No seed
-    (fully deterministic)."""
+    """Copies of one molecule, for degenerate-input tests.
+
+    :param n: how many copies.
+    :return: the fixture. Fully deterministic, with no seed.
+    """
     smiles = ["CC(=O)Oc1ccccc1C(=O)O"] * n  # aspirin, repeated
     return Fixture(smiles=smiles)
 
 
-# -
-# make_singletons
-# -
 
 
 _DIVERSE_POOL: list[str] = [
-    # Deliberately heterogeneous: sugars, amino acids, steroids, nucleobases, common drugs,
-    # simple rings of every size, halogenated/charged/polar fragments, PEG, lipids, etc. Formulaic
-    # variation of one scaffold family (see ``_SCAFFOLD_CORES``) cannot reach low mutual ECFP4
-    # similarity on its own, hence this hand-curated pool.
+    # Hand-curated and heterogeneous: sugars, amino acids, steroids, nucleobases, drugs, rings
+    # of every size, halogenated and charged fragments, PEG, lipids. Varying one scaffold
+    # family cannot reach low mutual ECFP4 similarity.
     "CCO", "CCCCCCCCCCCCCCCC", "OCC(O)C(O)C(O)C(O)CO", "OCC1OC(O)C(O)C(O)C1O",
     "NC(CO)C(=O)O", "NC(CC(=O)O)C(=O)O", "NC(CS)C(=O)O", "NC(Cc1ccccc1)C(=O)O",
     "NC(Cc1c[nH]c2ccccc12)C(=O)O", "NC(CCCCN)C(=O)O", "NC(CCC(=O)N)C(=O)O",
@@ -553,16 +541,20 @@ _DIVERSE_POOL: list[str] = [
 
 
 def make_singletons(n: int = 100, seed: int = 0, max_similarity: float = 0.15) -> Fixture:
-    """``n`` molecules with max pairwise ECFP4 Tanimoto similarity < ``max_similarity``.
+    """Mutually dissimilar molecules, picked over the built-in pool.
 
-    Uses :func:`chemsplit.clustering.maxmin_pick` (greedy MaxMin diversity picking) over a pool
-    combining ``_DIVERSE_POOL`` with a combinatorial extension of ``_SCAFFOLD_CORES``.
+    Selection is greedy MaxMin diversity picking, via
+    :func:`chemsplit.clustering.maxmin_pick`.
 
-    The default ``n=100, max_similarity=0.15`` is not reliably achievable with this synthetic
-    pool: empirically, ``n=20`` reaches ~0.14 similarity but ``n=30`` already exceeds 0.15
-    (~0.18). Raises :class:`InvariantError` (naming the achieved similarity) if ``n``/
-    ``max_similarity`` can't be met -- for ``n=100``, pass a looser ``max_similarity`` (~0.35) or
-    supply a real diverse compound pool.
+    The synthetic pool will not reach the default ``n=100`` at ``max_similarity=0.15``: n=20
+    reaches about 0.14, and n=30 already exceeds 0.18. For n=100, a looser ``max_similarity``
+    around 0.35 works, or supply a real diverse compound pool.
+
+    :param n: how many molecules to pick.
+    :param seed: seeds the first MaxMin pick.
+    :param max_similarity: the pairwise ECFP4 Tanimoto ceiling to achieve.
+    :raises InvariantError: if the ceiling cannot be met, naming the similarity achieved.
+    :return: the fixture.
     """
     from chemsplit.clustering import maxmin_pick
     from chemsplit.featurizers import get_featurizer
@@ -617,13 +609,15 @@ def make_singletons(n: int = 100, seed: int = 0, max_similarity: float = 0.15) -
     return Fixture(smiles=accepted, extra={"achieved_max_similarity": achieved_max_sim})
 
 
-# -
-# make_label_extremes
-# -
-
-
 def make_label_extremes(n: int = 300, seed: int = 0) -> Fixture:
-    """Bimodal ``y`` plus a 60-record censored block fixed at exactly ``5.0``."""
+    """A bimodal label distribution with a censored block.
+
+    Sixty records sit at exactly 5.0, as a censored assay value would.
+
+    :param n: number of records.
+    :param seed: seeds the label draw.
+    :return: the fixture, with ``y`` set.
+    """
     n_censored = 60
     n_bimodal = n - n_censored
     n_scaffolds = 10

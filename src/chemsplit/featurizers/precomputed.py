@@ -19,6 +19,12 @@ class PrecomputedFeaturizer:
 
     def transform(self, mols: Sequence[Any]) -> np.ndarray | sp.csr_matrix:
         # `mols` is ignored for a precomputed matrix; `n` must match at call sites.
+        """Return the rows of the precomputed matrix corresponding to ``mols``.
+
+        :param mols: the molecules, used only for their count.
+        :raises InputError: if the count does not match the stored matrix.
+        :return: the stored feature matrix.
+        """
         return self._X
 
     def get_params(self) -> dict[str, Any]:

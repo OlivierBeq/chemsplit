@@ -1,5 +1,4 @@
-"""``python -m chemsplit`` command-line interface.
-"""
+"""``python -m chemsplit`` command-line interface."""
 
 from __future__ import annotations
 
@@ -22,11 +21,17 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="chemsplit", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_split = sub.add_parser("split", help="Run a splitter on an input CSV and write the split as JSON.")
-    p_split.add_argument("--splitter", required=True, help="Splitter id or class name (e.g. 'butina').")
+    p_split = sub.add_parser(
+        "split", help="Run a splitter on an input CSV and write the split as JSON."
+    )
+    p_split.add_argument(
+        "--splitter", required=True, help="Splitter id or class name (e.g. 'butina')."
+    )
     p_split.add_argument("--input", required=True, help="Path to a CSV file.")
     p_split.add_argument("--smiles-col", required=True, help="Name of the SMILES column.")
-    p_split.add_argument("--label-col", default=None, help="Name of the label (y) column, if any.")
+    p_split.add_argument(
+        "--label-col", default=None, help="Name of the label (y) column, if any."
+    )
     p_split.add_argument("--train-size", type=float, default=None)
     p_split.add_argument("--valid-size", type=float, default=None)
     p_split.add_argument("--test-size", type=float, default=None)
@@ -34,11 +39,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p_split.add_argument("--out", required=True, help="Path to write the split JSON to.")
 
     p_audit = sub.add_parser("audit", help="Audit an existing split for leakage.")
-    p_audit.add_argument("--split", required=True, help="Path to a split JSON file (from `chemsplit split`).")
-    p_audit.add_argument("--input", required=True, help="Path to the same CSV file the split was built from.")
+    p_audit.add_argument(
+        "--split", required=True, help="Path to a split JSON file (from `chemsplit split`)."
+    )
+    p_audit.add_argument(
+        "--input", required=True, help="Path to the CSV file the split was built from."
+    )
     p_audit.add_argument("--smiles-col", required=True)
     p_audit.add_argument("--out", required=True, help="Path to write the audit report JSON to.")
-    p_audit.add_argument("--fail-on", default=None, help="Comma-separated flag names; exit 4 if any fire.")
+    p_audit.add_argument(
+        "--fail-on", default=None, help="Comma-separated flag names; exit 4 if any fire."
+    )
 
     p_list = sub.add_parser("list", help="List registered splitters.")
     p_list.add_argument("--family", default=None)
@@ -109,6 +120,12 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Run the command-line interface.
+
+    :param argv: the arguments, or ``None`` to read ``sys.argv``.
+    :return: the process exit code: 0 on success, 2 for a validation error, 3 for a missing
+        optional dependency, 4 when ``audit --fail-on`` fires, and 1 for anything else.
+    """
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:

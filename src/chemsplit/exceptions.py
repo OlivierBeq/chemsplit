@@ -41,11 +41,6 @@ __all__ = [
 ]
 
 
-# -
-# Exception hierarchy
-# -
-
-
 class ChemSplitError(Exception):
     """Root of every exception chemsplit's public API can raise."""
 
@@ -184,11 +179,6 @@ class InvariantError(ChemSplitError, AssertionError):
         super().__init__(full_message)
 
 
-# -
-# Warning hierarchy
-# -
-
-
 class ChemSplitWarning(UserWarning):
     """Root of every warning chemsplit's public API can emit.
 
@@ -243,10 +233,11 @@ class HomologyLeakWarning(ChemSplitWarning):
 
 
 def warn_with_details(warning: ChemSplitWarning) -> None:
-    """Emit a :class:`ChemSplitWarning` instance with the correct stack level.
+    """Emit a :class:`ChemSplitWarning` at the caller's stack level.
 
-    Callers should use this helper rather than a bare ``warnings.warn(...)`` call: this function
-    adds one stack frame relative to the code that actually detected the condition, so it uses
-    ``stacklevel=3`` internally to make the warning point at the caller's caller.
+    Use this rather than a bare ``warnings.warn``, which would attribute the warning to this
+    library's own frame instead of the caller's.
+
+    :param warning: the warning instance to issue.
     """
     warnings.warn(warning, stacklevel=3)
