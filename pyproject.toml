@@ -67,6 +67,7 @@ chemsplit = "chemsplit.cli:main"
 version = { attr = "chemsplit.__version__" }
 
 [tool.setuptools.packages.find]
+where = ["src"]
 include = ["chemsplit*"]
 
 [tool.pytest.ini_options]

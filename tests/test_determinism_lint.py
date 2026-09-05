@@ -15,7 +15,7 @@ _ALLOWED_FILES = {"chemsplit/determinism.py"}
 
 
 def _chemsplit_root() -> Path:
-    return Path(__file__).resolve().parent.parent / "chemsplit"
+    return Path(__file__).resolve().parent.parent / "src" / "chemsplit"
 
 
 def test_no_bare_argmax_argmin_outside_determinism():
