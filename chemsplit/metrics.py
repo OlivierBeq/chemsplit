@@ -8,10 +8,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Literal
 
 import numpy as np
 import scipy.sparse as sp
+
+from chemsplit.types import FeatureMatrix
 
 MetricName = Literal["tanimoto", "dice", "cosine", "euclidean", "manhattan", "tanimoto_count"]
 
@@ -65,7 +68,7 @@ def _pack_rows_to_u64(X: np.ndarray) -> np.ndarray:
     return words
 
 
-def _to_packed_words(Xf) -> tuple[np.ndarray, np.ndarray]:
+def _to_packed_words(Xf: FeatureMatrix) -> tuple[np.ndarray, np.ndarray]:
     """Return (packed_u64_words (n, n_words), popcounts (n,)) for a binary feature matrix."""
     if sp.issparse(Xf):
         Xf = Xf.toarray()
@@ -77,7 +80,7 @@ def _to_packed_words(Xf) -> tuple[np.ndarray, np.ndarray]:
     return words, popcounts
 
 
-def _is_binary_like(Xf) -> bool:
+def _is_binary_like(Xf: FeatureMatrix) -> bool:
     if sp.issparse(Xf):
         data = Xf.data
     else:
@@ -93,12 +96,14 @@ def _is_binary_like(Xf) -> bool:
 # --------------------------------------------------------------------------------------
 
 
-def _block_ranges(n: int, block_size: int):
+def _block_ranges(n: int, block_size: int) -> Iterator[tuple[int, int]]:
     for start in range(0, n, block_size):
         yield start, min(start + block_size, n)
 
 
-def _tanimoto_block(words_a, pop_a, words_b, pop_b) -> np.ndarray:
+def _tanimoto_block(
+    words_a: np.ndarray, pop_a: np.ndarray, words_b: np.ndarray, pop_b: np.ndarray
+) -> np.ndarray:
     """float64 Tanimoto distance block, shape (len(a), len(b))."""
     na, nb = words_a.shape[0], words_b.shape[0]
     inter = np.zeros((na, nb), dtype=np.int64)
@@ -112,7 +117,9 @@ def _tanimoto_block(words_a, pop_a, words_b, pop_b) -> np.ndarray:
     return 1.0 - sim
 
 
-def _dice_block(words_a, pop_a, words_b, pop_b) -> np.ndarray:
+def _dice_block(
+    words_a: np.ndarray, pop_a: np.ndarray, words_b: np.ndarray, pop_b: np.ndarray
+) -> np.ndarray:
     na, nb = words_a.shape[0], words_b.shape[0]
     inter = np.zeros((na, nb), dtype=np.int64)
     for w in range(words_a.shape[1]):
@@ -161,8 +168,8 @@ def _minkowski_block(a: np.ndarray, b: np.ndarray, p: int) -> np.ndarray:
 
 
 def pairwise_distances(
-    Xf,
-    Yf=None,
+    Xf: FeatureMatrix,
+    Yf: FeatureMatrix | None = None,
     metric: MetricName = "tanimoto",
     n_jobs: int = 1,
     block_size: int = 2048,
@@ -230,7 +237,9 @@ def pairwise_distances(
     return out.astype(np.float32)
 
 
-def condensed_distances(Xf, metric: MetricName = "tanimoto", n_jobs: int = 1) -> np.ndarray:
+def condensed_distances(
+    Xf: FeatureMatrix, metric: MetricName = "tanimoto", n_jobs: int = 1
+) -> np.ndarray:
     """Condensed (upper-triangle, i<j, i ascending then j ascending) float32 distance vector.
 
     Matches ``scipy.spatial.distance.pdist``'s ordering convention.
@@ -242,12 +251,12 @@ def condensed_distances(Xf, metric: MetricName = "tanimoto", n_jobs: int = 1) ->
 
 
 def nn_distance(
-    Q,
-    R,
+    Q: FeatureMatrix,
+    R: FeatureMatrix,
     metric: MetricName = "tanimoto",
     n_jobs: int = 1,
     return_index: bool = False,
-):
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Nearest-neighbour distance (and optionally index) from each row of Q to R.
 
     Blocked over R to avoid materialising a full dense Q x R matrix at once when R is large.
@@ -270,6 +279,6 @@ def nn_distance(
     return best_dist.astype(np.float32)
 
 
-def tanimoto_similarity_matrix(Xf) -> np.ndarray:
+def tanimoto_similarity_matrix(Xf: FeatureMatrix) -> np.ndarray:
     """Convenience wrapper: ``1 - pairwise_distances(Xf, metric="tanimoto")``."""
     return 1.0 - pairwise_distances(Xf, metric="tanimoto")

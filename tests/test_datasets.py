@@ -36,8 +36,8 @@ def test_make_scaffold_families_exact_groups():
         assert int(np.sum(f.groups_true == g)) == 20
 
     # Every member of a group truly shares one Murcko scaffold.
-    from rdkit.Chem.Scaffolds import MurckoScaffold as MS
     from rdkit import Chem
+    from rdkit.Chem.Scaffolds import MurckoScaffold as MS
 
     mols = _mols(f.smiles)
     assert all(m is not None for m in mols)
@@ -105,7 +105,7 @@ def test_make_interactions_shapes():
     assert f.interactions
     max_possible = 50 * 10
     assert 0 < len(f.interactions) < max_possible
-    for ci, ti, y in f.interactions:
+    for ci, ti, _y in f.interactions:
         assert 0 <= ci < 50
         assert 0 <= ti < 10
 

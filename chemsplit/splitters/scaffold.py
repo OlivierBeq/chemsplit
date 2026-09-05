@@ -535,7 +535,7 @@ class RingSystemSplitter(_ScaffoldFamilyBase):
         if linkage not in ("any_shared", "all_shared"):
             raise ParameterError(f"invalid linkage: {linkage!r}")
 
-    def _ring_keys_for_mol(self, mol: "Chem.rdchem.Mol") -> set[str]:
+    def _ring_keys_for_mol(self, mol: Chem.rdchem.Mol) -> set[str]:
         if self.key == "ring_system":
             return set(
                 _scaffolds.ring_systems(mol, self.min_ring_size, self.max_ring_size)
@@ -959,7 +959,7 @@ class ActivityCliffSplitter(BaseSplitter):
         fold_change_threshold: float = 10.0,
         y_scale: Literal["log", "linear"] = "log",
         similarity: Literal["ecfp", "scaffold", "mmp", "substructure"] = "ecfp",
-        featurizer: "str | Any" = "ecfp4",
+        featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         cliff_target: Literal["test", "balanced"] = "test",
         keep_cliff_partners_together: bool = True,

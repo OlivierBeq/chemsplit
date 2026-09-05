@@ -4,7 +4,11 @@ import scipy.sparse as sp
 from rdkit import Chem
 
 from chemsplit.featurizers import get_featurizer
-from chemsplit.featurizers.descriptors import _PHYSCHEM_DESCRIPTORS, MQNFeaturizer, PhysChemFeaturizer
+from chemsplit.featurizers.descriptors import (
+    _PHYSCHEM_DESCRIPTORS,
+    MQNFeaturizer,
+    PhysChemFeaturizer,
+)
 from chemsplit.featurizers.fingerprints import (
     AtomPairFeaturizer,
     AvalonFeaturizer,

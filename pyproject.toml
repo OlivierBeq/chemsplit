@@ -54,7 +54,7 @@ dev = [
     "pytest>=7.4",
     "pytest-cov",
     "hypothesis>=6.90",
-    "numpydoc",
+    "ruff>=0.16",
 ]
 
 [project.urls]
@@ -88,3 +88,25 @@ omit = ["chemsplit/cli.py"]
 
 [tool.coverage.report]
 fail_under = 90
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ANN"]
+ignore = [
+    "ANN401",  # `Any` is legitimate for genuinely dynamic values (e.g. **kwargs passthrough)
+    "E501",    # line length unenforced: chemistry-domain identifiers and docstring prose read
+               # better unwrapped; no autoformatter is configured to rewrap consistently
+    "B023",    # argmax_tiebreak/argmin_tiebreak key-functions capture the enclosing loop
+               # variable but are always invoked synchronously within the same iteration, so
+               # the late-binding closure hazard this rule warns about cannot occur here
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    "ANN",
+    "B017",  # `pytest.raises(Exception)` is a deliberate, accepted "this call must fail" pattern
+]
+"tools/*" = ["ANN"]

@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import Any, Literal
 
 import numpy as np
@@ -17,7 +17,6 @@ from chemsplit.exceptions import (
     DuplicateWarning,
     InputKindError,
     MoleculeParseError,
-    ParameterError,
     ParseWarning,
     StandardizationWarning,
     warn_with_details,

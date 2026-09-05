@@ -58,7 +58,7 @@ def test_sequence_identity_keeps_families_atomic_hamming():
     # Direct correctness check: any two sequences with hamming identity > threshold share a label.
     for i in range(n):
         for j in range(i + 1, n):
-            m = sum(a == b for a, b in zip(fx.sequences[i], fx.sequences[j])) / min(
+            m = sum(a == b for a, b in zip(fx.sequences[i], fx.sequences[j], strict=False)) / min(
                 len(fx.sequences[i]), len(fx.sequences[j])
             )
             if m > 0.5:

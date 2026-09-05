@@ -309,7 +309,7 @@ def test_determinism_same_seed(splitter_id):
     results1 = inst1.split_result(X, y, **extra_kw)
     results2 = inst2.split_result(X, y, **extra_kw)
     assert len(results1) == len(results2)
-    for r1, r2 in zip(results1, results2):
+    for r1, r2 in zip(results1, results2, strict=True):
         assert np.array_equal(r1.train, r2.train)
         assert np.array_equal(r1.test, r2.test)
         assert np.array_equal(r1.valid, r2.valid)

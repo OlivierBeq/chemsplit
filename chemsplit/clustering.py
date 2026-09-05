@@ -3,7 +3,8 @@
 
 from __future__ import annotations
 
-from typing import Literal, Sequence
+from collections.abc import Sequence
+from typing import Literal
 
 import numpy as np
 import scipy.sparse as sp
@@ -126,7 +127,7 @@ def maxmin_pick(
     D: np.ndarray,
     n_picks: int,
     init: Literal["random", "kennard_stone", "most_peripheral", "index_zero"] = "random",
-    rng: "np.random.Generator | None" = None,
+    rng: np.random.Generator | None = None,
 ) -> list[int]:
     """Greedy MaxMin (Kennard-Stone family) diversity selection.
 
@@ -201,12 +202,12 @@ def _fix_eigenvector_signs(U: np.ndarray) -> np.ndarray:
 
 
 def spectral_partition(
-    W: "np.ndarray | sp.spmatrix",
+    W: np.ndarray | sp.spmatrix,
     n_clusters: int,
     laplacian: Literal["sym", "rw", "unnormalized"] = "sym",
     drop_first: bool = True,
     assign: Literal["kmeans", "discretize"] = "kmeans",
-    rng: "np.random.Generator | None" = None,
+    rng: np.random.Generator | None = None,
     random_state: int = 0,
 ) -> np.ndarray:
     """Laplacian-eigenmap spectral partition. Returns a dense-label-encoded int array of length n.

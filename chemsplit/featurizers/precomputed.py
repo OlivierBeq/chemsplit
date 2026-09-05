@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -11,12 +12,12 @@ import scipy.sparse as sp
 class PrecomputedFeaturizer:
     name = "precomputed"
 
-    def __init__(self, X: "np.ndarray | sp.spmatrix") -> None:
+    def __init__(self, X: np.ndarray | sp.spmatrix) -> None:
         self._X = X
         self.n_features = X.shape[1]
         self.is_binary = bool(sp.issparse(X) and X.dtype == np.uint8)
 
-    def transform(self, mols) -> "np.ndarray | sp.csr_matrix":
+    def transform(self, mols: Sequence[Any]) -> np.ndarray | sp.csr_matrix:
         # `mols` is ignored for a precomputed matrix; `n` must match at call sites.
         return self._X
 

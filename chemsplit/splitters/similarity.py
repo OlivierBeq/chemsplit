@@ -24,7 +24,14 @@ from chemsplit._fp_similarity import (
 )
 from chemsplit._optimize import BalanceProblem, solve_balance
 from chemsplit._unionfind import UnionFind, dense_label_encode
-from chemsplit.base import BaseSplitter, GroupSplitter, SplitResult, Strictness, _Context
+from chemsplit.base import (
+    BaseSplitter,
+    GroupSplitter,
+    SplitResult,
+    Strictness,
+    _Context,
+    _ResolvedSizes,
+)
 from chemsplit.determinism import argmax_tiebreak, argmin_tiebreak, seed_for, stable_sort
 from chemsplit.exceptions import (
     ConfigurationError,
@@ -91,7 +98,7 @@ def _sim_matrix(self: Any, ctx: _Context) -> np.ndarray:
 
 
 def _fill_remainder(
-    picked: list[int], n: int, sizes, rng: np.random.Generator, picked_goes_to: str
+    picked: list[int], n: int, sizes: _ResolvedSizes, rng: np.random.Generator, picked_goes_to: str
 ) -> dict[str, IndexArray]:
     """Shared tail logic for MaxMin/MaxDissimilarity-style splitters: ``picked`` fills one
     destination partition (train or test); the rest is shuffled to fill the remaining targets in
@@ -165,7 +172,7 @@ class SimilarityThresholdSplitter(_SimilarityGroupBase):
         seed_selection: Literal["random", "most_central", "most_peripheral"] = "random",
         allow_discard: bool = True,
         max_discard_frac: float = 0.5,
-        featurizer: "str | Any" = "ecfp4",
+        featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
         n_jobs: int = 1,
@@ -260,7 +267,6 @@ class SimilarityThresholdSplitter(_SimilarityGroupBase):
             forced = sorted(discarded)
             existing = set(ctx.extra.get("forced_discard", []))
             ctx.extra["forced_discard"] = sorted(existing | set(forced))
-            keys = [f"train_{i}" if i not in test else f"test_{i}" for i in range(n)]
             # each surviving record is its own singleton "group" so assign_groups just places it
             # in the bucket already decided above; encode via dense labels per-record.
             return np.arange(n, dtype=np.int64)
@@ -354,7 +360,7 @@ class ButinaSplitter(_SimilarityGroupBase):
         singleton_policy: Literal["own_group", "shared_group", "nearest_cluster"] = "own_group",
         algorithm: Literal["dense", "sparse"] = "dense",
         block_size: int = 2048,
-        featurizer: "str | Any" = "ecfp4",
+        featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
         n_jobs: int = 1,
@@ -491,15 +497,15 @@ class KMeansClusterSplitter(_SimilarityGroupBase):
     def __init__(
         self,
         *,
-        n_clusters: "int | Literal['auto']" = "auto",
+        n_clusters: int | Literal['auto'] = "auto",
         algorithm: Literal["kmeans", "minibatch_kmeans", "agglomerative", "birch"] = "kmeans",
         linkage: Literal["ward", "complete", "average", "single"] = "ward",
         auto_rule: Literal["sqrt_n", "n_over_50"] = "sqrt_n",
         auto_range: tuple[int, int] = (2, 50),
         batch_size: int = 1024,
-        reduce_dim: "int | None" = 128,
+        reduce_dim: int | None = 128,
         reduce_method: Literal["svd", "none"] = "svd",
-        featurizer: "str | Any" = "ecfp4",
+        featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
         n_jobs: int = 1,
@@ -628,7 +634,7 @@ class DensityClusterSplitter(_SimilarityGroupBase):
         min_samples: int = 5,
         min_cluster_size: int = 5,
         noise_policy: Literal["test", "train", "own_groups", "discard", "distribute"] = "own_groups",
-        featurizer: "str | Any" = "ecfp4",
+        featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
         n_jobs: int = 1,
@@ -679,7 +685,6 @@ class DensityClusterSplitter(_SimilarityGroupBase):
         noise = np.nonzero(labels == -1)[0]
         forced: list[int] = []
         if noise.size:
-            frac = noise.size / n
             if self.noise_policy == "discard":
                 forced = noise.tolist()
             elif self.noise_policy in ("test", "train"):
@@ -783,7 +788,7 @@ class SpectralSplitter(_SimilarityGroupBase):
         laplacian: Literal["sym", "rw", "unnormalized"] = "sym",
         assign: Literal["kmeans", "discretize"] = "kmeans",
         drop_first: bool = True,
-        featurizer: "str | Any" = "ecfp4",
+        featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
         n_jobs: int = 1,
@@ -892,8 +897,8 @@ class MaxMinSplitter(_SimilarityBase):
         *,
         picked_goes_to: Literal["train", "test"] = "train",
         init: Literal["random", "kennard_stone", "most_peripheral", "index_zero"] = "random",
-        n_picks: "int | None" = None,
-        featurizer: "str | Any" = "ecfp4",
+        n_picks: int | None = None,
+        featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
         n_jobs: int = 1,
@@ -997,7 +1002,7 @@ class MaxDissimilaritySplitter(_SimilarityBase):
         *,
         seed_pair: Literal["max_distance", "random"] = "max_distance",
         grow: Literal["nearest_to_seed", "nearest_to_set"] = "nearest_to_seed",
-        featurizer: "str | Any" = "ecfp4",
+        featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
         n_jobs: int = 1,
@@ -1116,7 +1121,7 @@ class PerimeterSplitter(_SimilarityBase):
         self,
         *,
         pair_rule: Literal["greedy_pairs", "outlier_score"] = "greedy_pairs",
-        featurizer: "str | Any" = "ecfp4",
+        featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
         n_jobs: int = 1,
@@ -1240,10 +1245,10 @@ class LeaveOneClusterOutSplitter(GroupSplitter):
     def __init__(
         self,
         *,
-        clusterer: "GroupSplitter | None" = None,
+        clusterer: GroupSplitter | None = None,
         min_cluster_size: int = 1,
         small_cluster_policy: Literal["merge_into_train", "own_fold", "pool"] = "merge_into_train",
-        max_folds: "int | None" = 50,
+        max_folds: int | None = 50,
         fold_order: Literal["size_desc", "size_asc", "index"] = "size_desc",
         size_tolerance: float = 0.05,
         group_assignment: Literal["greedy_desc", "balanced", "random"] = "greedy_desc",
@@ -1426,9 +1431,9 @@ class BalancedMultiTaskSplitter(GroupSplitter):
     def __init__(
         self,
         *,
-        clusterer: "GroupSplitter | None" = None,
-        clusterer_kwargs: "dict | None" = None,
-        task_weights: "list[float] | None" = None,
+        clusterer: GroupSplitter | None = None,
+        clusterer_kwargs: dict | None = None,
+        task_weights: list[float] | None = None,
         balance: Literal["counts", "counts_and_actives"] = "counts_and_actives",
         tolerance: float = 0.10,
         solver: Literal["auto", "milp", "heuristic"] = "auto",
@@ -1560,7 +1565,6 @@ class BalancedMultiTaskSplitter(GroupSplitter):
                 )
             )
 
-        bucket_idx = {name: i for i, (name, _) in enumerate(active_buckets)}
         out: dict[str, list[int]] = {"train": [], "valid": [], "test": []}
         for c in range(n_clusters):
             b = int(solution.assignment[c])

@@ -47,13 +47,9 @@ class RandomSplitter(BaseSplitter):
     The cheapest possible split and the correct control for "is my pipeline wired correctly?" —
     see Pitfalls below for why it is the wrong tool for "will this generalise?".
 
-    Parameters
-    ----------
-    shuffle: bool, default True
-        If ``False``, the split is a contiguous prefix/suffix cut in input order and
+    :param shuffle: If ``False``, the split is a contiguous prefix/suffix cut in input order and
         ``random_state`` is ignored (an *index split*).
-    **base
-        See :class:`chemsplit.base.BaseSplitter`.
+    :param base: See :class:`chemsplit.base.BaseSplitter`.
 
     Notes
     -----
@@ -226,16 +222,13 @@ class StratifiedRandomSplitter(BaseSplitter):
     """Random split stratified on the label (class balance for classification, quantile/uniform/
     k-means bins for regression), sized per-stratum by largest-remainder apportionment.
 
-    Parameters
-    ----------
-    task: {"auto", "classification", "regression"}, default "auto"
-    n_bins: int, default 10
-    binning: {"quantile", "uniform", "kmeans"}, default "quantile"
-    min_per_stratum: int, default 2
-    on_small_stratum: {"merge", "raise", "ignore"}, default "merge"
-    multitask: {"error", "first", "sum_labels", "iterative"}, default "error"
-    **base
-        See :class:`chemsplit.base.BaseSplitter`.
+    :param task: ``"auto"``, ``"classification"``, or ``"regression"``.
+    :param n_bins: Number of quantile/uniform/k-means bins for regression stratification.
+    :param binning: ``"quantile"``, ``"uniform"``, or ``"kmeans"``.
+    :param min_per_stratum: Minimum stratum size before ``on_small_stratum`` kicks in.
+    :param on_small_stratum: ``"merge"``, ``"raise"``, or ``"ignore"``.
+    :param multitask: ``"error"``, ``"first"``, ``"sum_labels"``, or ``"iterative"``.
+    :param base: See :class:`chemsplit.base.BaseSplitter`.
 
     Notes
     -----
@@ -388,16 +381,13 @@ class StratifiedRandomSplitter(BaseSplitter):
 class KFoldSplitter(BaseSplitter):
     """Standard (optionally stratified, optionally leave-one-out) k-fold cross-validation.
 
-    Parameters
-    ----------
-    n_splits: int or "loo", default 5
-    shuffle: bool, default True
-    stratify: bool, default False
-    stratify_kwargs: dict or None, default None
-    **base
-        See :class:`chemsplit.base.BaseSplitter`. ``train_size``/``valid_size``/``test_size`` MUST
-        be left ``None`` here (fold sizes are determined by ``n_splits``); passing any raises
-        :class:`chemsplit.exceptions.ConfigurationError`.
+    :param n_splits: Number of folds, or ``"loo"`` for leave-one-out.
+    :param shuffle: Whether to shuffle before folding.
+    :param stratify: Whether to stratify folds on the label.
+    :param stratify_kwargs: Extra kwargs forwarded to the stratification helper, or ``None``.
+    :param base: See :class:`chemsplit.base.BaseSplitter`. ``train_size``/``valid_size``/
+        ``test_size`` MUST be left ``None`` here (fold sizes are determined by ``n_splits``);
+        passing any raises :class:`chemsplit.exceptions.ConfigurationError`.
 
     Notes
     -----
@@ -544,13 +534,10 @@ class MonteCarloSplitter(BaseSplitter):
     """Repeated independent random splits (``ShuffleSplit``); unlike :class:`KFoldSplitter`, test
     sets across repeats are NOT disjoint.
 
-    Parameters
-    ----------
-    n_splits: int, default 10
-    stratify: bool, default False
-    stratify_kwargs: dict or None, default None
-    **base
-        See :class:`chemsplit.base.BaseSplitter`.
+    :param n_splits: Number of repeats.
+    :param stratify: Whether to stratify each repeat on the label.
+    :param stratify_kwargs: Extra kwargs forwarded to the stratification helper, or ``None``.
+    :param base: See :class:`chemsplit.base.BaseSplitter`.
 
     Notes
     -----
@@ -669,17 +656,13 @@ class PredefinedSplitter(BaseSplitter):
     The only way to reproduce a published benchmark's numbers exactly, and the correct way to
     replace an internal (non-shareable) time split with a shareable index list.
 
-    Parameters
-    ----------
-    assignment: sequence of str, or mapping of str to sequence of int, optional
+    :param assignment: Sequence of partition names, or mapping of partition name to index list.
         Sequence form: length ``n``, values in ``{"train","valid","test","discard"}``. Mapping
         form: partition name -> index list; disjoint; unlisted indices go to ``discard``.
-    fold_column: sequence of int, optional
-        Values ``>= 0`` are fold ids; ``-1`` means "always train". Yields
-        ``n_splits = n_distinct(non-negative)`` folds.
-    **base
-        See :class:`chemsplit.base.BaseSplitter`. ``train_size``/``valid_size``/``test_size`` MUST
-        be ``None``.
+    :param fold_column: Per-record fold id, or ``None``. Values ``>= 0`` are fold ids; ``-1``
+        means "always train". Yields ``n_splits = n_distinct(non-negative)`` folds.
+    :param base: See :class:`chemsplit.base.BaseSplitter`. ``train_size``/``valid_size``/
+        ``test_size`` MUST be ``None``.
 
     Notes
     -----
@@ -740,7 +723,6 @@ class PredefinedSplitter(BaseSplitter):
         return 1
 
     def _partition(self, ctx: _Context) -> list[SplitResult]:
-        n = ctx.n
         if self.assignment is not None:
             return [self._from_assignment(ctx)]
         return self._from_fold_column(ctx)

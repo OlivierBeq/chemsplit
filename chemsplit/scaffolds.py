@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Literal
 
 from rdkit import Chem
@@ -16,13 +17,13 @@ __all__ = [
 ]
 
 
-def _mol_to_smiles(mol: "Chem.rdchem.Mol | None", isomeric: bool) -> str:
+def _mol_to_smiles(mol: Chem.rdchem.Mol | None, isomeric: bool) -> str:
     if mol is None or mol.GetNumAtoms() == 0:
         return ""
     return Chem.MolToSmiles(mol, canonical=True, isomericSmiles=isomeric)
 
 
-def murcko_scaffold(mol: "Chem.rdchem.Mol", include_chirality: bool = False) -> str:
+def murcko_scaffold(mol: Chem.rdchem.Mol, include_chirality: bool = False) -> str:
     """Canonical SMILES of ``scaffound.get_basic_scaffold(mol)``, or ``""`` if acyclic.
 
     Not guaranteed byte-identical to RDKit's classic Bemis-Murcko scaffold in all cases.
@@ -33,7 +34,7 @@ def murcko_scaffold(mol: "Chem.rdchem.Mol", include_chirality: bool = False) -> 
     return _mol_to_smiles(scaf, isomeric=include_chirality)
 
 
-def generic_scaffold(mol: "Chem.rdchem.Mol") -> str:
+def generic_scaffold(mol: Chem.rdchem.Mol) -> str:
     """Canonical SMILES of ``scaffound.get_basic_framework(mol)`` (heteroatoms -> carbon).
 
     Always non-isomeric: a generic scaffold has no stereochemistry.
@@ -44,7 +45,7 @@ def generic_scaffold(mol: "Chem.rdchem.Mol") -> str:
     return _mol_to_smiles(fw, isomeric=False)
 
 
-def csk(mol: "Chem.rdchem.Mol") -> str:
+def csk(mol: Chem.rdchem.Mol) -> str:
     """Canonical SMILES of ``scaffound.get_basic_wireframe(mol)`` (generic AND saturated).
 
     This is the "Cyclic Skeleton Key" concept used by the ring-system splitter.
@@ -60,7 +61,7 @@ def csk(mol: "Chem.rdchem.Mol") -> str:
 # --------------------------------------------------------------------------------------
 
 
-def _union_find_merge(n: int, pairs) -> list[list[int]]:
+def _union_find_merge(n: int, pairs: Iterable[tuple[int, int]]) -> list[list[int]]:
     parent = list(range(n))
 
     def find(x: int) -> int:
@@ -84,7 +85,7 @@ def _union_find_merge(n: int, pairs) -> list[list[int]]:
 
 
 def ring_systems(
-    mol: "Chem.rdchem.Mol", min_ring_size: int = 3, max_ring_size: int = 20
+    mol: Chem.rdchem.Mol, min_ring_size: int = 3, max_ring_size: int = 20
 ) -> list[str]:
     """Canonical SMILES of each individual fused/spiro-merged ring system in ``mol``.
 
@@ -147,7 +148,7 @@ def ring_systems(
 SENTINEL_TOO_COMPLEX = "\x00TOO_COMPLEX\x00"
 
 
-def _ring_count(mol: "Chem.rdchem.Mol") -> int:
+def _ring_count(mol: Chem.rdchem.Mol) -> int:
     try:
         return mol.GetRingInfo().NumRings()
     except RuntimeError:
@@ -157,7 +158,7 @@ def _ring_count(mol: "Chem.rdchem.Mol") -> int:
         return mol.GetRingInfo().NumRings()
 
 
-def _ring_clusters(mol: "Chem.rdchem.Mol") -> list[tuple[frozenset, tuple]]:
+def _ring_clusters(mol: Chem.rdchem.Mol) -> list[tuple[frozenset, tuple]]:
     """Fused/spiro-merged ring clusters as (atom_frozenset, sorted_atom_tuple) pairs."""
     ri = mol.GetRingInfo()
     rings = [set(r) for r in ri.AtomRings()]
@@ -176,7 +177,7 @@ def _ring_clusters(mol: "Chem.rdchem.Mol") -> list[tuple[frozenset, tuple]]:
     return out
 
 
-def _cluster_adjacency(mol: "Chem.rdchem.Mol", clusters: list[tuple[frozenset, tuple]]) -> dict[int, set[int]]:
+def _cluster_adjacency(mol: Chem.rdchem.Mol, clusters: list[tuple[frozenset, tuple]]) -> dict[int, set[int]]:
     """Two clusters are adjacent if they share atoms (already merged, so never here) or are
     connected by a path of non-ring atoms with no intermediate ring atoms from a third cluster.
     """
@@ -228,7 +229,7 @@ def _cluster_adjacency(mol: "Chem.rdchem.Mol", clusters: list[tuple[frozenset, t
 
 
 def _select_ring_to_remove(
-    mol: "Chem.rdchem.Mol", prune_rule: str
+    mol: Chem.rdchem.Mol, prune_rule: str
 ) -> tuple[frozenset, tuple] | None:
     clusters = _ring_clusters(mol)
     if len(clusters) <= 1:
@@ -265,7 +266,7 @@ def _select_ring_to_remove(
     return clusters[ordered[0]]
 
 
-def _remove_cluster(mol: "Chem.rdchem.Mol", atoms_to_remove: frozenset) -> "Chem.rdchem.Mol | None":
+def _remove_cluster(mol: Chem.rdchem.Mol, atoms_to_remove: frozenset) -> Chem.rdchem.Mol | None:
     rw = Chem.RWMol(mol)
     for idx in sorted(atoms_to_remove, reverse=True):
         rw.RemoveAtom(idx)
@@ -292,7 +293,7 @@ def _remove_cluster(mol: "Chem.rdchem.Mol", atoms_to_remove: frozenset) -> "Chem
 
 
 def scaffold_tree_levels(
-    mol: "Chem.rdchem.Mol",
+    mol: Chem.rdchem.Mol,
     level: int,
     prune_rule: Literal["scaffold_tree", "min_rings", "peripheral_first"] = "scaffold_tree",
     max_rings: int = 12,

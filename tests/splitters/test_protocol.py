@@ -66,7 +66,7 @@ class TestGroupKFoldSplitter:
         s2 = GroupKFoldSplitter(grouper="murcko_scaffold", n_splits=3, random_state=42)
         r1 = s1.split_result(SMILES_POOL)
         r2 = s2.split_result(SMILES_POOL)
-        for a, b in zip(r1, r2):
+        for a, b in zip(r1, r2, strict=True):
             assert np.array_equal(a.train, b.train)
             assert np.array_equal(a.test, b.test)
 

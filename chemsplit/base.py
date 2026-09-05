@@ -20,7 +20,6 @@ import pandas as pd
 import sklearn.base
 
 from chemsplit.determinism import (
-    EPS,
     SeedBundle,
     argmax_tiebreak,
     argmin_tiebreak,
@@ -30,7 +29,6 @@ from chemsplit.determinism import (
 )
 from chemsplit.exceptions import (
     ConfigurationError,
-    EmptyPartitionError,
     InvariantError,
     ParameterError,
 )
@@ -290,7 +288,7 @@ class SplitResult:
         return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
     @classmethod
-    def from_json(cls, s: str) -> "SplitResult":
+    def from_json(cls, s: str) -> SplitResult:
         payload = json.loads(s)
         groups = payload["groups"]
         return cls(

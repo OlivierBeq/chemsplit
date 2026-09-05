@@ -34,35 +34,28 @@ class BalanceProblem:
     """Assign ``n_items`` atomic units to ``n_buckets``, minimising weighted deviation from
     per-bucket (and, optionally, per-task-per-bucket) targets under a shared objective.
 
-    Parameters
-    ----------
-    n_items, n_buckets: int
-        Problem size.
-    item_size: ndarray of shape (n_items,), int64
-        Number of underlying records each item (cluster/component) represents.
-    bucket_target_size: ndarray of shape (n_buckets,), float64
-        Target aggregate ``item_size`` per bucket (e.g. ``resolve_sizes``' train/valid/test
-        targets, or per-fold targets for k-fold).
-    size_tolerance: float
-        Recorded for callers' feasibility interpretation; not itself enforced as a hard
-        constraint by the heuristic backends (they minimise the weighted deviation, they do not
-        reject solutions outside tolerance — callers decide feasibility from the returned
-        objective/realised sizes).
-    item_task_counts: ndarray of shape (n_items, n_tasks), float64, optional
-        Per-item, per-task label counts (e.g. non-NaN label count within the item). ``None`` when
-        there is no task dimension (e.g. the hit-identification splitter's component-balance
-        problem).
-    item_task_actives: ndarray of shape (n_items, n_tasks), float64, optional
-        Per-item, per-task active/positive counts. Only meaningful when ``item_task_counts`` is
-        also given; ignored otherwise.
-    task_weight: ndarray of shape (n_tasks,), float64, optional
-        Per-task objective weight. Defaults to all-ones when omitted but ``item_task_counts`` is
-        given.
-    task_tolerance: float, optional
-        Recorded for callers' feasibility interpretation, mirroring ``size_tolerance``.
-    fixed_bucket: dict[int, int]
-        Items pre-pinned to a specific bucket (symmetry breaking / caller-imposed constraints).
-        Every backend must honour this exactly.
+    :param n_items: Problem size.
+    :param n_buckets: Problem size.
+    :param item_size: Number of underlying records each item (cluster/component) represents,
+        shape ``(n_items,)``.
+    :param bucket_target_size: Target aggregate ``item_size`` per bucket (e.g. ``resolve_sizes``'
+        train/valid/test targets, or per-fold targets for k-fold), shape ``(n_buckets,)``.
+    :param size_tolerance: Recorded for callers' feasibility interpretation; not itself enforced
+        as a hard constraint by the heuristic backends (they minimise the weighted deviation,
+        they do not reject solutions outside tolerance — callers decide feasibility from the
+        returned objective/realised sizes).
+    :param item_task_counts: Per-item, per-task label counts (e.g. non-NaN label count within the
+        item), shape ``(n_items, n_tasks)``. ``None`` when there is no task dimension (e.g. the
+        hit-identification splitter's component-balance problem).
+    :param item_task_actives: Per-item, per-task active/positive counts, shape
+        ``(n_items, n_tasks)``. Only meaningful when ``item_task_counts`` is also given; ignored
+        otherwise.
+    :param task_weight: Per-task objective weight, shape ``(n_tasks,)``. Defaults to all-ones
+        when omitted but ``item_task_counts`` is given.
+    :param task_tolerance: Recorded for callers' feasibility interpretation, mirroring
+        ``size_tolerance``.
+    :param fixed_bucket: Items pre-pinned to a specific bucket (symmetry breaking / caller-imposed
+        constraints). Every backend must honour this exactly.
     """
 
     n_items: int
@@ -362,7 +355,7 @@ def _solve_local_search(
     n_items, n_buckets = problem.n_items, problem.n_buckets
 
     n_passes = 0
-    for n_passes in range(1, max_passes + 1):
+    for n_passes in range(1, max_passes + 1):  # noqa: B007 -- read after the loop as n_iterations
         improved = False
         for i in range(n_items):
             if i in problem.fixed_bucket:

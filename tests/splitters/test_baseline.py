@@ -106,7 +106,6 @@ def test_random_splitter_generator_random_state_is_json_safe():
 
 
 def test_stratified_classification_balances_classes():
-    rng = np.random.default_rng(0)
     n = 100
     y = np.array([0] * 80 + [1] * 20)
     X = _X(n)
@@ -223,7 +222,7 @@ def test_montecarlo_determinism():
     sp2 = MonteCarloSplitter(n_splits=3, random_state=1)
     f1 = list(sp1.split(X))
     f2 = list(sp2.split(X))
-    for (tr1, te1), (tr2, te2) in zip(f1, f2):
+    for (tr1, te1), (tr2, te2) in zip(f1, f2, strict=True):
         assert np.array_equal(tr1, tr2)
         assert np.array_equal(te1, te2)
 

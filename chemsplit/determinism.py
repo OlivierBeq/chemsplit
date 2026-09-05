@@ -14,7 +14,7 @@ import hashlib
 import math
 import random
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TypeVar
 
 import numpy as np

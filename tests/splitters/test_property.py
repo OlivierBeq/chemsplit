@@ -218,7 +218,6 @@ def test_property_splitter_requires_molecules_without_property_values():
 
 
 def test_property_splitter_callable_descriptor():
-    from rdkit import Chem
 
     smiles = _mol_fixture()
 
@@ -362,7 +361,6 @@ def test_stratified_distribution_ks_match_unreachable_raises():
 
 
 def test_mood_splitter_empty_deployment_set_raises():
-    smiles = _mol_fixture()
     with pytest.raises(ParameterError):
         MOODSplitter(
             candidates=(RandomSplitter(train_size=0.7, test_size=0.3, random_state=0),),

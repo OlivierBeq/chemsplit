@@ -6,12 +6,16 @@ import argparse
 import json
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 _GOLDEN_DIR = Path(__file__).resolve().parent.parent / "tests" / "golden"
+
+#: A zero-arg callable returning (X, y, split_kwargs, ctor_kwargs) for one splitter's golden case.
+PlanBuilder = Callable[[], tuple[Any, Any, dict[str, Any], dict[str, Any]]]
 
 
 def _fixture_cache() -> dict[str, Any]:
@@ -59,7 +63,7 @@ def _build_plan(fixtures: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str
     plan: dict[str, Any] = {}
     fixture_name_of: dict[str, str] = {}
 
-    def smiles_case(fid, *, y=None, **ctor):
+    def smiles_case(fid: str, *, y: np.ndarray | None = None, **ctor: Any) -> PlanBuilder:
         return lambda: (F[fid].smiles, y, {}, ctor)
 
     # -- baseline --
@@ -117,7 +121,7 @@ def _build_plan(fixtures: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str
     plan["property"] = smiles_case("linear_series")
     plan["label_extrapolation"] = lambda: (F["linear_series"].smiles, F["linear_series"].y, {}, {})
     plan["stratified_distribution"] = lambda: (F["linear_series"].smiles, F["linear_series"].y, {}, {})
-    def _moodsplitter_case():
+    def _moodsplitter_case() -> tuple[list[str], None, dict[str, Any], dict[str, Any]]:
         from chemsplit.registry import get_splitter
 
         candidates = [
@@ -170,7 +174,7 @@ def _build_plan(fixtures: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str
         {"pharmacophore_similarity": "none"},
     )
     for sid in ["cold_drug", "cold_target", "cold_pair"]:
-        def _make(sid=sid):
+        def _make(sid: str = sid) -> tuple[list[tuple[str, str]], list[float], dict[str, Any], dict[str, Any]]:
             X, y = _interactions_X_y(F["interactions"])
             return (X, y, {}, {})
         plan[sid] = _make

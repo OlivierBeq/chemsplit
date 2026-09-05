@@ -14,9 +14,12 @@ module for now.
 from __future__ import annotations
 
 import dataclasses
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from rdkit import Chem
 
 from chemsplit.exceptions import InvariantError
 
@@ -233,7 +236,6 @@ def make_two_clusters(n: int = 200, separation: float = 0.9, seed: int = 0) -> F
     fp = get_featurizer("ecfp4")
 
     for attempt in range(5):
-        rng = np.random.default_rng(seed + attempt * 97)
         a_core = "c1ccc2ccccc2c1{sub}"  # naphthalene: aromatic-rich
         b_core = "C1CCCCC1{sub}"  # cyclohexane: aliphatic-only substituents
         a_smiles = [a_core.format(sub=_substituent(k)) for k in range(half)]
@@ -265,7 +267,7 @@ def make_two_clusters(n: int = 200, separation: float = 0.9, seed: int = 0) -> F
     )
 
 
-def _mols(smiles: list[str]):
+def _mols(smiles: list[str]) -> list[Chem.rdchem.Mol | None]:
     from rdkit import Chem
 
     return [Chem.MolFromSmiles(s) for s in smiles]
@@ -427,10 +429,10 @@ def make_sequences(
     # Self-check: mean within-family identity should be roughly identity_within.
     identities = []
     for f in range(families):
-        members = [s for s, g in zip(sequences, family_ids) if g == f]
+        members = [s for s, g in zip(sequences, family_ids, strict=True) if g == f]
         for i in range(len(members)):
             for j in range(i + 1, len(members)):
-                matches = sum(a == b for a, b in zip(members[i], members[j]))
+                matches = sum(a == b for a, b in zip(members[i], members[j], strict=True))
                 identities.append(matches / length)
     mean_identity = float(np.mean(identities)) if identities else 0.0
     if abs(mean_identity - identity_within) > 0.25:

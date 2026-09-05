@@ -1,7 +1,5 @@
 import warnings
 
-import pytest
-
 from chemsplit import exceptions as ex
 
 

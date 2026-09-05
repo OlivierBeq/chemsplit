@@ -3,16 +3,21 @@
 
 from __future__ import annotations
 
-import dataclasses
 from typing import Any, ClassVar, Literal
 
 import numpy as np
 
 from chemsplit._pair_assign import assign_pair_groups
 from chemsplit._unionfind import UnionFind, dense_label_encode
-from chemsplit.base import BaseSplitter, GroupSplitter, SplitResult, Strictness, _canonicalize_params
+from chemsplit.base import (
+    BaseSplitter,
+    GroupSplitter,
+    SplitResult,
+    Strictness,
+    _canonicalize_params,
+)
 from chemsplit.clustering import butina
-from chemsplit.determinism import argmax_tiebreak, seed_for
+from chemsplit.determinism import seed_for
 from chemsplit.exceptions import (
     DegenerateClusterWarning,
     DegenerateGroupingError,
@@ -68,17 +73,13 @@ def _pairwise_identity_matrix(sequences: list[str], use_parasail: bool) -> np.nd
 class SequenceIdentitySplitter(GroupSplitter):
     """Group protein sequences by pairwise identity (single-linkage above a threshold).
 
-    Parameters
-    ----------
-    identity_threshold: float, default=0.7
-        Sequences whose pairwise identity exceeds this are merged into one group
-        (single-linkage — a chain of pairwise-similar sequences can span very different
+    :param identity_threshold: Sequences whose pairwise identity exceeds this are merged into one
+        group (single-linkage — a chain of pairwise-similar sequences can span very different
         sequences at the chain's ends, exactly as Butina/graph-component grouping does on the
-        ligand side).
-    algorithm: {"auto", "parasail", "hamming"}, default="auto"
-        ``"parasail"`` uses global alignment via the ``bio`` extra (``parasail``);
+        ligand side). Default ``0.7``.
+    :param algorithm: ``"parasail"`` uses global alignment via the ``bio`` extra (``parasail``);
         ``"hamming"`` is a dependency-free equal-length fractional-match fallback;
-        ``"auto"`` uses ``parasail`` if installed, else ``"hamming"``.
+        ``"auto"`` uses ``parasail`` if installed, else ``"hamming"``. Default ``"auto"``.
 
     Advantages
     ----------
@@ -173,10 +174,8 @@ class ProteinFamilySplitter(GroupSplitter):
     No external database lookup — the family label per record is supplied directly by the
     caller.
 
-    Parameters
-    ----------
-    family_labels: Sequence[str] | None, default=None
-        One family/class label per record, aligned with ``X``. Required (no default inference).
+    :param family_labels: One family/class label per record, aligned with ``X``. Required (no
+        default inference). Default ``None``.
 
     Advantages
     ----------
@@ -207,7 +206,7 @@ class ProteinFamilySplitter(GroupSplitter):
     def __init__(
         self,
         *,
-        family_labels: "list[str] | None" = None,
+        family_labels: list[str] | None = None,
         size_tolerance: float = 0.05,
         group_assignment: Literal["greedy_desc", "balanced", "random"] = "greedy_desc",
         **base: Any,
@@ -228,18 +227,14 @@ class ProteinFamilySplitter(GroupSplitter):
 class BindingSiteSplitter(GroupSplitter):
     """Cluster on pocket residue composition/sequence, rather than global sequence identity.
 
-    Parameters
-    ----------
-    representation: {"composition", "pocket_sequence"}, default="composition"
-        ``"composition"`` clusters a caller-supplied residue-composition feature matrix (passed
-        as ``X`` with ``accepts=("features",)``) via Butina on Euclidean distance.
-        ``"pocket_sequence"`` clusters caller-supplied short pocket sequences (``accepts=
-        ("sequences",)``) via the same identity machinery as ``sequence_identity``, requiring the
-        ``bio`` extra for the accelerated path (falls back to the Hamming approximation
-        otherwise, same as ``SequenceIdentitySplitter``).
-    cutoff: float, default=0.35
-        Butina cutoff (distance for ``"composition"``, ``1 - identity`` for
-        ``"pocket_sequence"``).
+    :param representation: ``"composition"`` clusters a caller-supplied residue-composition
+        feature matrix (passed as ``X`` with ``accepts=("features",)``) via Butina on Euclidean
+        distance. ``"pocket_sequence"`` clusters caller-supplied short pocket sequences
+        (``accepts=("sequences",)``) via the same identity machinery as ``sequence_identity``,
+        requiring the ``bio`` extra for the accelerated path (falls back to the Hamming
+        approximation otherwise, same as ``SequenceIdentitySplitter``). Default ``"composition"``.
+    :param cutoff: Butina cutoff (distance for ``"composition"``, ``1 - identity`` for
+        ``"pocket_sequence"``). Default ``0.35``.
 
     Advantages
     ----------
@@ -340,16 +335,14 @@ class DepositionDateSplitter(BaseSplitter):
     top of the date boundary, since a structure deposited just after the cut date can still be a
     near-duplicate of one deposited just before it.
 
-    Parameters
-    ----------
-    cut_date: str | numpy.datetime64
-        Records with ``dates <= cut_date`` are candidate train; later records are candidate test.
-    ligand_similarity_ceiling: float | None, default=None
-        If given, train ligands (via ``ctx.mols``' ECFP4 Tanimoto similarity) more similar than
-        this to any test ligand are pruned from train.
-    sequence_identity_ceiling: float | None, default=None
-        If given, train sequences more identical than this to any test sequence are pruned from
-        train (same identity machinery as ``sequence_identity``).
+    :param cut_date: Records with ``dates <= cut_date`` are candidate train; later records are
+        candidate test.
+    :param ligand_similarity_ceiling: If given, train ligands (via ``ctx.mols``' ECFP4 Tanimoto
+        similarity) more similar than this to any test ligand are pruned from train. Default
+        ``None``.
+    :param sequence_identity_ceiling: If given, train sequences more identical than this to any
+        test sequence are pruned from train (same identity machinery as ``sequence_identity``).
+        Default ``None``.
 
     Advantages
     ----------
@@ -381,9 +374,9 @@ class DepositionDateSplitter(BaseSplitter):
     def __init__(
         self,
         *,
-        cut_date: "str | np.datetime64 | None" = None,
-        ligand_similarity_ceiling: "float | None" = None,
-        sequence_identity_ceiling: "float | None" = None,
+        cut_date: str | np.datetime64 | None = None,
+        ligand_similarity_ceiling: float | None = None,
+        sequence_identity_ceiling: float | None = None,
         **base: Any,
     ) -> None:
         super().__init__(**base)
@@ -464,19 +457,15 @@ class ComplexJointSplitter(BaseSplitter):
     both axes (``mode="both_novel"``) or at least one axis (``mode="either_novel"``), sized at
     ``sqrt(f)`` per axis (see ``chemsplit._pair_assign``'s module docstring for why).
 
-    Parameters
-    ----------
-    ligand_grouper: GroupSplitter | None, default=None
-        Groups records by ligand similarity. ``None`` falls back to Butina clustering
-        (``chemsplit.clustering.butina``, cutoff 0.35) directly, as a stand-in for this project's
-        string default ``"butina"`` — ``chemsplit.registry`` does not exist yet to resolve
-        that string; pass an instantiated splitter (e.g. a future ``ButinaSplitter``) once
-        available for the real behaviour.
-    sequence_grouper: GroupSplitter | None, default=None
-        Groups records by sequence identity. ``None`` falls back to using this module's own
-        :class:`SequenceIdentitySplitter` directly (an intra-module reference, not circular).
-    mode: {"both_novel", "either_novel"}, default="both_novel"
-        See :func:`chemsplit._pair_assign.assign_pair_groups`.
+    :param ligand_grouper: Groups records by ligand similarity. ``None`` falls back to Butina
+        clustering (``chemsplit.clustering.butina``, cutoff 0.35) directly, as a stand-in for
+        this project's string default ``"butina"`` — ``chemsplit.registry`` does not exist yet
+        to resolve that string; pass an instantiated splitter (e.g. a future ``ButinaSplitter``)
+        once available for the real behaviour. Default ``None``.
+    :param sequence_grouper: Groups records by sequence identity. ``None`` falls back to using
+        this module's own :class:`SequenceIdentitySplitter` directly (an intra-module reference,
+        not circular). Default ``None``.
+    :param mode: See :func:`chemsplit._pair_assign.assign_pair_groups`. Default ``"both_novel"``.
 
     Advantages
     ----------
@@ -506,8 +495,8 @@ class ComplexJointSplitter(BaseSplitter):
     def __init__(
         self,
         *,
-        ligand_grouper: "GroupSplitter | None" = None,
-        sequence_grouper: "GroupSplitter | None" = None,
+        ligand_grouper: GroupSplitter | None = None,
+        sequence_grouper: GroupSplitter | None = None,
         mode: Literal["both_novel", "either_novel"] = "both_novel",
         **base: Any,
     ) -> None:

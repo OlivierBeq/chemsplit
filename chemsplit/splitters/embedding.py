@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Callable, ClassVar, Literal
+from collections.abc import Callable
+from typing import Any, ClassVar, Literal
 
 import numpy as np
 
@@ -38,7 +39,7 @@ class _ClusterCountMixin:
     def __init__(
         self,
         *,
-        n_clusters: "int | Literal['auto']" = "auto",
+        n_clusters: int | Literal['auto'] = "auto",
         cluster_algorithm: Literal["kmeans", "agglomerative", "hdbscan"] = "agglomerative",
         auto_rule: Literal["sqrt_n", "n_over_50", "silhouette"] = "sqrt_n",
         auto_range: tuple[int, int] = (2, 50),
@@ -144,28 +145,18 @@ class UMAPClusterSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitt
     Embeds the featurized records into a low-dimensional UMAP space, then clusters that embedding
     and treats each cluster as an atomic group.
 
-    Parameters
-    ----------
-    n_components: int, default 2
-        Embedding dimension. 2 is conventional and lossy; 5-10 preserves more structure and is
-        recommended when the embedding is used for splitting rather than visualisation.
-    n_neighbors: int, default 15
-        UMAP local-neighbourhood size. Governs the local/global trade-off and materially changes
-        the resulting split.
-    min_dist: float, default 0.1
-        Minimum embedded distance.
-    umap_metric: str, default "jaccard"
-        UMAP's own metric on the input features. ``"jaccard"`` is correct for binary fingerprints
-        (equals Tanimoto distance on binary vectors); ``"euclidean"`` on raw bit vectors is a
-        common and documented mistake.
-    n_epochs: int or None, default None
-        ``None`` uses UMAP's own default (500 for n<10000, else 200). Pinning it makes runs
-        comparable across dataset sizes.
-
-    Attributes
-    ----------
-    splitter_id: str
-        ``"umap_cluster"``.
+    :param n_components: Embedding dimension. 2 is conventional and lossy; 5-10 preserves more
+        structure and is recommended when the embedding is used for splitting rather than
+        visualisation. Defaults to 2.
+    :param n_neighbors: UMAP local-neighbourhood size. Governs the local/global trade-off and
+        materially changes the resulting split. Defaults to 15.
+    :param min_dist: Minimum embedded distance. Defaults to 0.1.
+    :param umap_metric: UMAP's own metric on the input features. ``"jaccard"`` is correct for
+        binary fingerprints (equals Tanimoto distance on binary vectors); ``"euclidean"`` on raw
+        bit vectors is a common and documented mistake. Defaults to ``"jaccard"``.
+    :param n_epochs: ``None`` uses UMAP's own default (500 for n<10000, else 200). Pinning it
+        makes runs comparable across dataset sizes. Defaults to ``None``.
+    :ivar splitter_id: ``"umap_cluster"``.
 
     Advantages
     ----------
@@ -205,8 +196,8 @@ class UMAPClusterSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitt
         min_dist: float = 0.1,
         umap_metric: str = "jaccard",
         densmap: bool = False,
-        n_epochs: "int | None" = None,
-        n_clusters: "int | Literal['auto']" = "auto",
+        n_epochs: int | None = None,
+        n_clusters: int | Literal['auto'] = "auto",
         cluster_algorithm: Literal["kmeans", "agglomerative", "hdbscan"] = "agglomerative",
         auto_rule: Literal["sqrt_n", "n_over_50", "silhouette"] = "sqrt_n",
         auto_range: tuple[int, int] = (2, 50),
@@ -323,25 +314,16 @@ class ProjectionSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitte
     """Linear or manifold projection followed by clustering, an axis cut, or a grid
     (``projection``).
 
-    Parameters
-    ----------
-    method: {"pca", "svd", "tsne", "mds", "kernel_pca"}, default "pca"
-        Projection method.
-    n_components: int, default 2
-        Projected dimension.
-    mode: {"cluster", "axis_cut", "grid"}, default "cluster"
-        ``"cluster"`` clusters the projection as in ``umap_cluster``. ``"axis_cut"`` sorts by
-        component ``axis`` and cuts into contiguous blocks sized by the size targets. ``"grid"``
-        bins each of the first ``n_components`` axes into ``grid_bins`` equal-frequency bins; the
-        group is the cell tuple.
-    axis: int, default 0
-        Component index used by ``mode="axis_cut"``.
-    grid_bins: int, default 4
-        Bins per axis for ``mode="grid"``.
-    tsne_perplexity: float, default 30.0
-        t-SNE perplexity (only used when ``method="tsne"``).
-    kernel: {"linear", "rbf", "cosine"}, default "rbf"
-        Kernel for ``method="kernel_pca"``.
+    :param method: Projection method. Defaults to ``"pca"``.
+    :param n_components: Projected dimension. Defaults to 2.
+    :param mode: ``"cluster"`` clusters the projection as in ``umap_cluster``. ``"axis_cut"``
+        sorts by component ``axis`` and cuts into contiguous blocks sized by the size targets.
+        ``"grid"`` bins each of the first ``n_components`` axes into ``grid_bins``
+        equal-frequency bins; the group is the cell tuple. Defaults to ``"cluster"``.
+    :param axis: Component index used by ``mode="axis_cut"``. Defaults to 0.
+    :param grid_bins: Bins per axis for ``mode="grid"``. Defaults to 4.
+    :param tsne_perplexity: t-SNE perplexity (only used when ``method="tsne"``). Defaults to 30.0.
+    :param kernel: Kernel for ``method="kernel_pca"``. Defaults to ``"rbf"``.
 
     Advantages
     ----------
@@ -382,7 +364,7 @@ class ProjectionSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitte
         grid_bins: int = 4,
         tsne_perplexity: float = 30.0,
         kernel: Literal["linear", "rbf", "cosine"] = "rbf",
-        n_clusters: "int | Literal['auto']" = "auto",
+        n_clusters: int | Literal['auto'] = "auto",
         cluster_algorithm: Literal["kmeans", "agglomerative", "hdbscan"] = "agglomerative",
         auto_rule: Literal["sqrt_n", "n_over_50", "silhouette"] = "sqrt_n",
         auto_range: tuple[int, int] = (2, 50),
@@ -440,8 +422,8 @@ class ProjectionSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitte
             )
 
         seed = int(seed_for(ctx.rng_seeds, "projection.fit", 0).integers(0, 2**31 - 1))
-        explained_variance_ratio: "list[float] | None" = None
-        kl_divergence: "float | None" = None
+        explained_variance_ratio: list[float] | None = None
+        kl_divergence: float | None = None
 
         if self.method in ("pca", "svd"):
             from sklearn.decomposition import TruncatedSVD
@@ -506,7 +488,7 @@ class ProjectionSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitte
                 edges = np.quantile(Z[:, c], np.linspace(0, 1, self.grid_bins + 1))
                 edges = np.unique(edges)
                 bins_per_axis.append(np.clip(np.digitize(Z[:, c], edges[1:-1]), 0, len(edges) - 2))
-            cell = list(zip(*bins_per_axis))
+            cell = list(zip(*bins_per_axis, strict=True))
             labels = np.asarray(dense_label_encode(cell), dtype=np.int64)
             if len(set(cell)) > n:
                 raise DegenerateGroupingError(
@@ -540,19 +522,16 @@ class LatentSpaceSplitter(_ClusterCountMixin, GroupSplitter):
     """Clusters in an embedding supplied by the caller (``latent_space``) -- a ChemBERTa/GNN/VAE
     representation, not one chemsplit computes itself.
 
-    Parameters
-    ----------
-    embedding: ndarray of shape (n, d), callable, or None
-        An ``(n, d)`` array, or a callable applied to ``X``. If ``None``, ``X`` itself must
-        already be a feature matrix (``accepts=("features",)``).
-    normalize: {"none", "l2", "zscore"}, default "l2"
-        Row normalisation applied to the embedding before clustering.
-    embedding_metric: str, default "cosine"
-        Distance used by the clusterer. Unbounded metrics are allowed here.
-    independence_declared: bool, default False
-        The caller asserts that the encoder producing the embedding is not the model being
-        evaluated. If ``False``,:class:`~chemsplit.exceptions.CircularityWarning` is emitted at
-        every call -- the flag exists to force the user to think about this, not to verify it.
+    :param embedding: An ``(n, d)`` array, or a callable applied to ``X``. If ``None``, ``X``
+        itself must already be a feature matrix (``accepts=("features",)``).
+    :param normalize: Row normalisation applied to the embedding before clustering. Defaults to
+        ``"l2"``.
+    :param embedding_metric: Distance used by the clusterer. Unbounded metrics are allowed here.
+        Defaults to ``"cosine"``.
+    :param independence_declared: The caller asserts that the encoder producing the embedding is
+        not the model being evaluated. If ``False``, :class:`~chemsplit.exceptions.CircularityWarning`
+        is emitted at every call -- the flag exists to force the user to think about this, not to
+        verify it. Defaults to ``False``.
 
     Advantages
     ----------
@@ -579,11 +558,11 @@ class LatentSpaceSplitter(_ClusterCountMixin, GroupSplitter):
     def __init__(
         self,
         *,
-        embedding: "np.ndarray | Callable[[Any], np.ndarray] | None" = None,
+        embedding: np.ndarray | Callable[[Any], np.ndarray] | None = None,
         normalize: Literal["none", "l2", "zscore"] = "l2",
         embedding_metric: str = "cosine",
         independence_declared: bool = False,
-        n_clusters: "int | Literal['auto']" = "auto",
+        n_clusters: int | Literal['auto'] = "auto",
         cluster_algorithm: Literal["kmeans", "agglomerative", "hdbscan"] = "agglomerative",
         auto_rule: Literal["sqrt_n", "n_over_50", "silhouette"] = "sqrt_n",
         auto_range: tuple[int, int] = (2, 50),
