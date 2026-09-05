@@ -14,11 +14,22 @@ import numpy as np
 from rdkit import Chem
 
 from chemsplit import scaffolds as _scaffolds
-from chemsplit._fp_similarity import compute_distance_matrix, compute_similarity_matrix, guard_memory
+from chemsplit._fp_similarity import (
+    compute_distance_matrix,
+    compute_similarity_matrix,
+    guard_memory,
+)
 from chemsplit._optimize import BalanceProblem, solve_balance
 from chemsplit._pair_assign import assign_pair_groups
 from chemsplit._unionfind import UnionFind, dense_label_encode
-from chemsplit.base import BaseSplitter, GroupSplitter, SplitResult, Strictness, _Context, assign_groups
+from chemsplit.base import (
+    BaseSplitter,
+    GroupSplitter,
+    SplitResult,
+    Strictness,
+    _Context,
+    assign_groups,
+)
 from chemsplit.clustering import butina
 from chemsplit.determinism import argmax_tiebreak, seed_for, seeded_python_random, stable_sort
 from chemsplit.exceptions import (
@@ -30,7 +41,6 @@ from chemsplit.exceptions import (
     InvariantError,
     LabelError,
     ParameterError,
-    ScalabilityError,
     SizeToleranceWarning,
     SmallPartitionWarning,
     warn_with_details,
@@ -107,7 +117,7 @@ class HiSplitter(GroupSplitter):
         annealing_t0: float = 1.0,
         annealing_t1: float = 0.01,
         verify: bool = True,
-        featurizer: "str | Any" = "ecfp4",
+        featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
         size_tolerance: float = 0.05,
@@ -368,7 +378,7 @@ class LoSplitter(GroupSplitter):
         train_similarity_ceiling: float | None = None,
         task_index: int = 0,
         evaluation: Literal["per_cluster_rank", "pooled"] = "per_cluster_rank",
-        featurizer: "str | Any" = "ecfp4",
+        featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
         size_tolerance: float = 0.05,
@@ -421,7 +431,9 @@ class LoSplitter(GroupSplitter):
         # threshold-neighbourhood clusters as a group and every other record as a singleton.
         return self._build(ctx)[0]
 
-    def _build(self, ctx: _Context):
+    def _build(
+        self, ctx: _Context
+    ) -> tuple[IndexArray, list[list[int]], set[int], np.ndarray, float]:
         y = np.asarray(ctx.y, dtype=np.float64)
         y1 = y[:, self.task_index] if y.ndim == 2 else y
         guard_memory(ctx.n, self.max_memory_bytes, type(self).__name__)
@@ -633,7 +645,7 @@ class ScaffoldHopSplitter(GroupSplitter):
         else:
             active_mask = y >= self.active_threshold
         A = np.nonzero(active_mask)[0]
-        I = np.nonzero(~active_mask)[0]
+        inactive_idx = np.nonzero(~active_mask)[0]
         scaff = [self._scaffold_key(m) for m in mols]
 
         by_scaffold: dict[str, list[int]] = {}
@@ -657,12 +669,12 @@ class ScaffoldHopSplitter(GroupSplitter):
             a_mols = [mols[i] for i in A]
 
             class _ActivesCtx:
-                def __init__(self, mols_):
+                def __init__(self, mols_: list[Chem.rdchem.Mol]) -> None:
                     self.mols = mols_
                     self.n = len(mols_)
                     self._cache: dict[Any, Any] = {}
 
-                def get_features(self, featurizer=None):
+                def get_features(self, featurizer: Any = None) -> Any:
                     key = featurizer.name
                     if key not in self._cache:
                         self._cache[key] = featurizer.transform(self.mols)
@@ -709,7 +721,7 @@ class ScaffoldHopSplitter(GroupSplitter):
         test_set = {i for s in test_scaffolds for i in by_scaffold[s]}
         train_actives = set(A.tolist()) - test_set
 
-        inactive_set = set(I.tolist())
+        inactive_set = set(inactive_idx.tolist())
         discard_set: set[int] = set()
         if self.inactives_policy == "train":
             train_inactives = inactive_set
@@ -1152,8 +1164,8 @@ class AVESplitter(BaseSplitter):
         crossover_prob: float = 0.7,
         mutation_prob: float = 0.2,
         mutation_indpb: float = 0.02,
-        init_splitter: "str | Any" = "stratified_random",
-        featurizer: "str | Any" = "ecfp4",
+        init_splitter: str | Any = "stratified_random",
+        featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
         n_splits: int = 1,
@@ -1469,7 +1481,7 @@ class DecoyBenchmarkSplitter(GroupSplitter):
             raise ConfigurationError("predefined_assignment is required for scheme='predefined'")
 
     def _props(self, mol: Any) -> np.ndarray:
-        from rdkit.Chem import Descriptors, rdMolDescriptors
+        from rdkit.Chem import Descriptors
 
         table = {
             "MolWt": Descriptors.MolWt,
@@ -1500,7 +1512,7 @@ class DecoyBenchmarkSplitter(GroupSplitter):
         if self.scheme == "spatial_random":
             return self._partition_spatial(ctx, mols, active_idx)
 
-        decoy_mols, decoy_failures = [], []
+        decoy_mols = []
         for s in self.decoy_pool:
             m = Chem.MolFromSmiles(s)
             decoy_mols.append(m)
@@ -1549,7 +1561,6 @@ class DecoyBenchmarkSplitter(GroupSplitter):
 
         n_pool_used = int(used.sum())
         n_actives_kept = int(len(active_idx))
-        n_total = n_actives_kept + n_pool_used
         raw_keys = ["__decoy_unassigned__"] * ctx.n
         # Build a synthetic index space: actives keep their original record index; each active's
         # decoys are new synthetic indices appended after the real records is NOT possible here
@@ -1597,7 +1608,9 @@ class DecoyBenchmarkSplitter(GroupSplitter):
         )
         return [result]
 
-    def _partition_spatial(self, ctx: _Context, mols, active_idx) -> list[SplitResult]:
+    def _partition_spatial(
+        self, ctx: _Context, mols: list[Chem.rdchem.Mol], active_idx: np.ndarray
+    ) -> list[SplitResult]:
         # Simplified, documented "spatial_random" implementation: bins actives in a normalised
         # 2-property space (MolWt, MolLogP) and assigns whole bins to buckets via assign_groups,
         # so each partition covers comparable spatial cells. A full maximum-unbiased-validation

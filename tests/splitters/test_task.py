@@ -89,7 +89,6 @@ class TestLoSplitter:
         assert "cluster_members" in result.metadata
 
     def test_no_qualifying_cluster_raises(self):
-        rng = np.random.default_rng(0)
         y = np.ones(len(_SMILES))  # zero std everywhere -> no cluster can qualify
         sp = LoSplitter(threshold=0.05, min_cluster_size=3, std_threshold=0.5, train_size=0.7, test_size=0.3,
                          random_state=0)
@@ -179,7 +178,6 @@ class TestDecoyBenchmarkSplitter:
             DecoyBenchmarkSplitter(scheme="property_matched", decoy_pool=None)
 
     def test_property_matched_basic(self):
-        rng = np.random.default_rng(0)
         y = np.zeros(len(_SMILES), dtype=np.int64)
         y[:6] = 1
         decoy_pool = ["CCCCCCCCCC", "CCCCCCCCCCC", "c1ccccc1CCCC", "C1CCCCCC1", "CCOCC", "CCNCC"] * 5

@@ -33,10 +33,9 @@ def test_bare_import_is_fast_and_rdkit_free():
     sklearn_loaded = lines[2] == "True"
     assert not rdkit_loaded, "bare `import chemsplit` must not import rdkit"
     assert not sklearn_loaded, "bare `import chemsplit` must not import sklearn either"
-    # Generous margin over this project's literal 400ms: this asserts chemsplit's own code doesn't
-    # add meaningful overhead, not a strict environment-independent wall-clock guarantee (an
-    # unrelated slow site/usercustomize hook, or filesystem latency in a given sandbox, is outside
-    # chemsplit's control) -- see chemsplit/__init__.py's module docstring for the full discussion.
+    # A generous margin over the 400 ms budget: this asserts the package's own import work is
+    # cheap, not a wall-clock guarantee, since a slow usercustomize hook or filesystem latency
+    # is outside its control. See chemsplit/__init__.py for the budget itself.
     assert dt < 1.0, f"bare `import chemsplit` took {dt:.3f}s, expected well under 1s"
 
 
@@ -59,7 +58,7 @@ def test_unknown_attribute_raises_attribute_error():
     import chemsplit
 
     with pytest.raises(AttributeError, match="not_a_real_name"):
-        chemsplit.not_a_real_name
+        _ = chemsplit.not_a_real_name
 
 
 def test_lazy_attribute_resolves_and_caches():

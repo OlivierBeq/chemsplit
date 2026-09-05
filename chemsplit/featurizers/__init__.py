@@ -6,6 +6,7 @@ interpret "ecfp6" as radius=6.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Protocol, runtime_checkable
 
 from chemsplit.exceptions import UnknownFeaturizerError
@@ -20,7 +21,7 @@ class Featurizer(Protocol):
     n_features: int
     is_binary: bool
 
-    def transform(self, mols) -> FeatureMatrix:...
+    def transform(self, mols: Sequence[Any]) -> FeatureMatrix:...
 
     def get_params(self) -> dict[str, Any]:...
 
@@ -38,7 +39,7 @@ def _levenshtein(a: str, b: str) -> int:
     return prev[-1]
 
 
-def get_featurizer(spec: "str | Featurizer", **kw: Any) -> Featurizer:
+def get_featurizer(spec: str | Featurizer, **kw: Any) -> Featurizer:
     """Resolve a string alias (case-insensitive) or pass through an existing Featurizer instance.
 
     Accepted aliases: ``ecfp2``/``ecfp4``/``ecfp6``/``ecfp8`` (radius = k // 2),

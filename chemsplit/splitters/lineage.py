@@ -64,7 +64,7 @@ def _coerce_dates(dates: Any, n: int) -> np.ndarray:
     return coerced
 
 
-def _parse_offset_days(spec: "str | int") -> int:
+def _parse_offset_days(spec: str | int) -> int:
     """Best-effort parse of a pandas-offset-like string (``"90D"``, ``"6M"``, ``"1Y"``) or a
     plain integer day count, into an integer number of days.
 
@@ -122,12 +122,12 @@ class TemporalSplitter(BaseSplitter):
     def __init__(
         self,
         *,
-        cut_date: "str | np.datetime64 | None" = None,
-        valid_cut_date: "str | np.datetime64 | None" = None,
-        embargo: "str | int" = 0,
+        cut_date: str | np.datetime64 | None = None,
+        valid_cut_date: str | np.datetime64 | None = None,
+        embargo: str | int = 0,
         mode: Literal["single", "rolling", "expanding"] = "single",
         n_windows: int = 5,
-        window: "str | int" = "365D",
+        window: str | int = "365D",
         tie_policy: Literal["train", "test", "discard"] = "train",
         **base: Any,
     ) -> None:
@@ -377,15 +377,15 @@ class SIMPDSplitter(BaseSplitter):
     def __init__(
         self,
         *,
-        targets: "dict[str, float] | None" = None,
-        descriptors: "tuple[str,...]" = _DEFAULT_DESCRIPTORS,
+        targets: dict[str, float] | None = None,
+        descriptors: tuple[str,...] = _DEFAULT_DESCRIPTORS,
         population_size: int = 500,
         n_generations: int = 200,
         crossover_prob: float = 0.7,
         mutation_prob: float = 0.2,
         mutation_indpb: float = 0.02,
         tournament_size: int = 3,
-        cluster_for_g_sim: "str | BaseSplitter" = "butina",
+        cluster_for_g_sim: str | BaseSplitter = "butina",
         early_stop_patience: int = 40,
         max_memory_bytes: int = 2 * 1024**3,
         **base: Any,
@@ -558,7 +558,7 @@ class SIMPDSplitter(BaseSplitter):
         def sq_err(ind: Any) -> float:
             return float(sum(v * v for v in ind.fitness.values))
 
-        for gen in range(int(self.n_generations)):
+        for gen in range(int(self.n_generations)):  # noqa: B007 -- read after the loop as generations_run
             offspring = []
             while len(offspring) < self.population_size:
                 p1, p2 = tournament(population), tournament(population)
@@ -592,7 +592,7 @@ class SIMPDSplitter(BaseSplitter):
         )
         best_mask = np.asarray(best, dtype=bool)
         observed = observe(best_mask)
-        achieved = dict(zip(target_keys, observed.tolist()))
+        achieved = dict(zip(target_keys, observed.tolist(), strict=True))
         errors = {k: abs(achieved[k] - self.targets[k]) for k in target_keys}
         for k, err in errors.items():
             if abs(self.targets[k]) > 1e-9 and err > 0.25 * abs(self.targets[k]):
@@ -676,9 +676,9 @@ class SourceSplitter(GroupSplitter):
     def __init__(
         self,
         *,
-        source: "Any | None" = None,
-        source_col: "str | None" = None,
-        hierarchy: "list[str] | None" = None,
+        source: Any | None = None,
+        source_col: str | None = None,
+        hierarchy: list[str] | None = None,
         min_source_size: int = 1,
         small_source_policy: Literal["own_group", "pool", "discard"] = "own_group",
         **base: Any,
@@ -807,12 +807,12 @@ class PartySplitter(GroupSplitter):
     def __init__(
         self,
         *,
-        party: "Any | None" = None,
+        party: Any | None = None,
         n_parties: int = 3,
         synthesis: Literal["given", "dirichlet", "cluster", "label_skew"] = "given",
         dirichlet_alpha: float = 0.5,
-        clusterer: "str | BaseSplitter" = "butina",
-        held_out_party: "int | Literal['each']" = "each",
+        clusterer: str | BaseSplitter = "butina",
+        held_out_party: int | Literal['each'] = "each",
         **base: Any,
     ) -> None:
         super().__init__(**base)
@@ -946,7 +946,7 @@ class PartySplitter(GroupSplitter):
 
     def _chemical_overlap_matrix(
         self, ctx: _Context, labels: IndexArray, n_parties_actual: int
-    ) -> "list[list[float]] | None":
+    ) -> list[list[float]] | None:
         if ctx.mols is None:
             return None
         from chemsplit.featurizers import get_featurizer

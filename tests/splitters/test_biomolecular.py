@@ -23,17 +23,14 @@ except ImportError:
     HAS_PARASAIL = False
 
 
-# -
-# SequenceIdentitySplitter
-# -
-
-
 def test_sequence_identity_derives_sequences_from_x_kind():
     """``ctx.sequences`` is populated automatically from ``X`` when ``X_kind="sequences"`` is
     passed without a separate, redundant ``sequences=`` keyword (chemsplit/base.py's ``_run``/
     ``compute_groups`` -- a caller should not have to supply the same sequence list twice)."""
     sp = SequenceIdentitySplitter(random_state=0)
-    result = sp.split_result(["AAAAAAAAAA", "AAAAAAAAAB", "CCCCCCCCCC", "CCCCCCCCCD"], X_kind="sequences")[0]
+    result = sp.split_result(
+        ["AAAAAAAAAA", "AAAAAAAAAB", "CCCCCCCCCC", "CCCCCCCCCD"], X_kind="sequences"
+    )[0]
     assert result.n_records == 4
     assert result.groups is not None
 
@@ -58,7 +55,7 @@ def test_sequence_identity_keeps_families_atomic_hamming():
     # Direct correctness check: any two sequences with hamming identity > threshold share a label.
     for i in range(n):
         for j in range(i + 1, n):
-            m = sum(a == b for a, b in zip(fx.sequences[i], fx.sequences[j])) / min(
+            m = sum(a == b for a, b in zip(fx.sequences[i], fx.sequences[j], strict=False)) / min(
                 len(fx.sequences[i]), len(fx.sequences[j])
             )
             if m > 0.5:
@@ -98,11 +95,6 @@ def test_sequence_identity_missing_parasail_raises(monkeypatch):
         sp.compute_groups(fx.sequences, X_kind="sequences", sequences=fx.sequences)
 
 
-# -
-# ProteinFamilySplitter
-# -
-
-
 def test_protein_family_requires_labels():
     sp = ProteinFamilySplitter(random_state=0)
     with pytest.raises(ParameterError):
@@ -131,11 +123,6 @@ def test_protein_family_split_result_atomic():
     train_fams = {fam_of[i] for i in result.train}
     test_fams = {fam_of[i] for i in result.test}
     assert not (train_fams & test_fams)
-
-
-# -
-# BindingSiteSplitter
-# -
 
 
 def test_binding_site_composition_requires_features():
@@ -168,11 +155,6 @@ def test_binding_site_pocket_sequence_mode():
     assert labels.shape == (10,)
 
 
-# -
-# DepositionDateSplitter
-# -
-
-
 def test_deposition_date_requires_dates():
     sp = DepositionDateSplitter(cut_date="2020-01-01", random_state=0)
     with pytest.raises(LabelError):
@@ -203,11 +185,6 @@ def test_deposition_date_ligand_similarity_pruning_removes_near_duplicates():
     assert result.metadata["n_pruned"] >= 0  # smoke: pruning path executes without error
 
 
-# -
-# ComplexJointSplitter
-# -
-
-
 def test_complex_joint_both_novel_disjoint_axes():
     fx = make_scaffold_families(n_scaffolds=10, per_scaffold=10, seed=0)
     seqs = make_sequences(n=100, families=10, identity_within=0.9, seed=0).sequences
@@ -221,7 +198,9 @@ def test_complex_joint_either_novel_test_superset_of_both_novel():
     fx = make_scaffold_families(n_scaffolds=10, per_scaffold=10, seed=0)
     seqs = make_sequences(n=100, families=10, identity_within=0.9, seed=0).sequences
     sp_both = ComplexJointSplitter(mode="both_novel", random_state=0, train_size=0.8, test_size=0.2)
-    sp_either = ComplexJointSplitter(mode="either_novel", random_state=0, train_size=0.8, test_size=0.2)
+    sp_either = ComplexJointSplitter(
+        mode="either_novel", random_state=0, train_size=0.8, test_size=0.2
+    )
     r_both = sp_both.split_result(fx.smiles, sequences=seqs)[0]
     r_either = sp_either.split_result(fx.smiles, sequences=seqs)[0]
     assert set(r_both.test.tolist()).issubset(set(r_either.test.tolist()))
@@ -242,9 +221,6 @@ def test_complex_joint_invalid_mode():
         ComplexJointSplitter(mode="bogus", random_state=0)
 
 
-# coverage additions
-
-
 def test_sequence_identity_param_validation():
     with pytest.raises(ParameterError):
         SequenceIdentitySplitter(identity_threshold=1.5)
@@ -254,7 +230,9 @@ def test_sequence_identity_param_validation():
 
 def test_sequence_identity_hamming_algorithm_explicit():
     seqs = make_sequences(n=20, families=4, identity_within=0.9, seed=0).sequences
-    sp = SequenceIdentitySplitter(algorithm="hamming", train_size=0.5, test_size=0.5, random_state=0)
+    sp = SequenceIdentitySplitter(
+        algorithm="hamming", train_size=0.5, test_size=0.5, random_state=0
+    )
     result = sp.split_result(seqs, X_kind="sequences")[0]
     assert result.n_records == 20
 
@@ -263,7 +241,9 @@ def test_sequence_identity_degenerate_error_and_warning():
     from chemsplit.exceptions import DegenerateGroupingError
 
     seqs = ["MKV" + "A" * 30] * 20
-    sp_err = SequenceIdentitySplitter(identity_threshold=0.5, train_size=0.5, test_size=0.5, random_state=0)
+    sp_err = SequenceIdentitySplitter(
+        identity_threshold=0.5, train_size=0.5, test_size=0.5, random_state=0
+    )
     with pytest.raises(DegenerateGroupingError):
         sp_err.split_result(seqs, X_kind="sequences")
 
@@ -273,9 +253,6 @@ def test_protein_family_wrong_length_raises():
     sp = ProteinFamilySplitter(family_labels=["a", "b"], train_size=0.5, test_size=0.5)
     with pytest.raises(ParameterError):
         sp.split_result(F, X_kind="features")
-
-
-# BindingSiteSplitter
 
 
 def test_binding_site_invalid_representation_and_cutoff():
@@ -302,9 +279,6 @@ def test_binding_site_degenerate_error_and_warning():
         sp_err.split_result(F, X_kind="features")
 
 
-# DepositionDateSplitter
-
-
 def test_deposition_date_requires_cut_date():
     fx = make_dated_series(n=40, seed=0)
     sp = DepositionDateSplitter()
@@ -319,9 +293,6 @@ def test_deposition_date_sequence_identity_pruning():
     sp = DepositionDateSplitter(cut_date=cut, sequence_identity_ceiling=0.3)
     result = sp.split_result(fx.smiles, dates=fx.dates, sequences=seqs)[0]
     assert result.n_records == 40
-
-
-# ComplexJointSplitter
 
 
 def test_complex_joint_explicit_groupers():

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from rdkit import Chem
 
 from chemsplit.exceptions import (
     ConstraintUnsatisfiableError,
@@ -446,9 +445,6 @@ def test_activity_cliff_keep_partners_together_false():
 def test_activity_cliff_substructure_scalability_guard():
     from chemsplit.exceptions import ScalabilityError
 
-    smiles = ["CCCC"] * 2
-    y = np.array([1.0, 5.0])
-    sp = ActivityCliffSplitter(similarity="substructure", allow_slow=False)
     # Force n past the guard by monkeypatching ctx.n indirectly is awkward; instead verify the
     # guard constant is respected by directly calling the internal helper on a large synthetic n.
     from chemsplit.splitters.scaffold import ActivityCliffSplitter as ACS

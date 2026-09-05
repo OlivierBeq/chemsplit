@@ -152,10 +152,9 @@ def test_standardize_strip_isotopes():
 def test_standardize_strip_unassigned_stereo():
     from rdkit import Chem
 
-    # A molecule with one assigned and (via a second stereocentre left unspecified) one
-    # unassigned centre -- strip_unassigned should only clear the unspecified one, but since
-    # RDKit's chirality possible/unassigned detection is subtle, assert only the documented
-    # contract: the call succeeds and returns a sanitized molecule.
+    # One assigned centre and one unspecified: strip_unassigned should clear only the latter,
+    # but RDKit's unassigned-chirality detection is subtle, so assert just the documented
+    # contract -- the call succeeds and returns a sanitized molecule.
     mol = Chem.MolFromSmiles("C[C@H](N)C(C)C(=O)O")
     cfg = pp.StandardizeConfig(stereo="strip_unassigned")
     std = pp.standardize(mol, cfg)
@@ -215,7 +214,7 @@ def test_aggregate_replicates_max_spread_drops():
     df = pd.DataFrame({"inchikey": ["A", "A", "B", "B"], "y": [1.0, 10.0, 5.0, 5.1]})
     agg, dropped = pp.aggregate_replicates(df, method="median", max_spread=1.0)
     assert set(agg["inchikey"]) == {"B"}
-    assert set(dropped["inchikey"]) == {"A", "A"} or list(dropped["inchikey"]) == ["A", "A"]
+    assert set(dropped["inchikey"]) == {"A"} or list(dropped["inchikey"]) == ["A", "A"]
 
 
 def test_aggregate_replicates_drop_conflicting():

@@ -126,11 +126,6 @@ def test_group_splitter_deterministic():
     assert np.array_equal(t1, t2)
 
 
-# -
-# resolve_sizes
-# -
-
-
 def test_resolve_sizes_default():
     r = resolve_sizes(100, None, None, None)
     assert (r.n_train, r.n_valid, r.n_test) == (80, 0, 20)
@@ -167,11 +162,6 @@ def test_resolve_sizes_int_zero_rejected_per_pseudocode():
 def test_resolve_sizes_exceeds_n():
     with pytest.raises(ParameterError):
         resolve_sizes(10, 8, 5, None)
-
-
-# -
-# SplitResult invariants
-# -
 
 
 def _arr(*vals):
@@ -212,12 +202,9 @@ def test_split_result_i3_groups_not_first_appearance():
         )
 
 
-def test_split_result_i4_non_json_native_params_are_stringified():
-    """``params`` is "JSON-serialisable, fully resolved" -- an audit record, not a
-    reconstruction mechanism. A constructor argument that isn't natively JSON-representable (a
-    live object, a callable, a numpy array/tuple/scalar) is stringified/canonicalized rather than
-    making I4 impossible to satisfy for any splitter with a non-trivial parameter type (e.g. the
-    embedding family's ``LatentSpaceSplitter(embedding=<callable>)``)."""
+def test_non_json_native_params_are_stringified():
+    """``params`` is an audit record, not a reconstruction mechanism, so a constructor
+    argument that isn't natively JSON-representable is stringified rather than rejected."""
     sentinel = object()
     result = SplitResult(
         train=_arr(0),
@@ -239,7 +226,7 @@ def test_split_result_i4_non_json_native_params_are_stringified():
     assert result.params["a_tuple"] == [1, 2]
     assert result.params["a_numpy_int"] == 3 and isinstance(result.params["a_numpy_int"], int)
     assert result.params["a_numpy_array"].startswith("<ndarray")
-    # Now genuinely JSON-round-trippable, per I4.
+    # now genuinely round-trippable
     json.loads(json.dumps(result.params))
 
 
@@ -260,80 +247,78 @@ def _valid_result(**overrides):
 
 
 class TestSplitResultInvariants:
-    def test_i1_wrong_dtype(self):
+    def test_index_array_wrong_dtype(self):
         from chemsplit.exceptions import InvariantError
 
         with pytest.raises(InvariantError, match="index arrays"):
             _valid_result(train=np.array([0, 1], dtype=np.int32), test=_arr(2, 3))
 
-    def test_i1_not_1d(self):
+    def test_index_array_not_1d(self):
         from chemsplit.exceptions import InvariantError
 
         with pytest.raises(InvariantError, match="index arrays"):
             _valid_result(train=np.array([[0, 1]], dtype=np.int64), test=_arr(2, 3))
 
-    def test_i2_not_complete(self):
+    def test_cover_not_complete(self):
         from chemsplit.exceptions import InvariantError
 
         with pytest.raises(InvariantError, match="partition cover"):
             _valid_result(n_records=5)  # only 4 records covered
 
-    def test_i2_overlap(self):
+    def test_cover_overlap(self):
         from chemsplit.exceptions import InvariantError
 
         with pytest.raises(InvariantError, match="partition cover"):
             _valid_result(train=_arr(0, 1, 2), test=_arr(2, 3))
 
-    def test_i2_out_of_range_index(self):
+    def test_cover_out_of_range_index(self):
         from chemsplit.exceptions import InvariantError
 
         with pytest.raises(InvariantError, match="partition cover"):
             _valid_result(train=_arr(0, 1), test=_arr(2, 99), n_records=4)
 
-    def test_i3_wrong_shape(self):
+    def test_groups_wrong_shape(self):
         from chemsplit.exceptions import InvariantError
 
         with pytest.raises(InvariantError, match="group labels"):
             _valid_result(groups=np.array([0, 0, 1], dtype=np.int64))  # 3 != n_records=4
 
-    def test_i3_wrong_dtype(self):
+    def test_groups_wrong_dtype(self):
         from chemsplit.exceptions import InvariantError
 
         with pytest.raises(InvariantError, match="group labels"):
             _valid_result(groups=np.array([0, 0, 1, 1], dtype=np.int32))
 
-    def test_i3_gap_in_group_ids(self):
+    def test_groups_gap_in_ids(self):
         from chemsplit.exceptions import InvariantError
 
         with pytest.raises(InvariantError, match="group labels"):
             _valid_result(groups=np.array([0, 0, 2, 2], dtype=np.int64))  # skips 1
 
-    def test_i3_negative_group_id(self):
+    def test_groups_negative_id(self):
         from chemsplit.exceptions import InvariantError
 
         with pytest.raises(InvariantError, match="group labels"):
             _valid_result(groups=np.array([-1, 0, 1, 1], dtype=np.int64))
 
-    def test_i3_valid_groups_pass(self):
+    def test_valid_groups_pass(self):
         result = _valid_result(groups=np.array([0, 0, 1, 1], dtype=np.int64))
         assert result.groups.tolist() == [0, 0, 1, 1]
 
-    def test_i4_message_names_the_field(self):
+    def test_params_message_names_the_field(self):
         from chemsplit.exceptions import InvariantError
 
         with pytest.raises(InvariantError, match="params"):
-            # NaN survives _canonicalize_params's json.dumps *attempt* check differently than a
-            # genuinely non-serialisable object -- use a value that canonicalize doesn't rescue.
-            _valid_result(params={"x": float("nan")})  # json.dumps(nan) succeeds but round-trip
-            # produces NaN != NaN, which is exactly I4's "does not round-trip" case.
+            # json.dumps(nan) succeeds, but the round-trip gives NaN != NaN
+            _valid_result(params={"x": float("nan")})
 
-    def test_i5_bad_splitter_id(self):
+    def test_bad_splitter_id(self):
         from chemsplit.exceptions import InvariantError
 
         with pytest.raises(InvariantError, match="splitter_id"):
             _valid_result(splitter_id="Butina")  # uppercase, not valid snake_case
 
-    def test_i5_old_dotted_format_rejected(self):
+    def test_old_dotted_id_format_rejected(self):
         from chemsplit.exceptions import InvariantError
 
         with pytest.raises(InvariantError, match="splitter_id"):
@@ -387,7 +372,7 @@ class TestSplitResultAccessors:
         assert restored.groups is None
 
     def test_run_length_encoding_collapses_long_runs(self):
-        from chemsplit.base import _encode_index_array, _decode_index_array
+        from chemsplit.base import _decode_index_array, _encode_index_array
 
         arr = np.array([0, 1, 2, 3, 4, 10, 20, 21, 22], dtype=np.int64)
         encoded = _encode_index_array(arr)
@@ -407,7 +392,7 @@ class TestSplitResultAccessors:
         assert encoded == [0, 1, 5, 6]
 
     def test_run_length_round_trip_empty(self):
-        from chemsplit.base import _encode_index_array, _decode_index_array
+        from chemsplit.base import _decode_index_array, _encode_index_array
 
         arr = np.array([], dtype=np.int64)
         assert _encode_index_array(arr) == []
@@ -424,9 +409,8 @@ class TestResolveSizesMore:
             resolve_sizes(10, 1.5, None, 0.2)
 
     def test_train_size_zero_valid(self):
-        # train_size explicitly 0.0 is legal per SizeSpec semantics (that partition is empty) --
-        # though resolve_sizes's own final "count_tr >= 1" check will then reject it; assert that
-        # specific downstream rejection rather than an earlier one.
+        # train_size=0.0 is a legal size spec (an empty partition), so the rejection comes
+        # from resolve_sizes's final "count_tr >= 1" check, not from validation
         with pytest.raises(ParameterError):
             resolve_sizes(10, 0.0, None, 0.5)
 
@@ -435,9 +419,8 @@ class TestCanonicalizeParams:
     def test_list_and_dict_values_recurse(self):
         from chemsplit.base import _canonicalize_params
 
-        # np.float32 (unlike np.float64, which IS a Python `float` subclass and so is already
-        # caught by the earlier isinstance(value, float) branch) is what actually exercises the
-        # dedicated np.floating branch.
+        # np.float64 is a `float` subclass and is caught earlier, so np.float32 is what
+        # actually exercises the np.floating branch
         out = _canonicalize_params({"a": [1, np.int64(2), (3, 4)], "b": {"c": np.float32(1.5)}})
         assert out == {"a": [1, 2, [3, 4]], "b": {"c": pytest.approx(1.5)}}
         assert isinstance(out["b"]["c"], float) and not isinstance(out["b"]["c"], np.floating)
@@ -449,11 +432,10 @@ class TestCanonicalizeParams:
         assert _canonicalize_params(42) == 42
         assert _canonicalize_params(None) is None
 
-    def test_i4_genuinely_unserialisable_after_canonicalization(self):
-        """A dict with a non-string-or-numeric KEY (e.g. a tuple) survives
-        ``_canonicalize_params`` unchanged (it only recurses into values), so it still fails
-        ``json.dumps`` inside ``_check_params_json`` for real -- exercising I4's actual except branch,
-        distinct from the "round-trips to a different value" (NaN) case tested elsewhere."""
+    def test_params_unserialisable_after_canonicalization(self):
+        """A tuple dict key survives ``_canonicalize_params`` (which only recurses into
+        values), so it reaches ``json.dumps`` and fails there -- the except branch, as opposed
+        to the NaN case above, which round-trips to a different value."""
         from chemsplit.exceptions import InvariantError
 
         with pytest.raises(InvariantError, match="params"):
@@ -560,9 +542,8 @@ class TestValidateBaseParams:
             ToyRandomSplitter(n_splits="bogus")
 
     def test_n_splits_auto_allowed(self):
-        # "auto"/"loo" are subclass-specific sentinels BaseSplitter itself tolerates without
-        # raising -- construction succeeds even though this base class does nothing special with
-        # them (a concrete splitter like KFoldSplitter interprets "loo" itself).
+        # "auto"/"loo" are subclass sentinels the base class tolerates without raising;
+        # KFoldSplitter is what interprets "loo"
         s = ToyRandomSplitter(n_splits="auto")
         assert s.n_splits == "auto"
 
@@ -618,9 +599,8 @@ class TestRunAndSplitResultVariants:
             list(ToyRandomSplitter().split(make_X(10), y=np.zeros(3)))
 
     def test_resolved_valid_size_bool_is_false(self):
-        # bool is technically truthy/falsy but is explicitly excluded from "non-empty valid_size"
-        # semantics. __init__ itself already rejects a bool valid_size (_validate_base_params),
-        # so reach _resolved_valid_size_nonzero's own bool guard by mutating post-construction.
+        # a bool valid_size is rejected in _validate_base_params, so mutate after construction
+        # to reach _resolved_valid_size_nonzero's own bool guard
         s = ToyRandomSplitter()
         s.valid_size = True
         assert s._resolved_valid_size_nonzero() is False

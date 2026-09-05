@@ -20,19 +20,15 @@ from chemsplit._optimize import BalanceProblem, _objective
 from chemsplit._unionfind import UnionFind, dense_label_encode
 from chemsplit.base import (
     SplitResult,
-    _ResolvedSizes,
     _decode_index_array,
     _encode_index_array,
+    _ResolvedSizes,
     assign_groups,
     resolve_sizes,
 )
 from chemsplit.determinism import argmax_tiebreak, argmin_tiebreak, floor_round, stable_sort
 from chemsplit.exceptions import ParameterError
 from chemsplit.metrics import pairwise_distances
-
-# -
-# 1. resolve_sizes -- arithmetic invariants and pure-function determinism.
-# -
 
 
 @st.composite
@@ -54,9 +50,7 @@ def _size_specs(draw):
 @given(_size_specs())
 @settings(deadline=None, max_examples=200)
 def test_resolve_sizes_arithmetic_invariants_and_determinism(design):
-    """whenever resolve_sizes succeeds, n_train+n_valid+n_test <= n, n_train>=1,
-    n_test>=1, and -- since it's meant to be a pure function -- calling it again with identical
-    arguments gives an identical result."""
+    """resolve_sizes is a pure function and its counts always add up."""
     n, train_size, valid_size, test_size = design
     try:
         sizes = resolve_sizes(n, train_size, valid_size, test_size)
@@ -70,34 +64,26 @@ def test_resolve_sizes_arithmetic_invariants_and_determinism(design):
     assert again == sizes
 
 
-# -
-# 2. floor_round -- round-half-away-from-zero, never banker's rounding.
-# -
-
-
 @pytest.mark.core
 @given(st.floats(min_value=0, max_value=1e6, allow_nan=False, allow_infinity=False))
 def test_floor_round_matches_its_own_definition(x):
+    """floor_round is exactly floor(x + 0.5)."""
     assert floor_round(x) == math.floor(x + 0.5)
 
 
 @pytest.mark.core
 @given(st.integers(min_value=0, max_value=100_000))
 def test_floor_round_half_always_rounds_up_never_to_even(k):
-    """The property that actually distinguishes floor_round from Python's builtin round(): a
-    value ending in exactly.5 always rounds UP, regardless of whether the integer part is even
-    or odd -- builtin round() would round 2.5 -> 2 (down, to even) but floor_round(2.5) -> 3."""
+    """A half rounds away from zero, never to even as the built-in round() does."""
     assert floor_round(k + 0.5) == k + 1
 
 
-# -
-# 3. argmax_tiebreak / argmin_tiebreak -- ties resolve to first occurrence.
-# -
-
-
 @pytest.mark.core
-@given(st.lists(st.floats(allow_nan=False, allow_infinity=False, width=32), min_size=1, max_size=30))
+@given(
+    st.lists(st.floats(allow_nan=False, allow_infinity=False, width=32), min_size=1, max_size=30)
+)
 def test_argmax_tiebreak_returns_first_occurrence_of_the_max(scores):
+    """A tie on the maximum resolves to the first occurrence."""
     items = list(range(len(scores)))  # ascending index = tie-break priority order
     result = argmax_tiebreak(lambda i: scores[i], items)
     best = max(scores)
@@ -106,8 +92,11 @@ def test_argmax_tiebreak_returns_first_occurrence_of_the_max(scores):
 
 
 @pytest.mark.core
-@given(st.lists(st.floats(allow_nan=False, allow_infinity=False, width=32), min_size=1, max_size=30))
+@given(
+    st.lists(st.floats(allow_nan=False, allow_infinity=False, width=32), min_size=1, max_size=30)
+)
 def test_argmin_tiebreak_returns_first_occurrence_of_the_min(scores):
+    """A tie on the minimum resolves to the first occurrence."""
     items = list(range(len(scores)))
     result = argmin_tiebreak(lambda i: scores[i], items)
     best = min(scores)
@@ -115,16 +104,14 @@ def test_argmin_tiebreak_returns_first_occurrence_of_the_min(scores):
     assert result == expected
 
 
-# -
-# 4. stable_sort -- equal keys retain ascending original-index order, for both
-# desc=True and desc=False (this is exactly the property naive sorted(reverse=True) violates
-# for tied keys, which is why stable_sort exists as its own function).
-# -
-
-
 @pytest.mark.core
 @given(st.lists(st.integers(min_value=0, max_value=5), min_size=0, max_size=40))
 def test_stable_sort_ties_preserve_ascending_original_order(keys):
+    """Equal keys keep ascending original-index order, descending as well as ascending.
+
+    This is the property a naive ``sorted(reverse=True)`` violates for tied keys, and the reason
+    ``stable_sort`` exists as its own function.
+    """
     items = list(enumerate(keys))  # (original_index, key)
     for desc in (False, True):
         out = stable_sort(items, key=lambda t: t[1], desc=desc)
@@ -133,14 +120,10 @@ def test_stable_sort_ties_preserve_ascending_original_order(keys):
             assert idxs == sorted(idxs), f"desc={desc}: tie group {idxs} not ascending"
 
 
-# -
-# 5. dense_label_encode -- dense ids in first-appearance order.
-# -
-
-
 @pytest.mark.core
 @given(st.lists(st.integers(min_value=0, max_value=5), min_size=0, max_size=40))
 def test_dense_label_encode_first_appearance_order(keys):
+    """Encoded ids are dense and numbered by first appearance."""
     encoded = dense_label_encode(keys)
     assert len(encoded) == len(keys)
     distinct_in_order = list(dict.fromkeys(keys))  # first-appearance order, de-duplicated
@@ -150,19 +133,19 @@ def test_dense_label_encode_first_appearance_order(keys):
     assert len(set(int(v) for v in encoded)) == len(distinct_in_order)
 
 
-# -
-# 6. UnionFind -- smallest-index representative, independent of the order
-# union() calls are applied in.
-# -
-
-
 @pytest.mark.core
 @given(st.integers(min_value=1, max_value=15), st.data())
 @settings(deadline=None, max_examples=100)
 def test_unionfind_order_independent_and_smallest_index_representative(n, data):
+    """Each component's representative is its smallest member.
+
+    The result does not depend on the order the ``union()`` calls were made in.
+    """
     unions = data.draw(
         st.lists(
-            st.tuples(st.integers(min_value=0, max_value=n - 1), st.integers(min_value=0, max_value=n - 1)),
+            st.tuples(
+                st.integers(min_value=0, max_value=n - 1), st.integers(min_value=0, max_value=n - 1)
+            ),
             max_size=25,
         )
     )
@@ -182,41 +165,34 @@ def test_unionfind_order_independent_and_smallest_index_representative(n, data):
         assert rep == min(members)
 
 
-# -
-# 7. Run-length index encoding -- exact round-trip, and the >=3-run boundary.
-# -
-
-
 @pytest.mark.core
 @given(
-    st.lists(st.integers(min_value=0, max_value=10_000), unique=True, min_size=0, max_size=150).map(sorted)
+    st.lists(st.integers(min_value=0, max_value=10_000), unique=True, min_size=0, max_size=150).map(
+        sorted
+    )
 )
 def test_index_array_encode_decode_roundtrip(values):
+    """Run-length encoding an index array and decoding it returns the original."""
     arr = np.asarray(values, dtype=np.int64)
     decoded = _decode_index_array(_encode_index_array(arr))
     assert np.array_equal(decoded, arr)
 
 
 def test_index_array_run_of_two_is_not_collapsed_but_three_is():
-    """the corresponding rule: runs of >= 3 consecutive integers collapse to a [start, end] pair; a run of
-    exactly 2 must stay as two literal ints (this exact boundary is unlikely to be hit reliably by
-    the property test above, so it's pinned as an explicit example)."""
+    """Only runs of three or more consecutive integers collapse to a pair."""
     assert _encode_index_array(np.array([5, 6], dtype=np.int64)) == [5, 6]
     assert _encode_index_array(np.array([5, 6, 7], dtype=np.int64)) == [[5, 7]]
-
-
-# -
-# 8. SplitResult -- any valid partition of range(n) constructs without raising, and
-# assign_groups never splits a group across buckets.
-# -
 
 
 @pytest.mark.core
 @given(st.integers(min_value=0, max_value=60), st.data())
 @settings(deadline=None, max_examples=75)
 def test_splitresult_accepts_any_valid_partition(n, data):
+    """Any valid partition of range(n) constructs without raising."""
     perm = list(data.draw(st.permutations(range(n))))
-    cuts = sorted(data.draw(st.lists(st.integers(min_value=0, max_value=n), min_size=2, max_size=2)))
+    cuts = sorted(
+        data.draw(st.lists(st.integers(min_value=0, max_value=n), min_size=2, max_size=2))
+    )
     a, b = cuts
     train, valid, test, discard = (
         sorted(perm[:a]),
@@ -243,11 +219,14 @@ def test_splitresult_accepts_any_valid_partition(n, data):
 @given(st.integers(min_value=1, max_value=50), st.data())
 @settings(deadline=None, max_examples=75)
 def test_assign_groups_never_splits_a_group(n, data):
+    """assign_groups never splits one group across two partitions."""
     labels_raw = data.draw(st.lists(st.integers(min_value=0, max_value=9), min_size=n, max_size=n))
     labels = np.asarray(dense_label_encode(labels_raw), dtype=np.int64)
     n_groups = int(labels.max()) + 1 if n else 0
 
-    cuts = sorted(data.draw(st.lists(st.integers(min_value=0, max_value=n), min_size=2, max_size=2)))
+    cuts = sorted(
+        data.draw(st.lists(st.integers(min_value=0, max_value=n), min_size=2, max_size=2))
+    )
     sizes = _ResolvedSizes(n_train=cuts[0], n_valid=cuts[1] - cuts[0], n_test=n - cuts[1])
     mode = data.draw(st.sampled_from(["greedy_desc", "balanced", "random"]))
     rng = np.random.default_rng(0)
@@ -268,30 +247,25 @@ def test_assign_groups_never_splits_a_group(n, data):
         assert members <= set(bucket_arrays[containing[0]].tolist())
 
 
-# -
-# 9. pairwise_distances -- bounded-metric range, exact-zero diagonal, exact symmetry.
-# -
-
-
 @pytest.mark.core
 @given(
-    arrays(dtype=np.uint8, shape=st.tuples(st.integers(min_value=1, max_value=8), st.integers(min_value=1, max_value=16)), elements=st.integers(min_value=0, max_value=1)),
+    arrays(
+        dtype=np.uint8,
+        shape=st.tuples(
+            st.integers(min_value=1, max_value=8), st.integers(min_value=1, max_value=16)
+        ),
+        elements=st.integers(min_value=0, max_value=1),
+    ),
     st.sampled_from(["tanimoto", "dice", "cosine"]),
 )
 @settings(deadline=None, max_examples=60)
 def test_pairwise_distances_bounded_metric_properties(X, metric):
+    """A bounded metric stays in [0, 1], with an exactly zero diagonal and exact symmetry."""
     D = pairwise_distances(X, metric=metric)
     assert np.all(D >= -1e-6)
     assert np.all(D <= 1 + 1e-6)
     assert np.all(np.diag(D) == 0.0), "D[i][i] must be forced to exactly 0.0"
     assert np.array_equal(D, D.T), "symmetry must be exact (mirrored, never averaged)"
-
-
-# -
-# 10. Order invariance for order_invariant=True splitters: permuting the
-# input records permutes the output partition identically -- a record's fate depends only on
-# its own content, never on its position in X.
-# -
 
 
 def _fate_map(result, n):
@@ -307,9 +281,12 @@ def _fate_map(result, n):
 @given(st.permutations(range(12)))
 @settings(deadline=None, max_examples=15)
 def test_temporal_splitter_is_order_invariant(perm):
+    """Permuting the input permutes the output identically.
+
+    A record's fate depends on its own content, never on its position in ``X``.
+    """
     from chemsplit.splitters.lineage import TemporalSplitter
 
-    rng = np.random.default_rng(0)
     base_dates = np.array(
         ["2020-01-01", "2020-02-01", "2020-03-01", "2020-04-01", "2020-05-01", "2020-06-01",
          "2020-07-01", "2020-08-01", "2020-09-01", "2020-10-01", "2020-11-01", "2020-12-01"],
@@ -336,9 +313,10 @@ def test_temporal_splitter_is_order_invariant(perm):
 @given(st.permutations(range(12)))
 @settings(deadline=None, max_examples=15)
 def test_source_splitter_is_order_invariant(perm):
-    """SourceSplitter groups purely by supplied source *value*, not position -- so as long as no
-    two sources tie exactly in size (this fixture is built so they don't: sizes 6 and 6 would tie;
-    use 8/4 instead), the split must not depend on where in X a record appears."""
+    """Permuting the input permutes the output identically.
+
+    A record's fate depends on its own content, never on its position in ``X``.
+    """
     from chemsplit.splitters.lineage import SourceSplitter
 
     smiles = ["C" * (i + 1) for i in range(12)]
@@ -359,20 +337,20 @@ def test_source_splitter_is_order_invariant(perm):
     assert fate1 == fate2
 
 
-# -
-# 11. _optimize.py's shared _objective -- permutation invariance (every backend must call this one
-# function so their results are comparable; that only holds if the objective itself doesn't
-# care about item order, only about the (item, assignment) pairing).
-# -
-
-
 @given(st.data())
 @settings(deadline=None, max_examples=40)
 def test_balance_objective_is_permutation_invariant(data):
+    """The shared balance objective ignores item order.
+
+    Every backend calls this one function so their results are comparable, which only holds if the
+    objective cares about the (item, assignment) pairing rather than the order items arrive in.
+    """
     n_items = data.draw(st.integers(min_value=2, max_value=10))
     n_buckets = data.draw(st.integers(min_value=2, max_value=4))
     item_size = np.asarray(
-        data.draw(st.lists(st.integers(min_value=1, max_value=20), min_size=n_items, max_size=n_items)),
+        data.draw(
+            st.lists(st.integers(min_value=1, max_value=20), min_size=n_items, max_size=n_items)
+        ),
         dtype=np.int64,
     )
     bucket_target_size = np.asarray(
@@ -386,34 +364,46 @@ def test_balance_objective_is_permutation_invariant(data):
         dtype=np.float64,
     )
     assignment = np.asarray(
-        data.draw(st.lists(st.integers(min_value=0, max_value=n_buckets - 1), min_size=n_items, max_size=n_items)),
+        data.draw(
+            st.lists(
+                st.integers(min_value=0, max_value=n_buckets - 1),
+                min_size=n_items,
+                max_size=n_items,
+            )
+        ),
         dtype=np.int64,
     )
-    problem = BalanceProblem(n_items=n_items, n_buckets=n_buckets, item_size=item_size, bucket_target_size=bucket_target_size)
+    problem = BalanceProblem(
+        n_items=n_items,
+        n_buckets=n_buckets,
+        item_size=item_size,
+        bucket_target_size=bucket_target_size,
+    )
     obj1 = _objective(problem, assignment)
 
     perm = np.asarray(data.draw(st.permutations(range(n_items))))
     problem2 = BalanceProblem(
-        n_items=n_items, n_buckets=n_buckets, item_size=item_size[perm], bucket_target_size=bucket_target_size
+        n_items=n_items,
+        n_buckets=n_buckets,
+        item_size=item_size[perm],
+        bucket_target_size=bucket_target_size,
     )
     obj2 = _objective(problem2, assignment[perm])
 
     assert math.isclose(obj1, obj2, rel_tol=1e-9, abs_tol=1e-9)
 
 
-# -
-# 12. SplitResult.to_json() / from_json() round-trip for arbitrary valid partitions.
-# -
-
-
 @pytest.mark.core
 @given(st.integers(min_value=0, max_value=40), st.data())
 @settings(deadline=None, max_examples=50)
 def test_splitresult_json_roundtrip(n, data):
+    """to_json() and from_json() round-trip any valid partition."""
     import json
 
     perm = list(data.draw(st.permutations(range(n))))
-    cuts = sorted(data.draw(st.lists(st.integers(min_value=0, max_value=n), min_size=2, max_size=2)))
+    cuts = sorted(
+        data.draw(st.lists(st.integers(min_value=0, max_value=n), min_size=2, max_size=2))
+    )
     a, b = cuts
     train, valid, test = sorted(perm[:a]), sorted(perm[a:b]), sorted(perm[b:])
 
