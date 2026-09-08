@@ -1,4 +1,5 @@
 <div align="center">
+  <img src="https://raw.githubusercontent.com/OlivierBeq/chemsplit/refs/heads/main/graphics/chemsplit_logo.svg" alt="chemsplit logo" width="300">
 
   # ✂️ chemsplit
 
