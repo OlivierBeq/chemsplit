@@ -103,9 +103,12 @@ class TestScaffoldTreeLevels:
         mol = _smi("c1ccc2c(c1)CCC2")
         base, _ = scaffolds.scaffold_tree_levels(mol, level=0)
         pruned, failed = scaffolds.scaffold_tree_levels(mol, level=1, prune_rule="peripheral_first")
-        base_rings = Chem.MolFromSmiles(base).GetRingInfo().NumRings()
+        base_mol = Chem.MolFromSmiles(base)
+        Chem.GetSSSR(base_mol)
+        base_rings = base_mol.GetRingInfo().NumRings()
         pruned_mol = Chem.MolFromSmiles(pruned)
         if pruned_mol is not None:
+            Chem.GetSSSR(pruned_mol)
             assert pruned_mol.GetRingInfo().NumRings() <= base_rings
 
     def test_too_complex_sentinel(self):
