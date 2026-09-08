@@ -1,4 +1,18 @@
 {
-  "split_result_json": "{\"discard\":[],\"groups\":[0,0,1,1,1,2,2,2,0,1,2,0,0,0,2,0,2,0,1,1,1,0,0,2,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,4,4,4,5,6,5,7,6,5,5,8,7,7,8,8,6,8,6,6,6,8,7,6,7,6,7,5,6,5,8,5,6,8,5,7,7,6,8,7],\"metadata\":{\"cluster_sizes\":[10,7,7,16,4,8,11,9,8],\"embedding_shape\":[80,2],\"min_dist\":0.1,\"n_clusters\":9,\"n_neighbors\":15,\"realised_sizes\":{\"test\":15,\"train\":65,\"valid\":0},\"umap_versions\":{\"numba\":\"0.66.0\",\"pynndescent\":\"0.6.0\",\"umap\":\"0.5.12\"}},\"n_records\":80,\"params\":{\"auto_range\":[2,50],\"auto_rule\":\"sqrt_n\",\"cluster_algorithm\":\"agglomerative\",\"densmap\":false,\"featurizer\":\"ecfp4\",\"group_assignment\":\"greedy_desc\",\"max_memory_bytes\":2147483648,\"metric\":\"tanimoto\",\"min_dist\":0.1,\"n_clusters\":\"auto\",\"n_components\":2,\"n_epochs\":null,\"n_jobs\":1,\"n_neighbors\":15,\"n_splits\":1,\"random_state\":0,\"size_tolerance\":0.05,\"test_size\":null,\"train_size\":null,\"umap_metric\":\"jaccard\",\"valid_size\":null,\"verbose\":0},\"schema\":\"chemsplit/split/1\",\"splitter_id\":\"umap_cluster\",\"test\":[[5,7],10,14,16,23,51,54,55,57,61,70,73,78],\"train\":[[0,4],8,9,[11,13],15,[17,22],[24,50],52,53,56,[58,60],[62,69],71,72,[74,77],79],\"valid\":[]}",
-  "tier": "exact"
+  "group_size_histogram": [
+    10,
+    7,
+    7,
+    16,
+    4,
+    8,
+    11,
+    9,
+    8
+  ],
+  "n_discard": 0,
+  "n_test": 15,
+  "n_train": 65,
+  "n_valid": 0,
+  "tier": "tolerance"
 }

@@ -485,7 +485,7 @@ class KMeansClusterSplitter(_SimilarityGroupBase):
     - K-means assumes isotropic, roughly equal-variance clusters in Euclidean space, which binary fingerprint space isn't — clusters end up as much geometric artefacts as chemical families. SVD reduction mitigates but doesn't fix this.
     - Cluster sizes come out wildly uneven, so the achieved train/test ratio drifts from the request — expect `SizeToleranceWarning`.
     - Euclidean distance on binary fingerprints is dominated by molecule size (bit count), so clusters partly track molecular weight rather than chemotype. Use `property` if that's actually what you want.
-    - SVD sign ambiguity makes naive implementations non-reproducible across BLAS builds; a sign fix is mandatory here.
+    - SVD sign ambiguity makes naive implementations non-reproducible across BLAS builds; a sign fix is mandatory here, but residual cluster-assignment drift from Lloyd's-iteration floating-point noise can still survive it — its golden test uses a size/histogram tolerance, not an exact match.
     - `agglomerative` with `single` linkage chains badly on chemical data, typically producing one giant cluster plus dust.
 
     """
@@ -579,7 +579,11 @@ class KMeansClusterSplitter(_SimilarityGroupBase):
             labels = Birch(n_clusters=k, threshold=0.5, branching_factor=50).fit_predict(Z)
         if len(set(labels.tolist())) == 1:
             raise DegenerateGroupingError(f"{type(self).__name__}: all records fell into a single cluster")
-        self._last_meta = {"n_clusters": int(len(set(labels.tolist()))), "algorithm": self.algorithm}
+        self._last_meta = {
+            "n_clusters": int(len(set(labels.tolist()))),
+            "algorithm": self.algorithm,
+            "nondeterministic_method": True,  # BLAS-dependent, not bit-exact cross-platform
+        }
         return dense_label_encode(labels.tolist())
 
     def _group_metadata(self, ctx: _Context, labels: IndexArray) -> dict[str, Any]:
@@ -768,7 +772,7 @@ class SpectralSplitter(_SimilarityGroupBase):
     --------
     - `O(n²)` affinity construction and a dense-ish eigenproblem cap it near 50,000 molecules — subsample above that and say so.
     - Depends on three coupled choices — graph construction, Laplacian normalisation, and `n_clusters` — none with a chemically principled default.
-    - Degenerate eigenvalues (common on symmetric chemical graphs, e.g. many identical singleton components) make eigenvectors non-unique up to rotation, so cluster labels can differ between runs and platforms despite identical eigenvalues. The implementation warns but can't fix this.
+    - Degenerate eigenvalues (common on symmetric chemical graphs, e.g. many identical singleton components) make eigenvectors non-unique up to rotation, so cluster labels can differ between runs and platforms despite identical eigenvalues. The implementation warns but can't fix this — its golden test uses a size/histogram tolerance, not an exact match.
     - A disconnected affinity graph silently turns spectral clustering into "one cluster per component", usually not what was wanted — hence the hard error.
     - Being the hardest split isn't the same as being the right one — a model evaluated only under spectral splitting looks worse than it will perform on a realistic screening library.
 
@@ -852,7 +856,11 @@ class SpectralSplitter(_SimilarityGroupBase):
             rng=rng,
             random_state=int(seed_for(ctx.rng_seeds, "spectral.kmeans", 0).integers(0, 2**31 - 1)),
         )
-        self._last_meta = {"n_clusters": int(len(set(labels.tolist()))), "graph": self.graph}
+        self._last_meta = {
+            "n_clusters": int(len(set(labels.tolist()))),
+            "graph": self.graph,
+            "nondeterministic_method": True,  # eigendecomposition isn't bit-exact cross-platform
+        }
         return labels
 
     def _group_metadata(self, ctx: _Context, labels: IndexArray) -> dict[str, Any]:

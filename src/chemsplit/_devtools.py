@@ -12,7 +12,7 @@ from typing import Any
 
 import numpy as np
 
-_GOLDEN_DIR = Path(__file__).resolve().parent.parent / "tests" / "golden"
+_GOLDEN_DIR = Path(__file__).resolve().parent.parent.parent / "tests" / "golden"
 
 #: A zero-arg callable returning (X, y, split_kwargs, ctor_kwargs) for one splitter's golden case.
 PlanBuilder = Callable[[], tuple[Any, Any, dict[str, Any], dict[str, Any]]]
@@ -311,13 +311,30 @@ def _build_plan(fixtures: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str
     return plan, fixture_name_of
 
 
+def _stabilize_for_golden(obj: Any, *, key: str | None = None) -> Any:
+    """Round floats (BLAS/build ULP noise) and mask ``umap_versions`` before golden comparison."""
+    if isinstance(obj, float):
+        return float(f"{obj:.9g}")
+    if isinstance(obj, dict):
+        if key == "umap_versions":
+            return dict.fromkeys(obj, "<version>")
+        return {k: _stabilize_for_golden(v, key=k) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_stabilize_for_golden(v, key=key) for v in obj]
+    return obj
+
+
 def _to_golden_payload(result: Any, ctx_extra: dict[str, Any] | None = None) -> dict[str, Any]:
     """``result`` is a SplitResult. Chooses the exact or tolerance tier based on
     ``metadata.get("nondeterministic_method")`` (per-instance; a couple of splitters, e.g. the
     embedding family's t-SNE/MDS projection modes, can only know this after actually running)."""
     nondeterministic = bool(result.metadata.get("nondeterministic_method", False))
     if not nondeterministic:
-        return {"tier": "exact", "split_result_json": result.to_json()}
+        stabilized = _stabilize_for_golden(json.loads(result.to_json()))
+        split_result_json = json.dumps(
+            stabilized, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        )
+        return {"tier": "exact", "split_result_json": split_result_json}
 
     # Tolerance tier: sizes exact, group-size histogram as a multiset.
     if result.groups is not None:
