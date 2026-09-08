@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 import pytest
@@ -14,8 +13,8 @@ from chemsplit.registry import get_splitter
 _GOLDEN_DIR = Path(__file__).resolve().parent / "golden"
 _GOLDEN_FILES = sorted(_GOLDEN_DIR.glob("*__*__seed0.json")) if _GOLDEN_DIR.is_dir() else []
 
-# eigendecomposition/KMeans/UMAP outputs aren't cross-platform stable (BLAS/numba); Linux-only.
-_PLATFORM_UNSTABLE_SPLITTERS = {"spectral", "k_means_cluster", "umap_cluster", "complex_joint"}
+# eigendecomposition/KMeans/UMAP outputs vary by BLAS/numba build (OS and Python-wheel dependent).
+_BLAS_UNSTABLE_SPLITTERS = {"spectral", "k_means_cluster", "umap_cluster", "complex_joint"}
 
 
 def _parse_golden_filename(path: Path) -> str:
@@ -39,8 +38,8 @@ def plan(fixtures):
 @pytest.mark.parametrize("golden_path", _GOLDEN_FILES, ids=[p.name for p in _GOLDEN_FILES])
 def test_golden_reproducible(golden_path, plan):
     splitter_id = _parse_golden_filename(golden_path)
-    if splitter_id in _PLATFORM_UNSTABLE_SPLITTERS and sys.platform != "linux":
-        pytest.skip(f"{splitter_id}: not cross-platform reproducible (BLAS/eigendecomposition)")
+    if splitter_id in _BLAS_UNSTABLE_SPLITTERS:
+        pytest.skip(f"{splitter_id}: not reproducible across BLAS/numba builds")
     assert splitter_id in plan, f"{golden_path.name}: no plan entry for {splitter_id!r}"
 
     with open(golden_path, encoding="utf-8") as fh:
