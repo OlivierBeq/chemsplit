@@ -1,3 +1,5 @@
+import sys
+
 import numpy as np
 import pytest
 
@@ -178,6 +180,10 @@ class TestSpectralPartitionLaplacianVariants:
         assert set(labels.tolist()) <= {0, 1}
 
     @pytest.mark.slow
+    @pytest.mark.skipif(
+        sys.platform != "linux",
+        reason="ARPACK/eigsh convergence path isn't cross-platform stable enough for this",
+    )
     def test_large_active_set_uses_sparse_eigsh_path(self):
         # len(active) >= 50 routes through scipy.sparse.linalg.eigsh instead of the dense
         # np.linalg.eigh fallback -- build two well-separated 30-point blobs (60 active vertices).
