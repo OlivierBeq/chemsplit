@@ -45,7 +45,7 @@ dependencies = [
 umap = ["umap-learn>=0.5.4"]
 hdbscan = ["scikit-learn>=1.3"]
 ga = ["deap>=1.4"]
-bio = ["biopython>=1.81", "parasail>=1.3"]
+bio = ["biopython>=1.81", "parasail>=1.3; sys_platform != 'darwin' or platform_machine != 'arm64'"]
 mmpa = []
 all = [
     "chemsplit[umap,hdbscan,ga,bio,mmpa]",
