@@ -169,7 +169,7 @@ class UMAPClusterSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitt
     --------
     - **UMAP doesn't preserve global distances.** Inter-cluster distances in the embedding aren't meaningful, so "these clusters are far apart in UMAP" isn't evidence of dissimilarity. Verify with `audit.nn_similarity_profile` in fingerprint space.
     - The split shifts substantially with `n_neighbors`, `min_dist`, `n_components`, `densmap`, and the seed — all recorded in `params` and all must be reported.
-    - Reproducibility depends on library versions, not just the seed: a `numba` or `pynndescent` upgrade can change the embedding and therefore the split, which is why `metadata` records the version triple.
+    - Reproducibility depends on library versions, not just the seed: a `numba` or `pynndescent` upgrade can change the embedding and therefore the split, which is why `metadata` records the version triple — its golden test uses a size/histogram tolerance, not an exact match.
     - `n_jobs > 1` silently breaks UMAP reproducibility, so this implementation refuses it at a real speed cost.
     - Choosing the cluster count is guesswork, as in `k_means_cluster`, compounded here by the embedding's own hyperparameters.
     - `n_components=2` suits pictures, not splitting — it discards a lot of structure. Prefer 5-10 when the embedding is meant to define groups.
@@ -302,6 +302,7 @@ class UMAPClusterSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitt
             },
             "n_neighbors": self.n_neighbors,
             "min_dist": self.min_dist,
+            "nondeterministic_method": True,  # numba JIT, not bit-exact cross-platform
         }
 
 
