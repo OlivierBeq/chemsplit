@@ -32,7 +32,7 @@ def test_cli_list_json(capsys):
     assert rc == cli.EXIT_OK
     out = capsys.readouterr().out
     rows = json.loads(out)
-    assert len(rows) == 52
+    assert len(rows) == 53
     ids = {r["id"] for r in rows}
     assert "applicability_domain" in ids
     assert "random" in ids

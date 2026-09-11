@@ -20,7 +20,7 @@ reg._ensure_built()
 REGISTRY: dict[str, type[BaseSplitter]] = dict(reg.SPLITTER_REGISTRY)
 ALL_IDS = sorted(REGISTRY)
 
-assert len(REGISTRY) == 52, f"expected 52 registered splitters, found {len(REGISTRY)}"
+assert len(REGISTRY) == 53, f"expected 53 registered splitters, found {len(REGISTRY)}"
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +49,12 @@ _SPECIAL_KWARGS = {
         "grouper": __import__(
             "chemsplit.splitters.scaffold", fromlist=["MurckoScaffoldSplitter"]
         ).MurckoScaffoldSplitter()
+    },
+    "intersection": lambda: {  # IntersectionSplitter
+        "primary": RandomSplitter(random_state=0),
+        "secondary": __import__(
+            "chemsplit.splitters.scaffold", fromlist=["MurckoScaffoldSplitter"]
+        ).MurckoScaffoldSplitter(),
     },
     "three_way": lambda: {"base_splitter": RandomSplitter(random_state=0)},  # ThreeWaySplitter
     "repeated": lambda: {"base_splitter": RandomSplitter(random_state=0)},  # RepeatedSplitter
@@ -163,7 +169,7 @@ def _instance_and_data(splitter_id: str):
     return inst, X, y, extra_kw
 
 
-# A handful of splitters are legitimately slow/heavy for a "run this 52 times in a loop" suite
+# A handful of splitters are legitimately slow/heavy for a "run this 53 times in a loop" suite
 # (genetic algorithms, O(n^2) similarity work at n=50 is fine, but GA population*generations is
 # not) -- give those a smaller n or fewer repeats rather than skipping the contract entirely.
 _SLOW_IDS = {"simpd", "ave"}  # SIMPDSplitter, AVESplitter (deap GA)
@@ -251,7 +257,7 @@ def test_eager_validation_of_train_size_range(splitter_id):
 
 # ---------------------------------------------------------------------------
 # 5-7, 9-10. split() output contract, no mutation, determinism, JSON round-trip, group atomicity
-# -- one combined pass over all 52 splitters, since constructing (instance, X, y) is the expensive
+# -- one combined pass over all 53 splitters, since constructing (instance, X, y) is the expensive
 # shared part.
 # ---------------------------------------------------------------------------
 

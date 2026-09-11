@@ -9,9 +9,9 @@ from typing import Any
 __version__ = "0.1.0"
 
 __all__ = [
-    # -- 52 splitters across 9 families, in declared order: baseline (5), scaffold (6),
+    # -- 53 splitters across 9 families, in declared order: baseline (5), scaffold (6),
     # similarity (10), embedding (3), property (5), lineage (4), task (8), biomolecular (5),
-    # protocol (6) --
+    # protocol (7) --
     "RandomSplitter",
     "StratifiedRandomSplitter",
     "KFoldSplitter",
@@ -64,6 +64,7 @@ __all__ = [
     "NestedCVSplitter",
     "ExternalHoldoutSplitter",
     "ApplicabilityDomainSplitter",
+    "IntersectionSplitter",
     # -- core types --
     "BaseSplitter",
     "GroupSplitter",
@@ -182,6 +183,7 @@ _LAZY_SOURCE: dict[str, str] = {
     "NestedCVSplitter": "chemsplit.splitters.protocol",
     "ExternalHoldoutSplitter": "chemsplit.splitters.protocol",
     "ApplicabilityDomainSplitter": "chemsplit.splitters.protocol",
+    "IntersectionSplitter": "chemsplit.splitters.protocol",
     # base.py
     "BaseSplitter": "chemsplit.base",
     "GroupSplitter": "chemsplit.base",

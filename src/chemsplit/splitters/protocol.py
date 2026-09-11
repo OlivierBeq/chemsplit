@@ -23,6 +23,7 @@ __all__ = [
     "ApplicabilityDomainSplitter",
     "ExternalHoldoutSplitter",
     "GroupKFoldSplitter",
+    "IntersectionSplitter",
     "NestedCVSplitter",
     "RepeatedSplitter",
     "ThreeWaySplitter",
@@ -770,3 +771,118 @@ class ApplicabilityDomainSplitter(BaseSplitter):
                 )
             )
         return results
+
+
+# ---------------------------------------------------------------------------
+# IntersectionSplitter
+# ---------------------------------------------------------------------------
+
+
+class IntersectionSplitter(BaseSplitter):
+    """Compose two splitting criteria: run ``primary`` for train/valid/test, then enforce that no
+    ``secondary`` group straddles the train/test (or train/valid) boundary.
+
+    Answers questions like "train on historical data, test on the future, on scaffolds absent
+    from train" — pass ``primary=TemporalSplitter(...)`` and ``secondary=MurckoScaffoldSplitter()``.
+
+    :param primary: Splitter instance (or registry id) supplying the initial train/valid/test
+        partition.
+    :param secondary: Group-forming ``GroupSplitter`` instance (or registry id) supplying the
+        grouping that must not straddle a boundary. Used only for :meth:`compute_groups`.
+    :param conflict_policy: How a train-side record is resolved when its ``secondary`` group also
+        has a member in test: ``"discard"`` (default, remove it from train) or ``"extend_test"``
+        (move it to test instead, growing test's scaffold/group coverage). Train/valid conflicts
+        always resolve via discard.
+
+    Advantages
+    ----------
+    - Composes any two group-forming or boundary-forming criteria that chemsplit implements separately (temporal, scaffold, source, similarity, ...), without a bespoke splitter for every pairing.
+    - The conflict count is reported (`n_conflicted_groups`), so the cost of the second constraint is visible, not silently absorbed.
+    - `secondary` is only ever used for grouping, so any existing `GroupSplitter` works unmodified.
+
+    Pitfalls
+    --------
+    - `conflict_policy="discard"` can remove a large fraction of train when the two criteria disagree often — check `n_records_resolved` against `n_records`.
+    - `"extend_test"` changes the realised test size unpredictably; `SizeToleranceWarning` fires but can't fix it.
+    - Only train/test and train/valid are checked; test and valid may still share a `secondary` group.
+    - Composing more than two criteria requires nesting `IntersectionSplitter` inside another one — the conflict-resolution order then matters and isn't commutative in general.
+
+    """
+
+    splitter_id: ClassVar[str] = "intersection"
+    family: ClassVar[str] = "protocol"
+    strictness: ClassVar[Strictness] = Strictness.STRICT
+    group_forming: ClassVar[bool] = False
+    accepts: ClassVar[tuple[str,...]] = _ACCEPTS
+    extras: ClassVar[tuple[str,...]] = ()
+    deterministic_without_seed: ClassVar[bool] = False
+    deterministic_method: ClassVar[bool] = True
+    order_invariant: ClassVar[bool] = False
+
+    def __init__(
+        self,
+        *,
+        primary: str | BaseSplitter | None = None,
+        secondary: str | GroupSplitter | None = None,
+        conflict_policy: Literal["discard", "extend_test"] = "discard",
+        **base: Any,
+    ) -> None:
+        super().__init__(**base)
+        self.primary = primary
+        self.secondary = secondary
+        self.conflict_policy = conflict_policy
+        if conflict_policy not in ("discard", "extend_test"):
+            raise ParameterError(f"invalid conflict_policy: {conflict_policy!r}")
+
+    def _partition(self, ctx: _Context) -> list[SplitResult]:
+        X = _select_ctx_X(ctx)
+
+        primary_template = _resolve_splitter(self.primary, "primary")
+        seed0 = int(seed_for(ctx.rng_seeds, "intersection.primary", 0).integers(0, 2**31 - 1))
+        primary = _clone_with_overrides(primary_template, random_state=seed0)
+        r = primary.split_result(X, y=ctx.y, dates=ctx.dates, targets=ctx.targets)[0]
+        train, valid, test, discard = r.train, r.valid, r.test, r.discard
+
+        secondary_template = _resolve_splitter(self.secondary, "secondary")
+        if not isinstance(secondary_template, GroupSplitter) or not secondary_template.group_forming:
+            raise ParameterError("secondary must be a group-forming GroupSplitter")
+        groups = np.asarray(secondary_template.compute_groups(X, ctx.y), dtype=np.int64)
+
+        train_set = set(train.tolist())
+        conflict_with_valid = set(groups[train].tolist()) & set(groups[valid].tolist())
+        conflict_with_test = set(groups[train].tolist()) & set(groups[test].tolist())
+
+        move_to_discard: set[int] = set()
+        if conflict_with_valid:
+            mask = np.isin(groups, sorted(conflict_with_valid))
+            move_to_discard |= train_set & set(np.nonzero(mask)[0].tolist())
+
+        move_to_test: set[int] = set()
+        if conflict_with_test:
+            mask = np.isin(groups, sorted(conflict_with_test))
+            offending = (train_set & set(np.nonzero(mask)[0].tolist())) - move_to_discard
+            if self.conflict_policy == "extend_test":
+                move_to_test |= offending
+            else:
+                move_to_discard |= offending
+
+        train = np.array(sorted(train_set - move_to_discard - move_to_test), dtype=np.int64)
+        test = np.array(sorted(set(test.tolist()) | move_to_test), dtype=np.int64)
+        discard = np.array(sorted(set(discard.tolist()) | move_to_discard), dtype=np.int64)
+
+        result = _build_result(
+            self,
+            ctx,
+            train=train,
+            valid=valid,
+            test=test,
+            discard=discard,
+            metadata={
+                "primary_splitter_id": primary.splitter_id,
+                "secondary_splitter_id": secondary_template.splitter_id,
+                "n_conflicted_groups": len(conflict_with_test | conflict_with_valid),
+                "n_records_resolved": len(move_to_discard) + len(move_to_test),
+                "conflict_policy": self.conflict_policy,
+            },
+        )
+        return [result]

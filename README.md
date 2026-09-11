@@ -11,11 +11,11 @@
 
 </div>
 
-A self-contained, scikit-learn-compatible Python library of dataset-splitting strategies for cheminformatics machine learning. `chemsplit` implements **52 splitting strategies across nine families** — baseline, scaffold, similarity, embedding, property, lineage, task, biomolecular, and protocol splitters — behind one coherent, deterministic API, plus a leakage-audit module and a set of reference/synthetic datasets to try them on.
+A self-contained, scikit-learn-compatible Python library of dataset-splitting strategies for cheminformatics machine learning. `chemsplit` implements **53 splitting strategies across nine families** — baseline, scaffold, similarity, embedding, property, lineage, task, biomolecular, and protocol splitters — behind one coherent, deterministic API, plus a leakage-audit module and a set of reference/synthetic datasets to try them on.
 
 ## ✨ Features
 
-- 🧩 **9 families, 52 strategies** — from a plain random split to scaffold-tree pruning, Butina/spectral clustering, UMAP-space holdouts, temporal and provenance cuts, protein-family and binding-site holdouts, drug-target cold-start benchmarks, and full CV/nested-CV protocol wrappers.
+- 🧩 **9 families, 53 strategies** — from a plain random split to scaffold-tree pruning, Butina/spectral clustering, UMAP-space holdouts, temporal and provenance cuts, protein-family and binding-site holdouts, drug-target cold-start benchmarks, and full CV/nested-CV protocol wrappers.
 - 🎯 **Deterministic by construction** — every splitter accepts a `random_state` and produces bit-identical output regardless of record order or `n_jobs`, checked continuously by a golden-file regression suite and Hypothesis property tests.
 - 🛡️ **Contract-checked results** — every `SplitResult` is validated against five structural invariants (index coverage, disjointness, group-label consistency, JSON round-tripping of `params`, id format) before it ever reaches your code.
 - 🔍 **Built-in leakage auditing** — `chemsplit.audit` reports nearest-neighbour similarity, adversarial-validation AUC, exact/scaffold/ring-system overlap, and property/label shift between train and test.

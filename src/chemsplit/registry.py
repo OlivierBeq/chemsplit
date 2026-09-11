@@ -69,6 +69,7 @@ def _import_all_classes() -> list[type[BaseSplitter]]:
         ApplicabilityDomainSplitter,
         ExternalHoldoutSplitter,
         GroupKFoldSplitter,
+        IntersectionSplitter,
         NestedCVSplitter,
         RepeatedSplitter,
         ThreeWaySplitter,
@@ -168,6 +169,7 @@ def _import_all_classes() -> list[type[BaseSplitter]]:
         NestedCVSplitter,
         ExternalHoldoutSplitter,
         ApplicabilityDomainSplitter,
+        IntersectionSplitter,
     ]
 
 

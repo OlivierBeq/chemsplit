@@ -5,16 +5,20 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from chemsplit.datasets import make_scaffold_families
 from chemsplit.registry import get_splitter
 from chemsplit.splitters.baseline import RandomSplitter
+from chemsplit.splitters.lineage import TemporalSplitter
 from chemsplit.splitters.protocol import (
     ApplicabilityDomainSplitter,
     ExternalHoldoutSplitter,
     GroupKFoldSplitter,
+    IntersectionSplitter,
     NestedCVSplitter,
     RepeatedSplitter,
     ThreeWaySplitter,
 )
+from chemsplit.splitters.scaffold import MurckoScaffoldSplitter
 
 SMILES_POOL = [
     "CCO", "CCN", "CCC", "CCCl", "CCBr", "c1ccccc1", "c1ccncc1", "c1ccccc1O",
@@ -162,6 +166,70 @@ class TestApplicabilityDomainSplitter:
     def test_get_n_splits(self):
         s = ApplicabilityDomainSplitter(n_bands=5, random_state=0)
         assert s.get_n_splits() == 5
+
+
+class TestIntersectionSplitter:
+    def _dataset(self):
+        # dates loosely correlated with scaffold group -> some groups straddle the cut
+        fx = make_scaffold_families(n_scaffolds=10, per_scaffold=20, seed=0)
+        n = len(fx.smiles)
+        rng = np.random.default_rng(0)
+        base = np.datetime64("2015-01-01")
+        dates = np.empty(n, dtype="datetime64[D]")
+        for i, g in enumerate(fx.groups_true):
+            dates[i] = base + np.timedelta64(int(g) * 200 + int(rng.integers(0, 40)), "D")
+        noisy = rng.random(n) < 0.15
+        dates[noisy] = base + np.array(rng.integers(0, 2000, size=int(noisy.sum())), dtype="timedelta64[D]")
+        cut = str(np.sort(dates)[n // 2])
+        return fx, dates, cut
+
+    def test_resolves_conflicts_between_primary_and_secondary(self):
+        fx, dates, cut = self._dataset()
+        sp = IntersectionSplitter(
+            primary=TemporalSplitter(cut_date=cut, tie_policy="train", random_state=0),
+            secondary=MurckoScaffoldSplitter(random_state=0),
+            conflict_policy="discard",
+            random_state=0,
+        )
+        result = sp.split_result(fx.smiles, dates=dates)[0]
+        _assert_valid_split(result, len(fx.smiles))
+        train_groups = set(fx.groups_true[result.train].tolist())
+        test_groups = set(fx.groups_true[result.test].tolist())
+        assert not (train_groups & test_groups)
+        assert result.metadata["n_conflicted_groups"] > 0
+        assert result.metadata["n_records_resolved"] == len(result.discard)
+
+    def test_extend_test_grows_test_instead_of_discarding(self):
+        fx, dates, cut = self._dataset()
+        sp = IntersectionSplitter(
+            primary=TemporalSplitter(cut_date=cut, tie_policy="train", random_state=0),
+            secondary=MurckoScaffoldSplitter(random_state=0),
+            conflict_policy="extend_test",
+            random_state=0,
+        )
+        result = sp.split_result(fx.smiles, dates=dates)[0]
+        _assert_valid_split(result, len(fx.smiles))
+        train_groups = set(fx.groups_true[result.train].tolist())
+        test_groups = set(fx.groups_true[result.test].tolist())
+        assert not (train_groups & test_groups)
+        assert len(result.discard) == 0
+        assert result.metadata["n_records_resolved"] > 0
+
+    def test_requires_group_forming_secondary(self):
+        with pytest.raises(Exception):
+            IntersectionSplitter(
+                primary=RandomSplitter(random_state=0),
+                secondary=RandomSplitter(random_state=0),
+                random_state=0,
+            ).split_result(SMILES_POOL)
+
+    def test_invalid_conflict_policy(self):
+        with pytest.raises(Exception):
+            IntersectionSplitter(
+                primary=RandomSplitter(random_state=0),
+                secondary=MurckoScaffoldSplitter(random_state=0),
+                conflict_policy="bogus",
+            )
 
 
 # --------------------------------------------------------------------------- coverage additions
