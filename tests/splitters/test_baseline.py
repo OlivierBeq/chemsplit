@@ -143,6 +143,27 @@ def test_stratified_multitask_error_by_default():
         sp.split_result(X, y=y)
 
 
+def test_stratified_string_labels_do_not_crash():
+    n = 20
+    X = _X(n)
+    y = np.array(["Active", "Inactive"] * (n // 2))
+    sp = StratifiedRandomSplitter(train_size=0.7, test_size=0.3, random_state=0)
+    [result] = sp.split_result(X, y=y)
+    assert result.metadata["n_strata"] == 2
+
+
+def test_stratified_small_stratum_merge_classification_uses_frequency_not_index():
+    # merge target must be "c_big" (most frequent), not "b_mid" (nearest by class code).
+    y = np.array(["a_rare"] * 1 + ["b_mid"] * 5 + ["c_big"] * 24)
+    X = _X(len(y))
+    sp = StratifiedRandomSplitter(
+        min_per_stratum=2, on_small_stratum="merge", train_size=0.7, test_size=0.3, random_state=0
+    )
+    [result] = sp.split_result(X, y=y)
+    assert result.metadata["n_strata"] == 2
+    assert sorted(result.metadata["stratum_sizes"]) == [5, 25]
+
+
 def test_stratified_multitask_sum_labels():
     n = 40
     y = (np.random.default_rng(0).random((n, 3)) > 0.5).astype(float)
