@@ -120,27 +120,9 @@ class HiSplitter(GroupSplitter):
         featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
-        size_tolerance: float = 0.05,
-        group_assignment: Literal["greedy_desc", "balanced", "random"] = "greedy_desc",
-        n_splits: int = 1,
-        train_size: Any = None,
-        valid_size: Any = None,
-        test_size: Any = None,
-        random_state: int | np.random.Generator | None = None,
-        n_jobs: int = 1,
-        verbose: int = 0,
+        **kwargs: Any,
     ) -> None:
-        super().__init__(
-            size_tolerance=size_tolerance,
-            group_assignment=group_assignment,
-            n_splits=n_splits,
-            train_size=train_size,
-            valid_size=valid_size,
-            test_size=test_size,
-            random_state=random_state,
-            n_jobs=n_jobs,
-            verbose=verbose,
-        )
+        super().__init__(**kwargs)
         self.threshold = threshold
         self.coarse_cutoff = coarse_cutoff
         self.solver = solver
@@ -387,27 +369,9 @@ class LoSplitter(GroupSplitter):
         featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
-        size_tolerance: float = 0.05,
-        group_assignment: Literal["greedy_desc", "balanced", "random"] = "greedy_desc",
-        n_splits: int = 1,
-        train_size: Any = None,
-        valid_size: Any = None,
-        test_size: Any = None,
-        random_state: int | np.random.Generator | None = None,
-        n_jobs: int = 1,
-        verbose: int = 0,
+        **kwargs: Any,
     ) -> None:
-        super().__init__(
-            size_tolerance=size_tolerance,
-            group_assignment=group_assignment,
-            n_splits=n_splits,
-            train_size=train_size,
-            valid_size=valid_size,
-            test_size=test_size,
-            random_state=random_state,
-            n_jobs=n_jobs,
-            verbose=verbose,
-        )
+        super().__init__(**kwargs)
         self.threshold = threshold
         self.min_cluster_size = min_cluster_size
         self.max_clusters = max_clusters
@@ -590,27 +554,9 @@ class ScaffoldHopSplitter(GroupSplitter):
         pharmacophore_similarity: Literal["none", "fcfp", "pharm2d"] = "fcfp",
         min_pharm_similarity: float = 0.5,
         inactives_policy: Literal["train", "split_with_scaffolds", "discard"] = "split_with_scaffolds",
-        size_tolerance: float = 0.05,
-        group_assignment: Literal["greedy_desc", "balanced", "random"] = "greedy_desc",
-        n_splits: int = 1,
-        train_size: Any = None,
-        valid_size: Any = None,
-        test_size: Any = None,
-        random_state: int | np.random.Generator | None = None,
-        n_jobs: int = 1,
-        verbose: int = 0,
+        **kwargs: Any,
     ) -> None:
-        super().__init__(
-            size_tolerance=size_tolerance,
-            group_assignment=group_assignment,
-            n_splits=n_splits,
-            train_size=train_size,
-            valid_size=valid_size,
-            test_size=test_size,
-            random_state=random_state,
-            n_jobs=n_jobs,
-            verbose=verbose,
-        )
+        super().__init__(**kwargs)
         self.scaffold_kind = scaffold_kind
         self.active_definition = active_definition
         self.active_threshold = active_threshold
@@ -810,27 +756,9 @@ class _ColdStartBase(GroupSplitter):
         target_sequences: Any = None,
         min_interactions_per_entity: int = 1,
         drop_unlabelled: bool = True,
-        size_tolerance: float = 0.05,
-        group_assignment: Literal["greedy_desc", "balanced", "random"] = "greedy_desc",
-        n_splits: int = 1,
-        train_size: Any = None,
-        valid_size: Any = None,
-        test_size: Any = None,
-        random_state: int | np.random.Generator | None = None,
-        n_jobs: int = 1,
-        verbose: int = 0,
+        **kwargs: Any,
     ) -> None:
-        super().__init__(
-            size_tolerance=size_tolerance,
-            group_assignment=group_assignment,
-            n_splits=n_splits,
-            train_size=train_size,
-            valid_size=valid_size,
-            test_size=test_size,
-            random_state=random_state,
-            n_jobs=n_jobs,
-            verbose=verbose,
-        )
+        super().__init__(**kwargs)
         self.compound_grouper = compound_grouper
         self.target_grouper = target_grouper
         self.compound_structures = compound_structures
@@ -1175,23 +1103,9 @@ class AVESplitter(BaseSplitter):
         featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
-        n_splits: int = 1,
-        train_size: Any = None,
-        valid_size: Any = None,
-        test_size: Any = None,
-        random_state: int | np.random.Generator | None = None,
-        n_jobs: int = 1,
-        verbose: int = 0,
+        **kwargs: Any,
     ) -> None:
-        super().__init__(
-            n_splits=n_splits,
-            train_size=train_size,
-            valid_size=valid_size,
-            test_size=test_size,
-            random_state=random_state,
-            n_jobs=n_jobs,
-            verbose=verbose,
-        )
+        super().__init__(**kwargs)
         self.target_bias = target_bias
         self.tolerance = tolerance
         self.n_bins = n_bins
@@ -1448,27 +1362,9 @@ class DecoyBenchmarkSplitter(GroupSplitter):
         decoy_pool: Any = None,
         predefined_assignment: Any = None,
         spatial_bins: int = 10,
-        size_tolerance: float = 0.05,
-        group_assignment: Literal["greedy_desc", "balanced", "random"] = "greedy_desc",
-        n_splits: int = 1,
-        train_size: Any = None,
-        valid_size: Any = None,
-        test_size: Any = None,
-        random_state: int | np.random.Generator | None = None,
-        n_jobs: int = 1,
-        verbose: int = 0,
+        **kwargs: Any,
     ) -> None:
-        super().__init__(
-            size_tolerance=size_tolerance,
-            group_assignment=group_assignment,
-            n_splits=n_splits,
-            train_size=train_size,
-            valid_size=valid_size,
-            test_size=test_size,
-            random_state=random_state,
-            n_jobs=n_jobs,
-            verbose=verbose,
-        )
+        super().__init__(**kwargs)
         self.scheme = scheme
         self.decoy_ratio = decoy_ratio
         self.match_properties = match_properties
