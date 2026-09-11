@@ -60,11 +60,9 @@ def _pack_rows_to_u64(X: np.ndarray) -> np.ndarray:
     pad = n_words * 64 - n_bits
     if pad:
         X = np.pad(X, ((0, 0), (0, pad)), mode="constant")
-    bits = X.astype(np.uint8).reshape(n, n_words, 64)
-    # Little-endian bit order within each 64-bit word; order is internal and consistent, so it
-    # doesn't matter for popcount-based similarity as long as it's applied identically everywhere.
-    weights = (np.uint64(1) << np.arange(64, dtype=np.uint64))
-    words = (bits.astype(np.uint64) * weights).sum(axis=-1, dtype=np.uint64)
+    # Bit order is internal and self-consistent; only popcount/AND are used downstream.
+    packed_bytes = np.packbits(X, axis=-1, bitorder="little")
+    words = packed_bytes.reshape(n, n_words * 8).view(np.uint64)
     return words
 
 
