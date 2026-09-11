@@ -42,10 +42,15 @@ def _feature_matrix(n=30, seed=0):
 
 class TestHiSplitter:
     def test_basic_split_and_verification(self):
-        sp = HiSplitter(threshold=0.3, coarse_cutoff=0.5, train_size=0.7, test_size=0.3, random_state=0)
+        sp = HiSplitter(
+            threshold=0.3, coarse_cutoff=0.5, train_size=0.7, test_size=0.3, random_state=0
+        )
         result = sp.split_result(_SMILES)[0]
         assert result.metadata["max_cross_similarity"] <= 0.3 + 1e-6
-        assert result.train.size + result.test.size + result.valid.size + result.discard.size == len(_SMILES)
+        assert (
+            result.train.size + result.test.size + result.valid.size + result.discard.size
+            == len(_SMILES)
+        )
 
     def test_coarse_cutoff_below_threshold_raises(self):
         with pytest.raises(ParameterError):
@@ -60,13 +65,26 @@ class TestHiSplitter:
         assert np.array_equal(r1.test, r2.test)
 
     def test_annealing_solver(self):
-        sp = HiSplitter(threshold=0.3, solver="annealing", train_size=0.7, test_size=0.3, random_state=0,
-                         time_limit_s=5.0)
+        sp = HiSplitter(
+            threshold=0.3,
+            solver="annealing",
+            train_size=0.7,
+            test_size=0.3,
+            random_state=0,
+            time_limit_s=5.0,
+        )
         result = sp.split_result(_SMILES)[0]
         assert result.metadata["solver"] == "annealing"
 
     def test_ilp_solver(self):
-        sp = HiSplitter(threshold=0.3, solver="ilp", train_size=0.7, test_size=0.3, random_state=0, time_limit_s=5.0)
+        sp = HiSplitter(
+            threshold=0.3,
+            solver="ilp",
+            train_size=0.7,
+            test_size=0.3,
+            random_state=0,
+            time_limit_s=5.0,
+        )
         result = sp.split_result(_SMILES)[0]
         assert result.metadata["solver"] == "ilp"
 
@@ -80,18 +98,32 @@ class TestLoSplitter:
     def test_basic_split(self):
         rng = np.random.default_rng(0)
         y = rng.normal(size=len(_SMILES))
-        sp = LoSplitter(threshold=0.3, min_cluster_size=3, std_threshold=0.01, train_size=0.7, test_size=0.3,
-                         random_state=0)
+        sp = LoSplitter(
+            threshold=0.3,
+            min_cluster_size=3,
+            std_threshold=0.01,
+            train_size=0.7,
+            test_size=0.3,
+            random_state=0,
+        )
         try:
             result = sp.split_result(_SMILES, y=y)[0]
         except (ConstraintUnsatisfiableError, EmptyPartitionError):
-            pytest.skip("no qualifying cluster (or train pool exhausted) on this tiny synthetic pool")
+            pytest.skip(
+                "no qualifying cluster (or train pool exhausted) on this tiny synthetic pool"
+            )
         assert "cluster_members" in result.metadata
 
     def test_no_qualifying_cluster_raises(self):
         y = np.ones(len(_SMILES))  # zero std everywhere -> no cluster can qualify
-        sp = LoSplitter(threshold=0.05, min_cluster_size=3, std_threshold=0.5, train_size=0.7, test_size=0.3,
-                         random_state=0)
+        sp = LoSplitter(
+            threshold=0.05,
+            min_cluster_size=3,
+            std_threshold=0.5,
+            train_size=0.7,
+            test_size=0.3,
+            random_state=0,
+        )
         with pytest.raises(ConstraintUnsatisfiableError):
             sp.split_result(_SMILES, y=y)
 
@@ -101,7 +133,11 @@ class TestScaffoldHopSplitter:
         rng = np.random.default_rng(0)
         y = (rng.random(len(_SMILES)) > 0.4).astype(np.int64)
         sp = ScaffoldHopSplitter(
-            pharmacophore_similarity="none", train_size=0.7, test_size=0.3, random_state=0, min_pharm_similarity=0.0,
+            pharmacophore_similarity="none",
+            train_size=0.7,
+            test_size=0.3,
+            random_state=0,
+            min_pharm_similarity=0.0,
         )
         try:
             result = sp.split_result(_SMILES, y=y)[0]
@@ -109,6 +145,20 @@ class TestScaffoldHopSplitter:
             pytest.skip("not enough distinct active scaffolds in this tiny synthetic pool")
         train_scaffolds = set(result.metadata.get("test_scaffolds", []))
         assert isinstance(train_scaffolds, set)
+
+    def test_train_keeps_at_least_one_active_scaffold_without_pharmacophore(self):
+        # 2 active scaffold families, large test_size: must not drain train of all actives.
+        fam1 = ["c1ccccc1C", "c1ccccc1CC", "c1ccccc1CCC", "c1ccccc1CCCC", "c1ccccc1CCCCC"]
+        fam2 = ["C1CCCCC1C", "C1CCCCC1CC", "C1CCCCC1CCC", "C1CCCCC1CCCC", "C1CCCCC1CCCCC"]
+        smiles = fam1 + fam2 + ["CCOCC", "CCNCC"]
+        y = np.array([1] * 10 + [0] * 2)
+        sp = ScaffoldHopSplitter(
+            pharmacophore_similarity="none", min_pharm_similarity=0.0,
+            train_size=0.1, test_size=0.9, random_state=0,
+        )
+        result = sp.split_result(smiles, y=y)[0]
+        train_actives = int(np.sum(np.asarray(y)[result.train] == 1))
+        assert train_actives > 0
 
 
 class TestColdStart:
@@ -156,7 +206,12 @@ class TestAVESplitter:
         rng = np.random.default_rng(0)
         y = (rng.random(len(_SMILES)) > 0.5).astype(np.int64)
         sp = AVESplitter(
-            train_size=0.7, test_size=0.3, random_state=0, population_size=6, n_generations=2, tolerance=1.0,
+            train_size=0.7,
+            test_size=0.3,
+            random_state=0,
+            population_size=6,
+            n_generations=2,
+            tolerance=1.0,
         )
         result = sp.split_result(_SMILES, y=y)[0]
         assert "ave_initial" in result.metadata
@@ -165,8 +220,12 @@ class TestAVESplitter:
     def test_determinism(self):
         rng = np.random.default_rng(0)
         y = (rng.random(len(_SMILES)) > 0.5).astype(np.int64)
-        sp1 = AVESplitter(train_size=0.7, test_size=0.3, random_state=7, population_size=6, n_generations=2)
-        sp2 = AVESplitter(train_size=0.7, test_size=0.3, random_state=7, population_size=6, n_generations=2)
+        sp1 = AVESplitter(
+            train_size=0.7, test_size=0.3, random_state=7, population_size=6, n_generations=2
+        )
+        sp2 = AVESplitter(
+            train_size=0.7, test_size=0.3, random_state=7, population_size=6, n_generations=2
+        )
         r1 = sp1.split_result(_SMILES, y=y)[0]
         r2 = sp2.split_result(_SMILES, y=y)[0]
         assert np.array_equal(r1.test, r2.test)
@@ -180,7 +239,14 @@ class TestDecoyBenchmarkSplitter:
     def test_property_matched_basic(self):
         y = np.zeros(len(_SMILES), dtype=np.int64)
         y[:6] = 1
-        decoy_pool = ["CCCCCCCCCC", "CCCCCCCCCCC", "c1ccccc1CCCC", "C1CCCCCC1", "CCOCC", "CCNCC"] * 5
+        decoy_pool = [
+            "CCCCCCCCCC",
+            "CCCCCCCCCCC",
+            "c1ccccc1CCCC",
+            "C1CCCCCC1",
+            "CCOCC",
+            "CCNCC",
+        ] * 5
         sp = DecoyBenchmarkSplitter(
             decoy_ratio=2, topology_dissimilarity=0.9, decoy_pool=decoy_pool,
             train_size=0.7, test_size=0.3, random_state=0,
@@ -196,9 +262,6 @@ class TestDecoyBenchmarkSplitter:
         result = sp.split_result(_SMILES, y=y)[0]
         assert result.train.size == 20
         assert result.test.size == 10
-
-
-# coverage additions
 
 
 class TestHiSplitterMore:
@@ -316,7 +379,9 @@ class TestAVESplitterMore:
     def test_non_binary_labels_raise(self):
         rng = np.random.default_rng(0)
         y = rng.integers(0, 3, size=len(_SMILES))
-        sp = AVESplitter(train_size=0.7, test_size=0.3, random_state=0, population_size=4, n_generations=1)
+        sp = AVESplitter(
+            train_size=0.7, test_size=0.3, random_state=0, population_size=4, n_generations=1
+        )
         with pytest.raises(LabelError):
             sp.split_result(_SMILES, y=y)
 
@@ -351,4 +416,3 @@ class TestDecoyBenchmarkSplitterMore:
         )
         result = sp.split_result(_SMILES, y=y)[0]
         assert result.metadata["scheme"] == "spatial_random"
-
