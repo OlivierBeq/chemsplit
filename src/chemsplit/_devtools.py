@@ -250,6 +250,12 @@ def _build_plan(fixtures: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str
         {"X_external": F["two_clusters"].smiles[60:70]},
     )
     plan["applicability_domain"] = lambda: (F["two_clusters"].smiles, None, {}, {"base_splitter": "random"})
+    plan["intersection"] = lambda: (
+        F["dated_series"].smiles,
+        None,
+        {"dates": F["dated_series"].dates},
+        {"primary": "temporal", "secondary": "murcko_scaffold", "conflict_policy": "discard"},
+    )
 
     fixture_name_of.update(
         {
@@ -305,6 +311,7 @@ def _build_plan(fixtures: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str
             "nested_cv": "linear_series",
             "external_holdout": "two_clusters",
             "applicability_domain": "two_clusters",
+            "intersection": "dated_series",
         }
     )
 
