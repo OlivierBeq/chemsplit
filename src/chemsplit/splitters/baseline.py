@@ -175,7 +175,7 @@ def _compute_strata(
         else:
             raise ParameterError(f"invalid multitask={multitask!r}")
 
-    if np.any(np.isinf(y.astype(float))):
+    if y.dtype.kind in "iuf" and np.any(np.isinf(y.astype(float))):
         raise LabelError("StratifiedRandomSplitter: y contains +/-inf")
 
     resolved_task = task
@@ -189,7 +189,7 @@ def _compute_strata(
 
     if resolved_task == "classification":
         _, strata = np.unique(y, return_inverse=True)
-        return strata.astype(np.int64)
+        return strata.astype(np.int64), resolved_task
 
     # regression: bin
     yf = y.astype(np.float64)
@@ -208,14 +208,14 @@ def _compute_strata(
         # relabel by ascending cluster-centre so strata are ordered like bins
         order = np.argsort(km.cluster_centers_.ravel())
         remap = {int(old): int(new) for new, old in enumerate(order)}
-        return np.asarray([remap[int(v)] for v in labels], dtype=np.int64)
+        return np.asarray([remap[int(v)] for v in labels], dtype=np.int64), resolved_task
     else:
         raise ParameterError(f"invalid binning={binning!r}")
 
     if len(edges) < 2:
-        return np.zeros(len(yf), dtype=np.int64)
+        return np.zeros(len(yf), dtype=np.int64), resolved_task
     strata = np.clip(np.searchsorted(edges, yf, side="right") - 1, 0, len(edges) - 2)
-    return strata.astype(np.int64)
+    return strata.astype(np.int64), resolved_task
 
 
 class StratifiedRandomSplitter(BaseSplitter):
@@ -297,10 +297,10 @@ class StratifiedRandomSplitter(BaseSplitter):
             raise ParameterError(f"invalid multitask={multitask!r}")
 
     def _partition(self, ctx: _Context) -> list[SplitResult]:
-        strata = _compute_strata(
+        strata, resolved_task = _compute_strata(
             ctx.y, task=self.task, n_bins=self.n_bins, binning=self.binning, multitask=self.multitask
         )
-        strata = self._handle_small_strata(strata)
+        strata = self._handle_small_strata(strata, resolved_task)
 
         n_folds = self.get_n_splits()
         results = []
@@ -352,7 +352,7 @@ class StratifiedRandomSplitter(BaseSplitter):
             )
         return results
 
-    def _handle_small_strata(self, strata: np.ndarray) -> np.ndarray:
+    def _handle_small_strata(self, strata: np.ndarray, resolved_task: str) -> np.ndarray:
         counts = {int(s): int(np.sum(strata == s)) for s in np.unique(strata)}
         small = [s for s, c in counts.items() if c < self.min_per_stratum]
         if not small:
@@ -364,15 +364,19 @@ class StratifiedRandomSplitter(BaseSplitter):
             )
         if self.on_small_stratum == "ignore":
             return strata
-        # "merge": merge into the nearest stratum by bin centre, ties -> lower bin.
+        # Regression bins are ordered (merge by index); classification codes aren't (merge by
+        # frequency, ties -> lowest index).
         strata = strata.copy()
         all_strata = sorted(counts)
         for s in small:
             others = [o for o in all_strata if o != s and counts[o] >= self.min_per_stratum]
             if not others:
                 continue
-            nearest = min(others, key=lambda o: (abs(o - s), o))
-            strata[strata == s] = nearest
+            if resolved_task == "classification":
+                target = max(others, key=lambda o: (counts[o], -o))
+            else:
+                target = min(others, key=lambda o: (abs(o - s), o))
+            strata[strata == s] = target
         # relabel densely in ascending order
         remap = {old: new for new, old in enumerate(sorted(np.unique(strata).tolist()))}
         return np.asarray([remap[int(v)] for v in strata], dtype=np.int64)
@@ -491,7 +495,7 @@ class KFoldSplitter(BaseSplitter):
             perm = np.arange(n)
 
         if self.stratify:
-            strata = _compute_strata(ctx.y, task="auto", n_bins=10, binning="quantile", multitask="error")
+            strata, _ = _compute_strata(ctx.y, task="auto", n_bins=10, binning="quantile", multitask="error")
             folds: list[list[int]] = [[] for _ in range(k)]
             for s in sorted(np.unique(strata).tolist()):
                 members = [int(i) for i in perm if strata[i] == s]
@@ -594,7 +598,7 @@ class MonteCarloSplitter(BaseSplitter):
         results = []
         for i in range(int(self.n_splits)):
             if self.stratify:
-                strata = _compute_strata(
+                strata, _ = _compute_strata(
                     ctx.y, task="auto", n_bins=10, binning="quantile", multitask="error"
                 )
                 rng = seed_for(ctx.rng_seeds, "montecarlo.permutation", i)
