@@ -8,6 +8,7 @@ from typing import Any, ClassVar, Literal
 
 import numpy as np
 
+from chemsplit._ga import mutate_bits
 from chemsplit._unionfind import dense_label_encode
 from chemsplit.base import BaseSplitter, GroupSplitter, SplitResult, Strictness, _Context
 from chemsplit.determinism import (
@@ -330,7 +331,9 @@ class SIMPDSplitter(BaseSplitter):
     the RNG-free parts (``creator``/``base.Fitness`` bookkeeping and ``tools.selNSGA2``, which is
     a deterministic rank/crowding-distance sort) and hand-rolls crossover/mutation/tournament
     selection using a dedicated ``random.Random`` instance from
-    :func:`chemsplit.determinism.seeded_python_random`.
+    :func:`chemsplit.determinism.seeded_python_random`. Mutation is shared with ``ave``
+    (:class:`~chemsplit.splitters.task.AVESplitter`) via :mod:`chemsplit._ga`; repair/crossover/
+    selection differ (cardinality scope, elitism) and stay separate.
 
     Advantages
     ----------
@@ -541,10 +544,7 @@ class SIMPDSplitter(BaseSplitter):
             return repair(a2), repair(b2)
 
         def mutate(a: np.ndarray) -> np.ndarray:
-            flip = np.array([py_rng.random() < self.mutation_indpb for _ in range(n)])
-            a2 = a.copy()
-            a2[flip] = ~a2[flip]
-            return repair(a2)
+            return repair(mutate_bits(a, self.mutation_indpb, py_rng))
 
         def tournament(pop: list) -> Any:
             contestants = [pop[py_rng.randrange(len(pop))] for _ in range(self.tournament_size)]

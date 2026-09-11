@@ -19,6 +19,7 @@ from chemsplit._fp_similarity import (
     compute_similarity_matrix,
     guard_memory,
 )
+from chemsplit._ga import mutate_bits
 from chemsplit._optimize import BalanceProblem, solve_balance
 from chemsplit._pair_assign import assign_pair_groups
 from chemsplit._unionfind import UnionFind, dense_label_encode
@@ -1064,10 +1065,10 @@ class AVESplitter(BaseSplitter):
 
     Notes
     -----
-    ``target_bias``/GA machinery follows this project's published AVE definition directly. Uses the
-    same hand-rolled, seeded-``random.Random`` GA operators as ``simpd``
-    (:class:`~chemsplit.splitters.lineage.SIMPDSplitter`) rather than DEAP's built-in operators,
-    which read Python's global ``random`` module internally and would violate's
+    ``target_bias``/GA machinery follows this project's published AVE definition directly. Uses
+    hand-rolled, seeded-``random.Random`` GA operators (mutation shared with ``simpd`` via
+    :mod:`chemsplit._ga`; crossover/repair/selection differ and stay separate) rather than DEAP's,
+    which read Python's global ``random`` module and would violate this project's
     never-touch-global-state determinism rule.
     """
 
@@ -1248,9 +1249,7 @@ class AVESplitter(BaseSplitter):
                         cut = pyrng.randrange(1, ctx.n) if ctx.n > 1 else 0
                         child[cut:] = population[i3][cut:]
                     if pyrng.random() < self.mutation_prob:
-                        for i in range(ctx.n):
-                            if pyrng.random() < self.mutation_indpb:
-                                child[i] = not child[i]
+                        child = mutate_bits(child, self.mutation_indpb, pyrng)
                     new_pop.append(repair(child))
                 population = new_pop
                 fitnesses = [fitness(m) for m in population]
