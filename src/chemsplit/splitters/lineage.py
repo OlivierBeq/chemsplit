@@ -911,7 +911,12 @@ class PartySplitter(GroupSplitter):
             )
             valid = np.array([], dtype=np.int64)
             if ctx.sizes.n_valid > 0 and train_parties:
-                valid_party = min(train_parties, key=lambda q: (int(party_sizes[q]), q))
+                # parties are atomic; pick the one closest in size to the requested valid_size.
+                target_valid = ctx.sizes.n_valid
+                valid_party = min(
+                    train_parties,
+                    key=lambda q: (abs(int(party_sizes[q]) - target_valid), int(party_sizes[q]), q),
+                )
                 valid = np.sort(np.nonzero(labels == valid_party)[0].astype(np.int64))
                 train = np.array(sorted(set(train.tolist()) - set(valid.tolist())), dtype=np.int64)
 

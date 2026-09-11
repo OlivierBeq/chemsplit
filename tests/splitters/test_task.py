@@ -110,6 +110,20 @@ class TestScaffoldHopSplitter:
         train_scaffolds = set(result.metadata.get("test_scaffolds", []))
         assert isinstance(train_scaffolds, set)
 
+    def test_train_keeps_at_least_one_active_scaffold_without_pharmacophore(self):
+        # 2 active scaffold families, large test_size: must not drain train of all actives.
+        fam1 = ["c1ccccc1C", "c1ccccc1CC", "c1ccccc1CCC", "c1ccccc1CCCC", "c1ccccc1CCCCC"]
+        fam2 = ["C1CCCCC1C", "C1CCCCC1CC", "C1CCCCC1CCC", "C1CCCCC1CCCC", "C1CCCCC1CCCCC"]
+        smiles = fam1 + fam2 + ["CCOCC", "CCNCC"]
+        y = np.array([1] * 10 + [0] * 2)
+        sp = ScaffoldHopSplitter(
+            pharmacophore_similarity="none", min_pharm_similarity=0.0,
+            train_size=0.1, test_size=0.9, random_state=0,
+        )
+        result = sp.split_result(smiles, y=y)[0]
+        train_actives = int(np.sum(np.asarray(y)[result.train] == 1))
+        assert train_actives > 0
+
 
 class TestColdStart:
     def _interaction_data(self):

@@ -712,7 +712,8 @@ class ScaffoldHopSplitter(GroupSplitter):
                         ok = False
                 if not ok:
                     continue
-            elif P is not None and not trial_train_actives:
+            elif not trial_train_actives:
+                # don't strip train of every active scaffold.
                 continue
             test_scaffolds.append(s)
             held_actives += len(trial_test)

@@ -21,6 +21,7 @@ from chemsplit.exceptions import (
     ConstraintUnsatisfiableError,
     DegenerateClusterWarning,
     DegenerateGroupingError,
+    LabelError,
     ParameterError,
     ScalabilityError,
     warn_with_details,
@@ -1095,6 +1096,12 @@ class ActivityCliffSplitter(BaseSplitter):
     def _partition(self, ctx: _Context) -> list[SplitResult]:
         mols = _require_mols(ctx, type(self).__name__)
         y = np.asarray(ctx.y, dtype=np.float64)
+        if self.y_scale == "linear" and np.any(y <= 0):
+            # fold-change (hi/lo) is undefined for y <= 0.
+            raise LabelError(
+                f'{type(self).__name__}: y_scale="linear" requires strictly positive y; '
+                'use y_scale="log" for signed/log-transformed labels'
+            )
         candidates = self._candidate_pairs(ctx, mols)
         gap_threshold = self._gap_threshold()
         cliffs = [
