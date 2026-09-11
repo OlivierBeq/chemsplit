@@ -125,20 +125,12 @@ def _require_mols(ctx: _Context, class_name: str) -> list:
     return ctx.mols
 
 
-# The full BaseSplitter + GroupSplitter constructor surface, spelled out explicitly on every
-# leaf class below (never `**kwargs`) — sklearn's BaseEstimator.get_params() silently drops any
-# parameter that only appears behind a **kwargs catch-all in the LEAF class's own __init__
-# signature (verified directly: sklearn.base.BaseEstimator._get_param_names() filters out
-# VAR_KEYWORD parameters rather than raising), which would otherwise make SplitResult.params
-# silently incomplete. Every concrete splitter in every family must follow this pattern.
-
 
 class _ScaffoldFamilyBase(GroupSplitter):
     """Shared validation for the family's ``include_chirality``/``on_empty_scaffold`` block.
 
-    A private implementation convenience so the six leaf classes below don't
-    each repeat the same two ``if`` checks. Leaf classes still declare their own full, explicit
-    ``__init__`` signature (see the module-level note above on sklearn's ``get_params()``).
+    A private implementation convenience so the six leaf classes below don't repeat the same two
+    ``if`` checks.
     """
 
     family: ClassVar[str] = "scaffold"
@@ -191,27 +183,9 @@ class MurckoScaffoldSplitter(_ScaffoldFamilyBase):
         *,
         include_chirality: bool = False,
         on_empty_scaffold: Literal["own_group", "shared_group", "discard", "raise"] = "own_group",
-        size_tolerance: float = 0.05,
-        group_assignment: Literal["greedy_desc", "balanced", "random"] = "greedy_desc",
-        n_splits: int = 1,
-        train_size: Any = None,
-        valid_size: Any = None,
-        test_size: Any = None,
-        random_state: int | np.random.Generator | None = None,
-        n_jobs: int = 1,
-        verbose: int = 0,
+        **kwargs: Any,
     ) -> None:
-        super().__init__(
-            size_tolerance=size_tolerance,
-            group_assignment=group_assignment,
-            n_splits=n_splits,
-            train_size=train_size,
-            valid_size=valid_size,
-            test_size=test_size,
-            random_state=random_state,
-            n_jobs=n_jobs,
-            verbose=verbose,
-        )
+        super().__init__(**kwargs)
         self.include_chirality = include_chirality
         self.on_empty_scaffold = on_empty_scaffold
         self._validate_shared()
@@ -282,32 +256,14 @@ class GenericScaffoldSplitter(_ScaffoldFamilyBase):
         *,
         include_chirality: bool = False,
         on_empty_scaffold: Literal["own_group", "shared_group", "discard", "raise"] = "own_group",
-        size_tolerance: float = 0.05,
-        group_assignment: Literal["greedy_desc", "balanced", "random"] = "greedy_desc",
-        n_splits: int = 1,
-        train_size: Any = None,
-        valid_size: Any = None,
-        test_size: Any = None,
-        random_state: int | np.random.Generator | None = None,
-        n_jobs: int = 1,
-        verbose: int = 0,
+        **kwargs: Any,
     ) -> None:
         if include_chirality:
             raise ParameterError(
                 "GenericScaffoldSplitter: include_chirality must be False — a generic scaffold "
                 "has no stereochemistry"
             )
-        super().__init__(
-            size_tolerance=size_tolerance,
-            group_assignment=group_assignment,
-            n_splits=n_splits,
-            train_size=train_size,
-            valid_size=valid_size,
-            test_size=test_size,
-            random_state=random_state,
-            n_jobs=n_jobs,
-            verbose=verbose,
-        )
+        super().__init__(**kwargs)
         self.include_chirality = include_chirality
         self.on_empty_scaffold = on_empty_scaffold
         self._validate_shared()
@@ -373,27 +329,9 @@ class ScaffoldTreeSplitter(_ScaffoldFamilyBase):
         max_rings: int = 12,
         include_chirality: bool = False,
         on_empty_scaffold: Literal["own_group", "shared_group", "discard", "raise"] = "own_group",
-        size_tolerance: float = 0.05,
-        group_assignment: Literal["greedy_desc", "balanced", "random"] = "greedy_desc",
-        n_splits: int = 1,
-        train_size: Any = None,
-        valid_size: Any = None,
-        test_size: Any = None,
-        random_state: int | np.random.Generator | None = None,
-        n_jobs: int = 1,
-        verbose: int = 0,
+        **kwargs: Any,
     ) -> None:
-        super().__init__(
-            size_tolerance=size_tolerance,
-            group_assignment=group_assignment,
-            n_splits=n_splits,
-            train_size=train_size,
-            valid_size=valid_size,
-            test_size=test_size,
-            random_state=random_state,
-            n_jobs=n_jobs,
-            verbose=verbose,
-        )
+        super().__init__(**kwargs)
         self.level = level
         self.prune_rule = prune_rule
         self.max_rings = max_rings
@@ -503,27 +441,9 @@ class RingSystemSplitter(_ScaffoldFamilyBase):
         max_ring_size: int = 20,
         include_chirality: bool = False,
         on_empty_scaffold: Literal["own_group", "shared_group", "discard", "raise"] = "own_group",
-        size_tolerance: float = 0.05,
-        group_assignment: Literal["greedy_desc", "balanced", "random"] = "greedy_desc",
-        n_splits: int = 1,
-        train_size: Any = None,
-        valid_size: Any = None,
-        test_size: Any = None,
-        random_state: int | np.random.Generator | None = None,
-        n_jobs: int = 1,
-        verbose: int = 0,
+        **kwargs: Any,
     ) -> None:
-        super().__init__(
-            size_tolerance=size_tolerance,
-            group_assignment=group_assignment,
-            n_splits=n_splits,
-            train_size=train_size,
-            valid_size=valid_size,
-            test_size=test_size,
-            random_state=random_state,
-            n_jobs=n_jobs,
-            verbose=verbose,
-        )
+        super().__init__(**kwargs)
         self.key = key
         self.linkage = linkage
         self.min_ring_size = min_ring_size
@@ -704,27 +624,9 @@ class MatchedMolecularSeriesSplitter(_ScaffoldFamilyBase):
         max_pairs: int | None = 5_000_000,
         include_chirality: bool = False,
         on_empty_scaffold: Literal["own_group", "shared_group", "discard", "raise"] = "own_group",
-        size_tolerance: float = 0.05,
-        group_assignment: Literal["greedy_desc", "balanced", "random"] = "greedy_desc",
-        n_splits: int = 1,
-        train_size: Any = None,
-        valid_size: Any = None,
-        test_size: Any = None,
-        random_state: int | np.random.Generator | None = None,
-        n_jobs: int = 1,
-        verbose: int = 0,
+        **kwargs: Any,
     ) -> None:
-        super().__init__(
-            size_tolerance=size_tolerance,
-            group_assignment=group_assignment,
-            n_splits=n_splits,
-            train_size=train_size,
-            valid_size=valid_size,
-            test_size=test_size,
-            random_state=random_state,
-            n_jobs=n_jobs,
-            verbose=verbose,
-        )
+        super().__init__(**kwargs)
         self.max_cuts = max_cuts
         self.max_variable_heavy_atoms = max_variable_heavy_atoms
         self.min_constant_heavy_atoms = min_constant_heavy_atoms
@@ -966,23 +868,9 @@ class ActivityCliffSplitter(BaseSplitter):
         keep_cliff_partners_together: bool = True,
         max_memory_bytes: int = 2 * 1024**3,
         allow_slow: bool = False,
-        n_splits: int = 1,
-        train_size: Any = None,
-        valid_size: Any = None,
-        test_size: Any = None,
-        random_state: int | np.random.Generator | None = None,
-        n_jobs: int = 1,
-        verbose: int = 0,
+        **kwargs: Any,
     ) -> None:
-        super().__init__(
-            n_splits=n_splits,
-            train_size=train_size,
-            valid_size=valid_size,
-            test_size=test_size,
-            random_state=random_state,
-            n_jobs=n_jobs,
-            verbose=verbose,
-        )
+        super().__init__(**kwargs)
         self.similarity_threshold = similarity_threshold
         self.fold_change_threshold = fold_change_threshold
         self.y_scale = y_scale

@@ -64,17 +64,24 @@ __all__ = [
 # Shared plumbing: featurizer/metric/max_memory_bytes/n_jobs
 # ---------------------------------------------------------------------------
 
-# Every leaf class below spells out its FULL constructor signature explicitly (never bare
-# **kwargs) — sklearn's BaseEstimator._get_param_names() silently drops VAR_KEYWORD-only
-# parameters, which would otherwise make SplitResult.params silently incomplete (see
-# chemsplit/splitters/scaffold.py's module-level note for the verified detail).
-
-
 class _SimilarityGroupBase(SimilarityParamsMixin, GroupSplitter):
     family: ClassVar[str] = "similarity"
     accepts: ClassVar[tuple[str,...]] = ("smiles", "mol", "features")
     deterministic_method: ClassVar[bool] = True
     order_invariant: ClassVar[bool] = False
+
+    def __init__(
+        self,
+        *,
+        featurizer: str | Any = "ecfp4",
+        metric: str = "tanimoto",
+        max_memory_bytes: int = 2 * 1024**3,
+        **kwargs: Any,
+    ) -> None:
+        GroupSplitter.__init__(self, **kwargs)
+        SimilarityParamsMixin.__init__(
+            self, featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, n_jobs=self.n_jobs
+        )
 
 
 class _SimilarityBase(SimilarityParamsMixin, BaseSplitter):
@@ -83,6 +90,19 @@ class _SimilarityBase(SimilarityParamsMixin, BaseSplitter):
     group_forming: ClassVar[bool] = False
     deterministic_method: ClassVar[bool] = True
     order_invariant: ClassVar[bool] = False
+
+    def __init__(
+        self,
+        *,
+        featurizer: str | Any = "ecfp4",
+        metric: str = "tanimoto",
+        max_memory_bytes: int = 2 * 1024**3,
+        **kwargs: Any,
+    ) -> None:
+        BaseSplitter.__init__(self, **kwargs)
+        SimilarityParamsMixin.__init__(
+            self, featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, n_jobs=self.n_jobs
+        )
 
 
 def _dist_matrix(self: Any, ctx: _Context) -> np.ndarray:
@@ -175,31 +195,9 @@ class SimilarityThresholdSplitter(_SimilarityGroupBase):
         featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
-        n_jobs: int = 1,
-        size_tolerance: float = 0.05,
-        group_assignment: Literal["greedy_desc", "balanced", "random"] = "greedy_desc",
-        n_splits: int = 1,
-        train_size: Any = None,
-        valid_size: Any = None,
-        test_size: Any = None,
-        random_state: int | np.random.Generator | None = None,
-        verbose: int = 0,
+        **kwargs: Any,
     ) -> None:
-        SimilarityParamsMixin.__init__(
-            self, featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, n_jobs=n_jobs
-        )
-        GroupSplitter.__init__(
-            self,
-            size_tolerance=size_tolerance,
-            group_assignment=group_assignment,
-            n_splits=n_splits,
-            train_size=train_size,
-            valid_size=valid_size,
-            test_size=test_size,
-            random_state=random_state,
-            n_jobs=n_jobs,
-            verbose=verbose,
-        )
+        super().__init__(featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs)
         self.threshold = threshold
         self.strategy = strategy
         self.seed_selection = seed_selection
@@ -363,31 +361,9 @@ class ButinaSplitter(_SimilarityGroupBase):
         featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
-        n_jobs: int = 1,
-        size_tolerance: float = 0.05,
-        group_assignment: Literal["greedy_desc", "balanced", "random"] = "greedy_desc",
-        n_splits: int = 1,
-        train_size: Any = None,
-        valid_size: Any = None,
-        test_size: Any = None,
-        random_state: int | np.random.Generator | None = None,
-        verbose: int = 0,
+        **kwargs: Any,
     ) -> None:
-        SimilarityParamsMixin.__init__(
-            self, featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, n_jobs=n_jobs
-        )
-        GroupSplitter.__init__(
-            self,
-            size_tolerance=size_tolerance,
-            group_assignment=group_assignment,
-            n_splits=n_splits,
-            train_size=train_size,
-            valid_size=valid_size,
-            test_size=test_size,
-            random_state=random_state,
-            n_jobs=n_jobs,
-            verbose=verbose,
-        )
+        super().__init__(featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs)
         self.cutoff = cutoff
         self.cutoff_is = cutoff_is
         self.reorder = reorder
@@ -508,31 +484,9 @@ class KMeansClusterSplitter(_SimilarityGroupBase):
         featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
-        n_jobs: int = 1,
-        size_tolerance: float = 0.05,
-        group_assignment: Literal["greedy_desc", "balanced", "random"] = "greedy_desc",
-        n_splits: int = 1,
-        train_size: Any = None,
-        valid_size: Any = None,
-        test_size: Any = None,
-        random_state: int | np.random.Generator | None = None,
-        verbose: int = 0,
+        **kwargs: Any,
     ) -> None:
-        SimilarityParamsMixin.__init__(
-            self, featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, n_jobs=n_jobs
-        )
-        GroupSplitter.__init__(
-            self,
-            size_tolerance=size_tolerance,
-            group_assignment=group_assignment,
-            n_splits=n_splits,
-            train_size=train_size,
-            valid_size=valid_size,
-            test_size=test_size,
-            random_state=random_state,
-            n_jobs=n_jobs,
-            verbose=verbose,
-        )
+        super().__init__(featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs)
         self.n_clusters = n_clusters
         self.algorithm = algorithm
         self.linkage = linkage
@@ -641,31 +595,9 @@ class DensityClusterSplitter(_SimilarityGroupBase):
         featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
-        n_jobs: int = 1,
-        size_tolerance: float = 0.05,
-        group_assignment: Literal["greedy_desc", "balanced", "random"] = "greedy_desc",
-        n_splits: int = 1,
-        train_size: Any = None,
-        valid_size: Any = None,
-        test_size: Any = None,
-        random_state: int | np.random.Generator | None = None,
-        verbose: int = 0,
+        **kwargs: Any,
     ) -> None:
-        SimilarityParamsMixin.__init__(
-            self, featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, n_jobs=n_jobs
-        )
-        GroupSplitter.__init__(
-            self,
-            size_tolerance=size_tolerance,
-            group_assignment=group_assignment,
-            n_splits=n_splits,
-            train_size=train_size,
-            valid_size=valid_size,
-            test_size=test_size,
-            random_state=random_state,
-            n_jobs=n_jobs,
-            verbose=verbose,
-        )
+        super().__init__(featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs)
         self.algorithm = algorithm
         self.eps = eps
         self.min_samples = min_samples
@@ -795,31 +727,9 @@ class SpectralSplitter(_SimilarityGroupBase):
         featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
-        n_jobs: int = 1,
-        size_tolerance: float = 0.05,
-        group_assignment: Literal["greedy_desc", "balanced", "random"] = "greedy_desc",
-        n_splits: int = 1,
-        train_size: Any = None,
-        valid_size: Any = None,
-        test_size: Any = None,
-        random_state: int | np.random.Generator | None = None,
-        verbose: int = 0,
+        **kwargs: Any,
     ) -> None:
-        SimilarityParamsMixin.__init__(
-            self, featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, n_jobs=n_jobs
-        )
-        GroupSplitter.__init__(
-            self,
-            size_tolerance=size_tolerance,
-            group_assignment=group_assignment,
-            n_splits=n_splits,
-            train_size=train_size,
-            valid_size=valid_size,
-            test_size=test_size,
-            random_state=random_state,
-            n_jobs=n_jobs,
-            verbose=verbose,
-        )
+        super().__init__(featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs)
         self.n_clusters = n_clusters
         self.graph = graph
         self.knn_k = knn_k
@@ -909,27 +819,9 @@ class MaxMinSplitter(_SimilarityBase):
         featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
-        n_jobs: int = 1,
-        n_splits: int = 1,
-        train_size: Any = None,
-        valid_size: Any = None,
-        test_size: Any = None,
-        random_state: int | np.random.Generator | None = None,
-        verbose: int = 0,
+        **kwargs: Any,
     ) -> None:
-        SimilarityParamsMixin.__init__(
-            self, featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, n_jobs=n_jobs
-        )
-        BaseSplitter.__init__(
-            self,
-            n_splits=n_splits,
-            train_size=train_size,
-            valid_size=valid_size,
-            test_size=test_size,
-            random_state=random_state,
-            n_jobs=n_jobs,
-            verbose=verbose,
-        )
+        super().__init__(featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs)
         self.picked_goes_to = picked_goes_to
         self.init = init
         self.n_picks = n_picks
@@ -1013,27 +905,9 @@ class MaxDissimilaritySplitter(_SimilarityBase):
         featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
-        n_jobs: int = 1,
-        n_splits: int = 1,
-        train_size: Any = None,
-        valid_size: Any = None,
-        test_size: Any = None,
-        random_state: int | np.random.Generator | None = None,
-        verbose: int = 0,
+        **kwargs: Any,
     ) -> None:
-        SimilarityParamsMixin.__init__(
-            self, featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, n_jobs=n_jobs
-        )
-        BaseSplitter.__init__(
-            self,
-            n_splits=n_splits,
-            train_size=train_size,
-            valid_size=valid_size,
-            test_size=test_size,
-            random_state=random_state,
-            n_jobs=n_jobs,
-            verbose=verbose,
-        )
+        super().__init__(featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs)
         self.seed_pair = seed_pair
         self.grow = grow
         self._validate_similarity_params()
@@ -1132,27 +1006,9 @@ class PerimeterSplitter(_SimilarityBase):
         featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
-        n_jobs: int = 1,
-        n_splits: int = 1,
-        train_size: Any = None,
-        valid_size: Any = None,
-        test_size: Any = None,
-        random_state: int | np.random.Generator | None = None,
-        verbose: int = 0,
+        **kwargs: Any,
     ) -> None:
-        SimilarityParamsMixin.__init__(
-            self, featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, n_jobs=n_jobs
-        )
-        BaseSplitter.__init__(
-            self,
-            n_splits=n_splits,
-            train_size=train_size,
-            valid_size=valid_size,
-            test_size=test_size,
-            random_state=random_state,
-            n_jobs=n_jobs,
-            verbose=verbose,
-        )
+        super().__init__(featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs)
         self.pair_rule = pair_rule
         self._validate_similarity_params()
 
@@ -1258,27 +1114,9 @@ class LeaveOneClusterOutSplitter(GroupSplitter):
         small_cluster_policy: Literal["merge_into_train", "own_fold", "pool"] = "merge_into_train",
         max_folds: int | None = 50,
         fold_order: Literal["size_desc", "size_asc", "index"] = "size_desc",
-        size_tolerance: float = 0.05,
-        group_assignment: Literal["greedy_desc", "balanced", "random"] = "greedy_desc",
-        n_splits: int = 1,
-        train_size: Any = None,
-        valid_size: Any = None,
-        test_size: Any = None,
-        random_state: int | np.random.Generator | None = None,
-        n_jobs: int = 1,
-        verbose: int = 0,
+        **kwargs: Any,
     ) -> None:
-        super().__init__(
-            size_tolerance=size_tolerance,
-            group_assignment=group_assignment,
-            n_splits=n_splits,
-            train_size=train_size,
-            valid_size=valid_size,
-            test_size=test_size,
-            random_state=random_state,
-            n_jobs=n_jobs,
-            verbose=verbose,
-        )
+        super().__init__(**kwargs)
         if isinstance(clusterer, str):
             raise ParameterError(
                 "clusterer must be an instantiated GroupSplitter — string-based registry lookup "
@@ -1289,7 +1127,7 @@ class LeaveOneClusterOutSplitter(GroupSplitter):
         self.small_cluster_policy = small_cluster_policy
         self.max_folds = max_folds
         self.fold_order = fold_order
-        if n_splits != 1:
+        if self.n_splits != 1:
             raise ConfigurationError("n_splits is derived from the cluster count and must not be set")
 
     def _group_labels(self, ctx: _Context) -> IndexArray:
@@ -1449,27 +1287,9 @@ class BalancedMultiTaskSplitter(GroupSplitter):
         mip_gap: float = 1e-4,
         on_infeasible: Literal["raise", "relax"] = "raise",
         relax_steps: tuple[float,...] = (0.15, 0.20, 0.30),
-        size_tolerance: float = 0.05,
-        group_assignment: Literal["greedy_desc", "balanced", "random"] = "greedy_desc",
-        n_splits: int = 1,
-        train_size: Any = None,
-        valid_size: Any = None,
-        test_size: Any = None,
-        random_state: int | np.random.Generator | None = None,
-        n_jobs: int = 1,
-        verbose: int = 0,
+        **kwargs: Any,
     ) -> None:
-        super().__init__(
-            size_tolerance=size_tolerance,
-            group_assignment=group_assignment,
-            n_splits=n_splits,
-            train_size=train_size,
-            valid_size=valid_size,
-            test_size=test_size,
-            random_state=random_state,
-            n_jobs=n_jobs,
-            verbose=verbose,
-        )
+        super().__init__(**kwargs)
         if isinstance(clusterer, str):
             raise ParameterError(
                 "clusterer must be an instantiated GroupSplitter — string-based registry lookup "
