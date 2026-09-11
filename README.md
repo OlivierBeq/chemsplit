@@ -116,7 +116,7 @@ chemsplit --help
 
 ## 🧭 Design principles
 
-1. **Determinism.** Same inputs + same `random_state` ⇒ byte-identical outputs, on any platform, any CPU count, any `n_jobs`.
+1. **Determinism.** Same inputs + same `random_state` ⇒ byte-identical outputs, on any platform, any CPU count, any `n_jobs`. An integer `random_state` is reconstructible by anyone who knows it — use `random_state=None` for holdouts that must stay secret.
 2. **Explicitness.** No silent fallbacks. If a requested configuration is infeasible, raise, never approximate.
 3. **Honesty.** Every splitter's docstring discloses its pitfalls with the same prominence as its advantages.
 4. **Composability.** Every group-forming splitter exposes its group labels, so any grouping can be fed to any protocol wrapper.
