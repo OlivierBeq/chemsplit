@@ -229,6 +229,18 @@ def test_activity_cliff_requires_labels():
         sp.split_result(["CCCC", "CCCCC"])
 
 
+def test_activity_cliff_linear_scale_rejects_nonpositive_y():
+    from chemsplit.exceptions import LabelError
+
+    smiles = ["c1ccccc1C", "c1ccccc1CC", "CCCCCCCCCCCC", "CCCCCCCCCCCCC"]
+    y = np.array([-10.0, -2.0, 1.0, 1.05])
+    sp = ActivityCliffSplitter(
+        similarity_threshold=0.3, fold_change_threshold=10.0, y_scale="linear", random_state=0
+    )
+    with pytest.raises(LabelError):
+        sp.split_result(smiles, y=y)
+
+
 def test_activity_cliff_param_validation():
     with pytest.raises(ParameterError):
         ActivityCliffSplitter(similarity_threshold=1.5)

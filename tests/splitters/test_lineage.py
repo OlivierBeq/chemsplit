@@ -241,6 +241,20 @@ def test_party_label_skew_requires_labels():
         sp.split_result(fx.smiles)
 
 
+def test_party_valid_set_picks_party_closest_to_target_size():
+    # parties sized 2, 10, 3, 85; valid_size targets ~10 -> must pick party 1, not the smallest.
+    fx = make_scaffold_families(n_scaffolds=10, per_scaffold=10, seed=0)
+    party = [0] * 2 + [1] * 10 + [2] * 3 + [3] * 85
+    sp = PartySplitter(
+        party=party, n_parties=4, held_out_party=3,
+        train_size=0.05, valid_size=0.10, test_size=0.85, random_state=0,
+    )
+    [result] = sp.split_result(fx.smiles)
+    valid_parties = {party[i] for i in result.valid}
+    assert valid_parties == {1}
+    assert len(result.valid) == 10
+
+
 # --------------------------------------------------------------------------- coverage additions
 
 
