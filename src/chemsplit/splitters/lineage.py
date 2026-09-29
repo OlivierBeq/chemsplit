@@ -187,19 +187,20 @@ class TemporalSplitter(BaseSplitter):
         n_ties = int(np.sum(dates == cut))
         train_mask = dates < cut
         tie_mask = dates == cut
+        after_cut = dates > cut
         if self.tie_policy == "train":
             train_mask = train_mask | tie_mask
-            post_tie_mask = np.zeros(n, dtype=bool)
+            always_discard = np.zeros(n, dtype=bool)
+            discard_eligible = after_cut
         elif self.tie_policy == "discard":
-            post_tie_mask = tie_mask
-        else:  # "test" -- still subject to the embargo, since ties sit exactly at its start
-            post_tie_mask = tie_mask
+            always_discard = tie_mask
+            discard_eligible = after_cut
+        else:  # "test": ties are eligible for test, subject to the embargo like after-cut records
+            always_discard = np.zeros(n, dtype=bool)
+            discard_eligible = after_cut | tie_mask
 
-        after_cut = dates > cut
-        discard_mask = post_tie_mask | (after_cut & (dates < embargo_end))
-        test_mask = (~train_mask) & (~discard_mask) & (after_cut | (tie_mask & (self.tie_policy == "test") & (embargo_days == 0)))
-        # Records strictly after the embargo window are always test, regardless of tie_policy.
-        test_mask = test_mask | (dates >= embargo_end) & (~train_mask) & (~discard_mask)
+        discard_mask = always_discard | (discard_eligible & (dates < embargo_end))
+        test_mask = (~train_mask) & (~discard_mask) & discard_eligible
 
         train = np.nonzero(train_mask)[0]
         test = np.nonzero(test_mask)[0]
