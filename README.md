@@ -139,4 +139,68 @@ One narrated, runnable notebook per family, under [`notebooks/`](notebooks/):
 ## 📄 License
 
 This project is licensed under the [MIT License](LICENSE).
-</content>
+
+## 📋 Available splitters
+
+<details>
+<summary><strong>Full list of splitters (53 classes)</strong> — click to expand</summary>
+
+| Family | Class | `splitter_id` | Description | Strictness | Group-forming | Needs | Extra |
+|:---:|:---|:---|:---|:---:|:---:|:---:|:---:|
+| Baseline | `RandomSplitter` | `random` | Uniform random (or fixed-order) permutation | 🔴 optimistic | — | — | — |
+| Baseline | `StratifiedRandomSplitter` | `stratified_random` | Random split stratified on the label | 🔴 optimistic | — | labels | — |
+| Baseline | `KFoldSplitter` | `k_fold` | k-fold CV (optionally stratified or leave-one-out) | 🔴 optimistic | — | — | — |
+| Baseline | `MonteCarloSplitter` | `monte_carlo` | Repeated independent random splits | 🔴 optimistic | — | — | — |
+| Baseline | `PredefinedSplitter` | `predefined` | Wraps an externally supplied assignment | 🟠 moderate | — | — | — |
+| Scaffold | `MurckoScaffoldSplitter` | `murcko_scaffold` | Groups by Murcko scaffold | 🟠 moderate | :heavy_check_mark: | — | — |
+| Scaffold | `GenericScaffoldSplitter` | `generic_scaffold` | Groups by generic (all-carbon) scaffold framework | 🟢 strict | :heavy_check_mark: | — | — |
+| Scaffold | `ScaffoldTreeSplitter` | `scaffold_tree` | Groups by scaffold-tree node at a chosen pruning level | 🟢 strict | :heavy_check_mark: | — | — |
+| Scaffold | `RingSystemSplitter` | `ring_system` | Groups by shared ring systems, transitively | 🟠 moderate | :heavy_check_mark: | — | — |
+| Scaffold | `MatchedMolecularSeriesSplitter` | `matched_molecular_series` | Groups molecules sharing a matched-pair constant context | 🟢 strict | :heavy_check_mark: | — | `mmpa` |
+| Scaffold | `ActivityCliffSplitter` | `activity_cliff` | Places activity-cliff compounds in the test set | 🚀 extrapolative | — | labels | — |
+| Similarity | `SimilarityThresholdSplitter` | `similarity_threshold` | No test record above a similarity threshold to train | 🟢 strict | :heavy_check_mark: | — | — |
+| Similarity | `ButinaSplitter` | `butina` | Taylor-Butina sphere-exclusion clustering | 🟢 strict | :heavy_check_mark: | — | — |
+| Similarity | `KMeansClusterSplitter` | `k_means_cluster` | K-means clustering over fingerprint/feature space | 🟢 strict | :heavy_check_mark: | — | — |
+| Similarity | `DensityClusterSplitter` | `density_cluster` | DBSCAN/HDBSCAN density clustering | 🟢 strict | :heavy_check_mark: | — | — |
+| Similarity | `SpectralSplitter` | `spectral` | Spectral clustering on an affinity graph | 🚀 extrapolative | :heavy_check_mark: | — | — |
+| Similarity | `MaxMinSplitter` | `max_min` | Greedy maximally-diverse selection (MaxMin / Kennard-Stone) | 🟠 moderate | — | — | — |
+| Similarity | `MaxDissimilaritySplitter` | `max_dissimilarity` | Pushes train and test to opposite regions of chemical space | 🚀 extrapolative | — | — | — |
+| Similarity | `PerimeterSplitter` | `perimeter` | Holds out the outskirts; trains on the dense core | 🚀 extrapolative | — | — | — |
+| Similarity | `LeaveOneClusterOutSplitter` | `leave_one_cluster_out` | Each cluster takes a turn as the test fold | 🚀 extrapolative | :heavy_check_mark: | — | — |
+| Similarity | `BalancedMultiTaskSplitter` | `balanced_multi_task` | Assigns whole clusters to folds, balancing every task | 🟢 strict | :heavy_check_mark: | labels | — |
+| Embedding | `UMAPClusterSplitter` | `umap_cluster` | UMAP embedding followed by clustering | 🚀 extrapolative | :heavy_check_mark: | — | `umap` |
+| Embedding | `ProjectionSplitter` | `projection` | Linear/manifold projection, then clustering, axis cut, or grid | 🟢 strict | :heavy_check_mark: | — | — |
+| Embedding | `LatentSpaceSplitter` | `latent_space` | Clusters in a caller-supplied embedding | 🟢 strict | :heavy_check_mark: | — | — |
+| Property | `PropertySplitter` | `property` | Cuts along a continuous molecular property | 🟢 strict | — | — | — |
+| Property | `LabelExtrapolationSplitter` | `label_extrapolation` | Trains on one part of the label range, tests on another | 🚀 extrapolative | — | labels | — |
+| Property | `StratifiedDistributionSplitter` | `stratified_distribution` | Matches the full label distribution across partitions | 🔴 optimistic | — | labels | — |
+| Property | `MOODSplitter` | `mood` | Picks the candidate split whose train→test distances best match train→deployment | 🟢 strict | — | — | — |
+| Property | `AdversarialSplitter` | `adversarial` | Audits or constructs a split with a train-vs-test discriminator | 🟢 strict | — | — | — |
+| Lineage | `TemporalSplitter` | `temporal` | Date cut: train on the past, test on the future | 🟢 strict | — | dates | — |
+| Lineage | `SIMPDSplitter` | `simpd` | Simulated time split optimized by a genetic algorithm | 🟢 strict | — | labels | `ga` |
+| Lineage | `SourceSplitter` | `source` | Groups by provenance (document, assay, lab, vendor, ...) | 🟢 strict | :heavy_check_mark: | — | — |
+| Lineage | `PartySplitter` | `party` | Non-IID partition across data owners for federated evaluation | 🚀 extrapolative | :heavy_check_mark: | — | — |
+| Task | `HiSplitter` | `hi` | Hit-identification: no test molecule similar to any train molecule | 🚀 extrapolative | :heavy_check_mark: | — | — |
+| Task | `LoSplitter` | `lo` | Lead-optimisation: holds out analogue clusters spanning an activity range | 🟢 strict | :heavy_check_mark: | labels | — |
+| Task | `ScaffoldHopSplitter` | `scaffold_hop` | Test actives with scaffolds absent from train | 🚀 extrapolative | :heavy_check_mark: | labels | — |
+| Task | `ColdDrugSplitter` | `cold_drug` | Held-out compounds are unseen in train | 🟢 strict | :heavy_check_mark: | — | — |
+| Task | `ColdTargetSplitter` | `cold_target` | Held-out targets are unseen in train | 🚀 extrapolative | :heavy_check_mark: | — | — |
+| Task | `ColdPairSplitter` | `cold_pair` | Neither compound nor target of a test pair is seen in train | 🚀 extrapolative | :heavy_check_mark: | — | — |
+| Task | `AVESplitter` | `ave` | Minimizes nearest-neighbour analogue bias (AVE) | 🟢 strict | — | labels | `ga` |
+| Task | `DecoyBenchmarkSplitter` | `decoy_benchmark` | Property-matched decoy sets or a curated benchmark partition | 🟢 strict | :heavy_check_mark: | labels | — |
+| Biomolecular | `SequenceIdentitySplitter` | `sequence_identity` | Groups protein sequences by pairwise identity | 🟢 strict | :heavy_check_mark: | — | `bio` |
+| Biomolecular | `ProteinFamilySplitter` | `protein_family` | Holds out whole target families | 🟢 strict | :heavy_check_mark: | — | — |
+| Biomolecular | `BindingSiteSplitter` | `binding_site` | Clusters on binding-pocket composition | 🟢 strict | :heavy_check_mark: | — | `bio` |
+| Biomolecular | `DepositionDateSplitter` | `deposition_date` | Date cut for structures, pruning near-duplicate train records | 🟢 strict | — | dates | — |
+| Biomolecular | `ComplexJointSplitter` | `complex_joint` | Jointly novel on both ligand and sequence axes | 🚀 extrapolative | — | — | `bio` |
+| Protocol | `GroupKFoldSplitter` | `group_k_fold` | k-fold CV whose folds never split a group | 🟠 moderate | :heavy_check_mark: | — | — |
+| Protocol | `ThreeWaySplitter` | `three_way` | Applies a splitter's criterion at both train/valid and valid/test | 🟠 moderate | — | — | — |
+| Protocol | `RepeatedSplitter` | `repeated` | Repeats a splitter under derived seeds | 🟠 moderate | — | — | — |
+| Protocol | `NestedCVSplitter` | `nested_cv` | Nested cross-validation around any outer/inner splitter | 🟠 moderate | — | — | — |
+| Protocol | `ExternalHoldoutSplitter` | `external_holdout` | Uses an external dataset as the entire test set | 🟠 moderate | — | — | — |
+| Protocol | `ApplicabilityDomainSplitter` | `applicability_domain` | Test bands at increasing distance from train | 🟠 moderate | — | — | — |
+| Protocol | `IntersectionSplitter` | `intersection` | Primary split in which no secondary group straddles train/test | 🟢 strict | — | — | — |
+
+</details>
+
+Strictness ranks how hard the test set is expected to be, from 🔴 `optimistic` (random-like) through 🟠 `moderate` and 🟢 `strict` to 🚀 `extrapolative` (deliberately out-of-distribution). *Needs* lists inputs required beyond SMILES; *Extra* names the optional install extra that enables or accelerates the splitter. The same table is available at runtime via `chemsplit.list_splitters()` or `chemsplit list`.
