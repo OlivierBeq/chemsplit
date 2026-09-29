@@ -609,6 +609,10 @@ class ExternalHoldoutSplitter(BaseSplitter):
         self.y_external = y_external
         if X_external is None or len(X_external) < 1:
             raise ParameterError("ExternalHoldoutSplitter requires a non-empty X_external=")
+        if y_external is not None and len(y_external) != len(X_external):
+            raise ParameterError(
+                f"y_external has {len(y_external)} records but X_external has {len(X_external)}"
+            )
 
     def _partition(self, ctx: _Context) -> list[SplitResult]:
         m = len(self.X_external)

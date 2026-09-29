@@ -144,6 +144,11 @@ class TestExternalHoldoutSplitter:
         with pytest.raises(Exception):
             ExternalHoldoutSplitter()
 
+    def test_y_external_length_mismatch_raises(self):
+        external = ["CCCCCCCCCC", "c1ccc(I)cc1"]
+        with pytest.raises(Exception):
+            ExternalHoldoutSplitter(X_external=external, y_external=[0])
+
 
 class TestApplicabilityDomainSplitter:
     def test_bands_ordered_and_complete(self):
