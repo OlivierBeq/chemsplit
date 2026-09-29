@@ -13,6 +13,7 @@ from typing import Literal
 
 import numpy as np
 import scipy.sparse as sp
+from scipy.spatial.distance import cdist
 
 from chemsplit.types import FeatureMatrix
 
@@ -85,7 +86,7 @@ def _is_binary_like(Xf: FeatureMatrix) -> bool:
         data = np.asarray(Xf)
     if data.size == 0:
         return True
-    sample = data if data.size <= 4096 else data.reshape(-1)[:4096]
+    sample = data if data.size <= 4096 else data.flat[:4096]
     return bool(np.all((sample == 0) | (sample == 1)))
 
 
@@ -131,10 +132,15 @@ def _dice_block(
 
 
 def _tanimoto_count_block(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    # min(x,y) = (x+y-|x-y|)/2: get mins/maxs from an L1 block instead of an (na,nb,d) array.
     a = a.astype(np.float64)
     b = b.astype(np.float64)
-    mins = np.minimum(a[:, None,:], b[None,:,:]).sum(axis=-1)
-    maxs = np.maximum(a[:, None,:], b[None,:,:]).sum(axis=-1)
+    l1 = cdist(a, b, metric="cityblock")
+    sum_a = a.sum(axis=-1)
+    sum_b = b.sum(axis=-1)
+    total = sum_a[:, None] + sum_b[None,:]
+    mins = 0.5 * (total - l1)
+    maxs = total - mins
     sim = np.ones(mins.shape, dtype=np.float64)
     nonzero = maxs > 0
     sim[nonzero] = mins[nonzero] / maxs[nonzero]
@@ -159,10 +165,7 @@ def _cosine_block(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 def _minkowski_block(a: np.ndarray, b: np.ndarray, p: int) -> np.ndarray:
     a = a.astype(np.float64)
     b = b.astype(np.float64)
-    diff = np.abs(a[:, None,:] - b[None,:,:])
-    if p == 1:
-        return diff.sum(axis=-1)
-    return np.sqrt((diff**2).sum(axis=-1))
+    return cdist(a, b, metric="cityblock" if p == 1 else "euclidean")
 
 
 def pairwise_distances(
