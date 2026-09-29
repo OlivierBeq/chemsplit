@@ -4,9 +4,125 @@
 from __future__ import annotations
 
 import importlib
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 __version__ = "0.1.0"
+
+if TYPE_CHECKING:
+    # Static-only; __getattr__ below resolves these lazily at runtime.
+    from chemsplit.audit import (
+        LeakageReport,
+        adversarial_validation,
+        audit_split,
+        nn_similarity_profile,
+        y_scramble_control,
+    )
+    from chemsplit.base import BaseSplitter, GroupSplitter, SplitResult, Strictness
+    from chemsplit.exceptions import (
+        ChemSplitError,
+        ChemSplitWarning,
+        CircularityWarning,
+        ColumnError,
+        ConfigurationError,
+        ConstraintUnsatisfiableError,
+        DegenerateClusterWarning,
+        DegenerateGroupingError,
+        DeterminismWarning,
+        DuplicateRecordError,
+        DuplicateWarning,
+        EmptyInputError,
+        EmptyPartitionError,
+        HomologyLeakWarning,
+        InfeasibleSplitError,
+        InputError,
+        InputKindError,
+        InvariantError,
+        LabelError,
+        MissingDependencyError,
+        MoleculeParseError,
+        ParameterError,
+        ParseWarning,
+        ScalabilityError,
+        SizeToleranceWarning,
+        SmallPartitionWarning,
+        StandardizationWarning,
+        UnknownFeaturizerError,
+        UnknownMetricError,
+        UnknownSplitterError,
+    )
+    from chemsplit.featurizers import Featurizer, get_featurizer
+    from chemsplit.registry import SPLITTER_REGISTRY, get_splitter, list_splitters
+    from chemsplit.splitters.baseline import (
+        KFoldSplitter,
+        MonteCarloSplitter,
+        PredefinedSplitter,
+        RandomSplitter,
+        StratifiedRandomSplitter,
+    )
+    from chemsplit.splitters.biomolecular import (
+        BindingSiteSplitter,
+        ComplexJointSplitter,
+        DepositionDateSplitter,
+        ProteinFamilySplitter,
+        SequenceIdentitySplitter,
+    )
+    from chemsplit.splitters.embedding import (
+        LatentSpaceSplitter,
+        ProjectionSplitter,
+        UMAPClusterSplitter,
+    )
+    from chemsplit.splitters.lineage import (
+        PartySplitter,
+        SIMPDSplitter,
+        SourceSplitter,
+        TemporalSplitter,
+    )
+    from chemsplit.splitters.property_ import (
+        AdversarialSplitter,
+        LabelExtrapolationSplitter,
+        MOODSplitter,
+        PropertySplitter,
+        StratifiedDistributionSplitter,
+    )
+    from chemsplit.splitters.protocol import (
+        ApplicabilityDomainSplitter,
+        ExternalHoldoutSplitter,
+        GroupKFoldSplitter,
+        IntersectionSplitter,
+        NestedCVSplitter,
+        RepeatedSplitter,
+        ThreeWaySplitter,
+    )
+    from chemsplit.splitters.scaffold import (
+        ActivityCliffSplitter,
+        GenericScaffoldSplitter,
+        MatchedMolecularSeriesSplitter,
+        MurckoScaffoldSplitter,
+        RingSystemSplitter,
+        ScaffoldTreeSplitter,
+    )
+    from chemsplit.splitters.similarity import (
+        BalancedMultiTaskSplitter,
+        ButinaSplitter,
+        DensityClusterSplitter,
+        KMeansClusterSplitter,
+        LeaveOneClusterOutSplitter,
+        MaxDissimilaritySplitter,
+        MaxMinSplitter,
+        PerimeterSplitter,
+        SimilarityThresholdSplitter,
+        SpectralSplitter,
+    )
+    from chemsplit.splitters.task import (
+        AVESplitter,
+        ColdDrugSplitter,
+        ColdPairSplitter,
+        ColdTargetSplitter,
+        DecoyBenchmarkSplitter,
+        HiSplitter,
+        LoSplitter,
+        ScaffoldHopSplitter,
+    )
 
 __all__ = [
     # -- 53 splitters across 9 families, in declared order: baseline (5), scaffold (6),
