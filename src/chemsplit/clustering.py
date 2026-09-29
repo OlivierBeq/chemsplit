@@ -11,7 +11,8 @@ import scipy.sparse as sp
 
 from chemsplit.determinism import argmax_tiebreak, argmin_tiebreak
 
-EPS = 1e-9
+#: Tolerance for the float32 distance matrices used here (~1.2e-7 rounding noise).
+EPS = 1e-6
 
 __all__ = [
     "butina",
