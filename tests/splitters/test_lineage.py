@@ -267,6 +267,19 @@ def test_temporal_tie_policy_discard():
     assert result.n_records == 100
 
 
+def test_temporal_tie_policy_test_sends_ties_to_test():
+    fx = make_dated_series(n=100, seed=0)
+    dates = fx.extra["dates"] if hasattr(fx, "extra") and fx.extra else fx.dates
+    cut = np.sort(dates)[50]
+    n_ties = int(np.sum(dates == cut))
+    assert n_ties > 0
+    sp = TemporalSplitter(cut_date=str(cut), tie_policy="test", train_size=None, test_size=None, random_state=0)
+    result = sp.split_result(fx.smiles, dates=dates)[0]
+    tie_indices = np.nonzero(dates == cut)[0]
+    assert set(tie_indices.tolist()) <= set(result.test.tolist())
+    assert result.discard.size == 0
+
+
 def test_temporal_valid_size_auto_without_valid_cut_date():
     fx = make_dated_series(n=100, seed=0)
     dates = fx.dates if hasattr(fx, "dates") else fx.extra["dates"]
