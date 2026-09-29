@@ -20,9 +20,8 @@ __all__ = [
     "resolve_featurizer",
 ]
 
-#: Fixed float-comparison tolerance. "within cutoff" means ``d <= cutoff + EPS``;
-#: "exceeds threshold" means ``s > threshold + EPS``. Shared so no splitter hardcodes its own copy.
-EPS = 1e-9
+#: Float-comparison tolerance for float32 similarity/distance matrices (~1.2e-7 rounding noise).
+EPS = 1e-6
 
 
 def resolve_featurizer(spec_or_instance: str | Featurizer, **kw: Any) -> Featurizer:

@@ -37,7 +37,8 @@ __all__ = [
     "ActivityCliffSplitter",
 ]
 
-_EPS = 1e-9
+#: Tolerance for float32 similarity-matrix comparisons (~1.2e-7 rounding noise).
+_EPS = 1e-6
 
 
 # ---------------------------------------------------------------------------
