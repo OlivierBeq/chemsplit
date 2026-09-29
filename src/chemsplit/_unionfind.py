@@ -29,8 +29,11 @@ class UnionFind:
         while self._parent[root] != root:
             root = self._parent[root]
         # path compression
-        while self._parent[i] != root:
-            self._parent[i], i = root, self._parent[i]
+        curr = i
+        while self._parent[curr] != root:
+            nxt = self._parent[curr]
+            self._parent[curr] = root
+            curr = nxt
         return root
 
     def union(self, i: int, j: int) -> None:
