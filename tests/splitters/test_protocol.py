@@ -144,6 +144,11 @@ class TestExternalHoldoutSplitter:
         with pytest.raises(Exception):
             ExternalHoldoutSplitter()
 
+    def test_y_external_length_mismatch_raises(self):
+        external = ["CCCCCCCCCC", "c1ccc(I)cc1"]
+        with pytest.raises(Exception):
+            ExternalHoldoutSplitter(X_external=external, y_external=[0])
+
 
 class TestApplicabilityDomainSplitter:
     def test_bands_ordered_and_complete(self):
@@ -179,7 +184,9 @@ class TestIntersectionSplitter:
         for i, g in enumerate(fx.groups_true):
             dates[i] = base + np.timedelta64(int(g) * 200 + int(rng.integers(0, 40)), "D")
         noisy = rng.random(n) < 0.15
-        dates[noisy] = base + np.array(rng.integers(0, 2000, size=int(noisy.sum())), dtype="timedelta64[D]")
+        dates[noisy] = base + np.array(
+            rng.integers(0, 2000, size=int(noisy.sum())), dtype="timedelta64[D]"
+        )
         cut = str(np.sort(dates)[n // 2])
         return fx, dates, cut
 
@@ -232,9 +239,6 @@ class TestIntersectionSplitter:
             )
 
 
-# coverage additions
-
-
 def test_group_kfold_requires_grouper_or_groups():
     sp = GroupKFoldSplitter(n_splits=3)
     with pytest.raises(Exception):
@@ -255,7 +259,9 @@ def test_group_kfold_n_splits_exceeds_n_groups_raises():
 
 
 def test_group_kfold_get_n_splits_auto_with_x():
-    sp = GroupKFoldSplitter(n_splits="auto", grouper=get_splitter("murcko_scaffold"), random_state=0)
+    sp = GroupKFoldSplitter(
+        n_splits="auto", grouper=get_splitter("murcko_scaffold"), random_state=0
+    )
     n = sp.get_n_splits(SMILES_POOL)
     assert n >= 1
 
