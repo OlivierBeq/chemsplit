@@ -19,6 +19,7 @@ __all__ = [
     "kennard_stone",
     "leader",
     "maxmin_pick",
+    "optisim_pick",
     "spectral_partition",
     "sphere_exclusion",
 ]
@@ -187,6 +188,54 @@ def kennard_stone(D: np.ndarray, n_picks: int) -> list[int]:
         picked.append(next_i)
         picked_set.add(next_i)
         mind = np.minimum(mind, D[:, next_i])
+    return picked
+
+
+def optisim_pick(
+    D: np.ndarray,
+    n_picks: int,
+    subsample_size: int,
+    radius: float,
+    rng: np.random.Generator,
+) -> list[int]:
+    """OptiSim diversity selection (Clark, J. Chem. Inf. Comput. Sci. 1997, 37, 1181-1188).
+
+    Starts from one random record. Each round draws candidates at random (without replacement)
+    until ``subsample_size`` of them lie further than ``radius`` from every selected record, then
+    selects the one maximising its minimum distance to the selection (ties -> smallest index).
+    The other subsample members go to a recycle bin that refills the candidate pool once it runs
+    dry. A candidate within ``radius`` of the selection is dropped for good -- the selection only
+    grows, so it can never become eligible again -- which guarantees termination.
+
+    ``subsample_size=1`` is random selection with sphere exclusion; ``subsample_size >= n`` is
+    MaxMin with a random first pick. Returns fewer than ``n_picks`` records when no candidate
+    outside ``radius`` remains.
+    """
+    n = D.shape[0]
+    if n == 0 or n_picks <= 0:
+        return []
+    first = int(rng.integers(0, n))
+    picked = [first]
+    mind = D[:, first].astype(np.float64)
+    pool = rng.permutation(np.flatnonzero(mind > radius + EPS)).tolist()
+    recycle: list[int] = []
+    while len(picked) < n_picks:
+        subsample: list[int] = []
+        while len(subsample) < subsample_size:
+            if not pool:
+                if not recycle:
+                    break
+                pool = rng.permutation(np.asarray(recycle, dtype=np.int64)).tolist()
+                recycle = []
+            candidate = pool.pop()
+            if mind[candidate] > radius + EPS:
+                subsample.append(candidate)
+        if not subsample:
+            break
+        best = argmax_tiebreak(lambda idx: mind[idx], sorted(subsample))
+        picked.append(best)
+        mind = np.minimum(mind, D[:, best])
+        recycle.extend(i for i in subsample if i != best)
     return picked
 
 

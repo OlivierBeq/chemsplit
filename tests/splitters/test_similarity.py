@@ -20,6 +20,7 @@ from chemsplit.splitters.similarity import (
     LeaveOneClusterOutSplitter,
     MaxDissimilaritySplitter,
     MaxMinSplitter,
+    OptiSimSplitter,
     PerimeterSplitter,
     SimilarityThresholdSplitter,
     SpectralSplitter,
@@ -286,6 +287,75 @@ class TestSPXYSplitter:
     def test_missing_y_raises(self):
         with pytest.raises(LabelError):
             SPXYSplitter(train_size=0.5, test_size=0.5).split_result(SMILES_20)
+
+
+class TestOptiSimSplitter:
+    def test_cluster_mode_separates_families(self):
+        # a subsample covering every record makes the second centre the farthest record, i.e. the
+        # other family, so both families always get their own centres
+        splitter = OptiSimSplitter(n_picks=4, subsample_size=20, random_state=0)
+        groups = splitter.compute_groups(SMILES_20)
+        assert set(groups[:10].tolist()).isdisjoint(groups[10:].tolist())
+
+    def test_cluster_mode_keeps_groups_whole(self):
+        splitter = OptiSimSplitter(n_picks=5, subsample_size=20, train_size=0.5, test_size=0.5, random_state=0)
+        result = splitter.split_result(SMILES_20)[0]
+        assert set(result.groups[result.train].tolist()).isdisjoint(result.groups[result.test].tolist())
+        centres = result.metadata["centres"]
+        assert len(centres) == 5
+        # every centre heads its own group
+        assert len({int(result.groups[c]) for c in centres}) == 5
+
+    def test_cluster_mode_default_n_picks_is_kmeans_auto_rule(self):
+        result = OptiSimSplitter(train_size=0.5, test_size=0.5, random_state=0).split_result(SMILES_20)[0]
+        assert result.metadata["n_picks"] == 4  # round(sqrt(20))
+
+    @pytest.mark.parametrize("dest", ["train", "test"])
+    def test_pick_mode_fills_destination(self, dest):
+        splitter = OptiSimSplitter(
+            mode="pick", picked_goes_to=dest, subsample_size=3, train_size=0.6, test_size=0.4, random_state=0
+        )
+        result = splitter.split_result(SMILES_20)[0]
+        assert result.groups is None
+        picked = result.metadata["picked"]
+        assert set(picked) == set(getattr(result, dest).tolist())
+        assert (result.train.size, result.test.size) == (12, 8)
+
+    def test_pick_mode_compute_groups_raises(self):
+        with pytest.raises(ParameterError, match="forms no groups"):
+            OptiSimSplitter(mode="pick", random_state=0).compute_groups(SMILES_20)
+
+    def test_same_seed_same_split(self):
+        r1 = OptiSimSplitter(subsample_size=2, train_size=0.5, test_size=0.5, random_state=3).split_result(SMILES_20)[0]
+        r2 = OptiSimSplitter(subsample_size=2, train_size=0.5, test_size=0.5, random_state=3).split_result(SMILES_20)[0]
+        assert r1.train.tolist() == r2.train.tolist()
+        assert r1.metadata["centres"] == r2.metadata["centres"]
+
+    def test_radius_too_large_warns_and_pick_mode_discards(self):
+        splitter = OptiSimSplitter(
+            mode="pick", radius=0.95, subsample_size=20, train_size=0.5, test_size=0.5, random_state=0
+        )
+        with pytest.warns(DegenerateClusterWarning, match="only"):
+            result = splitter.split_result(SMILES_20)[0]
+        assert result.metadata["n_selected"] < 10
+        assert result.train.size == result.metadata["n_selected"]
+        assert result.discard.size == 10 - result.metadata["n_selected"]
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"mode": "bogus"},
+            {"picked_goes_to": "valid"},
+            {"n_picks": 1},
+            {"n_picks": 0, "mode": "pick"},
+            {"n_picks": True},
+            {"subsample_size": 0},
+            {"radius": 1.5},
+        ],
+    )
+    def test_invalid_params_raise(self, kwargs):
+        with pytest.raises(ParameterError):
+            OptiSimSplitter(**kwargs)
 
 
 class TestMaxDissimilaritySplitter:

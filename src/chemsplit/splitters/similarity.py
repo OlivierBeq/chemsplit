@@ -57,6 +57,7 @@ __all__ = [
     "SpectralSplitter",
     "MaxMinSplitter",
     "SPXYSplitter",
+    "OptiSimSplitter",
     "MaxDissimilaritySplitter",
     "PerimeterSplitter",
     "LeaveOneClusterOutSplitter",
@@ -178,6 +179,20 @@ def _check_cluster_degeneracy(clusters: list[list[int]], n: int, owner: str, set
             )
         )
 
+
+def _resolve_cluster_count(
+    n: int, n_clusters: int | str, auto_rule: str = "sqrt_n", auto_range: tuple[int, int] = (2, 50)
+) -> int:
+    """Cluster count for ``n`` records: ``n_clusters`` itself, or for ``"auto"`` ``round(sqrt(n))``
+    (``auto_rule="sqrt_n"``) or ``n // 50``; either way clipped to ``auto_range`` and ``n - 1``."""
+    if n_clusters != "auto":
+        k = int(n_clusters)
+    elif auto_rule == "sqrt_n":
+        k = int(round(n**0.5))
+    else:
+        k = max(1, n // 50)
+    lo, hi = auto_range
+    return int(np.clip(k, lo, min(hi, n - 1)))
 
 _RADIUS_KINDS = ("distance", "similarity", "fraction_of_range")
 
@@ -626,14 +641,7 @@ class KMeansClusterSplitter(_SimilarityGroupBase):
             raise ParameterError("linkage='ward' requires metric='euclidean'")
 
     def _resolve_k(self, n: int) -> int:
-        if self.n_clusters != "auto":
-            k = int(self.n_clusters)
-        elif self.auto_rule == "sqrt_n":
-            k = int(round(n**0.5))
-        else:
-            k = max(1, n // 50)
-        lo, hi = self.auto_range
-        return int(np.clip(k, lo, min(hi, n - 1)))
+        return _resolve_cluster_count(n, self.n_clusters, self.auto_rule, self.auto_range)
 
     def _group_labels(self, ctx: _Context) -> IndexArray:
         feat = resolve_featurizer(self.featurizer)
@@ -1081,6 +1089,170 @@ class SPXYSplitter(_SimilarityBase):
                 "coverage_radius": coverage,
                 "zero_distance_terms": degenerate,
                 "realised_sizes": {k: int(v.size) for k, v in buckets.items() if k != "discard"},
+            },
+        )
+        _small_partition_check(result, n)
+        return [result]
+
+
+# -
+# OptiSimSplitter
+# -
+
+
+class OptiSimSplitter(_SimilarityGroupBase):
+    """OptiSim diversity selection, used either as cluster centres or as a picked set.
+
+    Each round draws random candidates (``"optisim.draw"`` stream) until ``subsample_size`` of
+    them lie further than ``radius`` from everything already selected, then selects the one with
+    the largest minimum distance to the selection. ``subsample_size=1`` is random selection with
+    sphere exclusion; a subsample covering every record is MaxMin -- the parameter trades
+    representativeness against diversity.
+
+    ``mode="cluster"`` treats the ``n_picks`` selected records (default: the ``"auto"`` rule of
+    :class:`KMeansClusterSplitter`) as centres, groups every record with its nearest centre (ties
+    -> earliest-selected centre) and assigns whole groups to partitions. ``mode="pick"`` sends the
+    selected set to ``picked_goes_to`` like :class:`MaxMinSplitter` (default ``n_picks``: that
+    partition's size), shuffles the rest into the other partitions (``"optisim.remainder"``
+    stream), and forms no groups.
+
+    Advantages
+    ----------
+    - One knob, `subsample_size`, spans random sampling to MaxMin, so a selection can be diverse without being dominated by outliers the way pure MaxMin is.
+    - `radius` guarantees a minimum spacing between selected records (and hence between cluster centres).
+    - Cluster mode keeps near-duplicates of a centre in that centre's group, so they can't straddle train and test.
+    - Selection costs `O(n · n_picks)` on top of the distance matrix -- cheap next to Butina or spectral clustering.
+
+    Pitfalls
+    --------
+    - Results depend on the seed at every round, not just the first pick -- report it, and repeat over seeds.
+    - Cluster mode's groups are Voronoi cells around the centres, not density clusters; with a small `n_picks` they are large and chemically mixed.
+    - If `radius` excludes every remaining candidate, fewer than `n_picks` records are selected (a `DegenerateClusterWarning` names how many). In pick mode, records the smaller picked set can't absorb are **discarded**.
+    - Pick mode optimises coverage, not separation -- like MaxMin, it's not a leakage-control split. Only cluster mode is group-forming.
+    - `radius` is in the chosen metric's units unless `radius_is="fraction_of_range"`.
+
+    """
+
+    splitter_id: ClassVar[str] = "opti_sim"
+    strictness: ClassVar[Strictness] = Strictness.STRICT  # mode="pick" is MODERATE, like max_min
+    bounded_metric_required: ClassVar[bool] = False
+    deterministic_without_seed: ClassVar[bool] = False
+
+    def __init__(
+        self,
+        *,
+        mode: Literal["cluster", "pick"] = "cluster",
+        n_picks: int | None = None,
+        subsample_size: int | None = None,
+        radius: float = 0.35,
+        radius_is: Literal["distance", "similarity", "fraction_of_range"] = "distance",
+        picked_goes_to: Literal["train", "test"] = "train",
+        featurizer: str | Any = "ecfp4",
+        metric: str = "tanimoto",
+        max_memory_bytes: int = 2 * 1024**3,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs)
+        self.mode = mode
+        self.n_picks = n_picks
+        self.subsample_size = subsample_size
+        self.radius = radius
+        self.radius_is = radius_is
+        self.picked_goes_to = picked_goes_to
+        _validate_radius(self, radius, radius_is)
+        if mode not in ("cluster", "pick"):
+            raise ParameterError(f"invalid mode: {mode!r}")
+        if picked_goes_to not in ("train", "test"):
+            raise ParameterError(f"invalid picked_goes_to: {picked_goes_to!r}")
+        min_picks = 2 if mode == "cluster" else 1
+        for name, value, lo in (("n_picks", n_picks, min_picks), ("subsample_size", subsample_size, 1)):
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, np.integer)) or value < lo:
+                raise ParameterError(f"{name} must be None or an int >= {lo}, got {value!r}")
+
+    def compute_groups(self, X: Any, y: Any = None, **kw: Any) -> IndexArray:
+        if self.mode == "pick":
+            raise ParameterError(
+                f"{type(self).__name__}(mode='pick') forms no groups; use mode='cluster' for compute_groups()"
+            )
+        return super().compute_groups(X, y, **kw)
+
+    def _select(self, ctx: _Context, n_picks: int) -> tuple[np.ndarray, list[int], float, int]:
+        D = _dist_matrix(self, ctx)
+        n = ctx.n
+        if not (1 <= n_picks < n):
+            raise ParameterError(f"n_picks must satisfy 1 <= n_picks < n, got {n_picks}")
+        threshold = _resolve_radius(D, self.radius, self.radius_is)
+        k = self.subsample_size if self.subsample_size is not None else max(1, -(-n // 20))
+        rng = seed_for(ctx.rng_seeds, "optisim.draw", 0)
+        picked = _clustering.optisim_pick(D, n_picks, k, threshold, rng)
+        if len(picked) < n_picks:
+            warn_with_details(
+                DegenerateClusterWarning(
+                    f"{type(self).__name__}: only {len(picked)} of n_picks={n_picks} records lie "
+                    f"further than radius={self.radius} ({self.radius_is}) from each other",
+                    details={"n_picks": n_picks, "n_selected": len(picked)},
+                )
+            )
+        return D, picked, threshold, k
+
+    def _group_labels(self, ctx: _Context) -> IndexArray:
+        n = ctx.n
+        n_picks = self.n_picks if self.n_picks is not None else _resolve_cluster_count(n, "auto")
+        D, centres, threshold, k = self._select(ctx, n_picks)
+        slot = list(range(len(centres)))
+        labels = np.asarray(
+            [argmin_tiebreak(lambda c: float(D[i, centres[c]]), slot) for i in range(n)], dtype=np.int64
+        )
+        clusters = [np.flatnonzero(labels == c).tolist() for c in slot]
+        self._last_meta = {
+            "mode": self.mode,
+            "n_picks": n_picks,
+            "n_selected": len(centres),
+            "subsample_size": k,
+            "distance_threshold": threshold,
+            "centres": centres,
+            "cluster_sizes": sorted((len(c) for c in clusters), reverse=True),
+        }
+        _check_cluster_degeneracy(
+            clusters, n, type(self).__name__, f"n_picks={n_picks}, radius={self.radius} ({self.radius_is})"
+        )
+        return dense_label_encode(labels.tolist())
+
+    def _group_metadata(self, ctx: _Context, labels: IndexArray) -> dict[str, Any]:
+        return getattr(self, "_last_meta", {})
+
+    def _partition(self, ctx: _Context) -> list[SplitResult]:
+        if self.mode == "cluster":
+            return super()._partition(ctx)
+        n = ctx.n
+        n_picks = self.n_picks if self.n_picks is not None else (
+            ctx.sizes.n_train if self.picked_goes_to == "train" else ctx.sizes.n_test
+        )
+        D, picked, threshold, k = self._select(ctx, n_picks)
+        rem_rng = seed_for(ctx.rng_seeds, "optisim.remainder", 0)
+        buckets = _fill_remainder(picked, n, ctx.sizes, rem_rng, self.picked_goes_to)
+        coverage = float(np.max(np.min(D[:, picked], axis=1)))
+        result = SplitResult(
+            train=buckets["train"],
+            valid=buckets["valid"],
+            test=buckets["test"],
+            discard=buckets["discard"],
+            groups=None,
+            splitter_id=self.splitter_id,
+            params=self.get_params(),
+            n_records=n,
+            metadata={
+                "mode": self.mode,
+                "picked": picked,
+                "picked_goes_to": self.picked_goes_to,
+                "n_picks": n_picks,
+                "n_selected": len(picked),
+                "subsample_size": k,
+                "distance_threshold": threshold,
+                "coverage_radius": coverage,
+                "realised_sizes": {name: int(v.size) for name, v in buckets.items() if name != "discard"},
             },
         )
         _small_partition_check(result, n)

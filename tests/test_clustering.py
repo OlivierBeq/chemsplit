@@ -108,6 +108,43 @@ class TestLeaderAndSphereExclusion:
         assert len(reps) == len(groups)
 
 
+class TestOptiSimPick:
+    @staticmethod
+    def _points_distance_matrix(n=60, seed=0):
+        pts = np.random.default_rng(seed).normal(size=(n, 3))
+        return np.linalg.norm(pts[:, None, :] - pts[None, :, :], axis=-1)
+
+    def test_picks_are_pairwise_further_than_radius(self):
+        D = self._points_distance_matrix()
+        picked = clustering.optisim_pick(D, 15, 4, 0.8, np.random.default_rng(1))
+        assert len(picked) == len(set(picked))
+        assert all(D[i, j] > 0.8 for i in picked for j in picked if i != j)
+
+    @pytest.mark.parametrize("seed", [0, 1, 2])
+    def test_full_subsample_is_maxmin_with_same_first_pick(self, seed):
+        D = self._points_distance_matrix()
+        opti = clustering.optisim_pick(D, 10, D.shape[0], 0.0, np.random.default_rng(seed))
+        maxmin = clustering.maxmin_pick(D, 10, init="random", rng=np.random.default_rng(seed))
+        assert opti == maxmin
+
+    def test_same_seed_same_picks(self):
+        D = self._points_distance_matrix()
+        a = clustering.optisim_pick(D, 10, 3, 0.5, np.random.default_rng(7))
+        b = clustering.optisim_pick(D, 10, 3, 0.5, np.random.default_rng(7))
+        assert a == b
+
+    def test_stops_early_when_radius_excludes_everything(self):
+        D = _blob_distance_matrix()
+        picked = clustering.optisim_pick(D, 5, 2, 1.0, np.random.default_rng(0))
+        # one pick per blob: every other record is within 1.0 of its blob's pick
+        assert len(picked) == 2
+        assert {p // 3 for p in picked} == {0, 1}
+
+    def test_empty_and_zero_picks(self):
+        assert clustering.optisim_pick(np.zeros((0, 0)), 3, 2, 0.1, np.random.default_rng(0)) == []
+        assert clustering.optisim_pick(_blob_distance_matrix(), 0, 2, 0.1, np.random.default_rng(0)) == []
+
+
 class TestSpectralPartition:
     def test_separates_two_blobs(self):
         D = _spectral_blob_distance_matrix()
