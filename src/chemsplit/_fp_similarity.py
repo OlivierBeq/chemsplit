@@ -25,10 +25,15 @@ EPS = 1e-6
 
 
 def resolve_featurizer(spec_or_instance: str | Featurizer, **kw: Any) -> Featurizer:
-    """Thin wrapper around :func:`chemsplit.featurizers.get_featurizer`.
+    """Resolve a featurizer alias or pass an instance through.
 
-    Lets callers that only import ``chemsplit._fp_similarity`` resolve a featurizer without a
-    direct dependency on ``chemsplit.featurizers``.
+    A thin wrapper over :func:`chemsplit.featurizers.get_featurizer`, so callers that import
+    only this module need no direct dependency on :mod:`chemsplit.featurizers`.
+
+    :param spec_or_instance: an alias, or an already-built featurizer.
+    :param kw: forwarded to the featurizer's constructor when an alias was given.
+    :raises UnknownFeaturizerError: if the alias is not recognised.
+    :return: the featurizer.
     """
     return get_featurizer(spec_or_instance, **kw)
 
@@ -40,11 +45,17 @@ def guard_memory(
     *,
     alternatives: list[str] | None = None,
 ) -> None:
-    """Memory guard: any splitter materialising a full ``n x n`` matrix MUST call this first.
+    """Refuse to build an ``n x n`` matrix that would not fit.
 
-    Raises :class:`~chemsplit.exceptions.ScalabilityError` naming the splitter, ``n``, the
-    required bytes, and 2-3 alternatives, if ``n**2 * 4`` bytes (a float32 dense matrix) exceeds
-    ``max_memory_bytes``.
+    Every splitter that materialises a full dense matrix calls this first.
+
+    :param n: the record count.
+    :param max_memory_bytes: the ceiling.
+    :param splitter_name: the caller, for the error message.
+    :param alternatives: splitters to suggest instead, or ``None`` for the defaults.
+    :raises ScalabilityError: if a float32 ``n x n`` matrix would exceed the ceiling. The
+        :class:`~chemsplit.exceptions.ScalabilityError` names the splitter, ``n``, the bytes
+        needed and a few alternatives.
     """
     required = n * n * 4
     if required <= max_memory_bytes:
@@ -90,10 +101,20 @@ class SimilarityParamsMixin:
         self.n_jobs = n_jobs
 
     def _validate_similarity_params(self, *, bounded_metric_required: bool | None = None) -> None:
-        required = (
-            self.bounded_metric_required if bounded_metric_required is None else bounded_metric_required
-        )
-        valid_metrics = {"tanimoto", "dice", "cosine", "euclidean", "manhattan", "tanimoto_count"}
+        """Check the shared ``featurizer``/``metric``/``max_memory_bytes`` block.
+
+        :param bounded_metric_required: override the class's own ``bounded_metric_required``, or
+            ``None`` to use it.
+        :raises ParameterError: if ``max_memory_bytes`` is not a positive int, or the metric is
+            unknown, or it is unbounded where a bounded one is required.
+        """
+        if bounded_metric_required is None:
+            required = self.bounded_metric_required
+        else:
+            required = bounded_metric_required
+        valid_metrics = {
+            "tanimoto", "dice", "cosine", "euclidean", "manhattan", "tanimoto_count", "mahalanobis"
+        }
         if self.metric not in valid_metrics:
             raise ParameterError(
                 f"unknown metric {self.metric!r}; expected one of {sorted(valid_metrics)}"
@@ -104,8 +125,12 @@ class SimilarityParamsMixin:
                 "similarity and requires a metric bounded in [0, 1] "
                 "(tanimoto, dice, cosine, or tanimoto_count)."
             )
-        if isinstance(self.max_memory_bytes, bool) or not isinstance(self.max_memory_bytes, (int, np.integer)):
-            raise ParameterError(f"max_memory_bytes must be an int, got {self.max_memory_bytes!r}")
+        if isinstance(self.max_memory_bytes, bool) or not isinstance(
+            self.max_memory_bytes, (int, np.integer)
+        ):
+            raise ParameterError(
+                f"max_memory_bytes must be an int, got {self.max_memory_bytes!r}"
+            )
         if self.max_memory_bytes <= 0:
             raise ParameterError(f"max_memory_bytes must be > 0, got {self.max_memory_bytes!r}")
 
@@ -132,7 +157,17 @@ def compute_distance_matrix(
     splitter_name: str,
     n_jobs: int = 1,
 ) -> np.ndarray:
-    """Full pairwise distance matrix for ``ctx``'s records, after the memory guard."""
+    """Build the full pairwise distance matrix for a context's records.
+
+    :param ctx: the split context supplying the records.
+    :param featurizer: an alias or a featurizer instance.
+    :param metric: the distance metric.
+    :param max_memory_bytes: ceiling enforced by :func:`guard_memory` first.
+    :param splitter_name: the caller, for error messages.
+    :param n_jobs: worker count. Results never depend on it.
+    :raises ScalabilityError: if the matrix would exceed ``max_memory_bytes``.
+    :return: an ``(n, n)`` float32 distance matrix with a zero diagonal.
+    """
     return _pairwise(ctx, featurizer, metric, max_memory_bytes, splitter_name, n_jobs)
 
 
@@ -144,10 +179,17 @@ def compute_similarity_matrix(
     splitter_name: str,
     n_jobs: int = 1,
 ) -> np.ndarray:
-    """Full pairwise similarity matrix (``1 - distance``) for ``ctx``'s records.
+    """Build the full pairwise similarity matrix for a context's records.
 
-    Diagonal is exactly ``1.0`` since :func:`chemsplit.metrics.pairwise_distances` forces
-    ``D[i][i] == 0.0``.
+    :param ctx: the split context supplying the records.
+    :param featurizer: an alias or a featurizer instance.
+    :param metric: the metric, converted to a similarity as ``1 - distance``.
+    :param max_memory_bytes: ceiling enforced by :func:`guard_memory` first.
+    :param splitter_name: the caller, for error messages.
+    :param n_jobs: worker count. Results never depend on it.
+    :raises ScalabilityError: if the matrix would exceed ``max_memory_bytes``.
+    :return: an ``(n, n)`` float32 similarity matrix. The diagonal is exactly ``1.0``, since
+        :func:`chemsplit.metrics.pairwise_distances` forces a zero diagonal.
     """
     D = _pairwise(ctx, featurizer, metric, max_memory_bytes, splitter_name, n_jobs)
     return 1.0 - D

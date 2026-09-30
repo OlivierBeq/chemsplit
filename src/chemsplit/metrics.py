@@ -4,6 +4,9 @@
   mean or any other order-dependent reduction.
 - ``n_jobs`` MUST NOT change any returned value.
 - Symmetry is enforced by computing the upper triangle and mirroring, never by averaging.
+
+Tanimoto and Dice on binary fingerprints run on packed bits, through ``numpy.bitwise_count``
+where it exists and a per-byte lookup table otherwise.
 """
 
 from __future__ import annotations
@@ -17,7 +20,9 @@ from scipy.spatial.distance import cdist
 
 from chemsplit.types import FeatureMatrix
 
-MetricName = Literal["tanimoto", "dice", "cosine", "euclidean", "manhattan", "tanimoto_count"]
+MetricName = Literal[
+    "tanimoto", "dice", "cosine", "euclidean", "manhattan", "tanimoto_count", "mahalanobis"
+]
 
 _BOUNDED_METRICS = frozenset({"tanimoto", "dice", "cosine", "tanimoto_count"})
 
@@ -31,13 +36,12 @@ __all__ = [
 
 
 def is_bounded_metric(metric: str) -> bool:
-    """Return True if ``metric`` is guaranteed to lie in ``[0, 1]``."""
+    """Report whether a metric's values are guaranteed to lie in ``[0, 1]``.
+
+    :param metric: a metric name.
+    :return: ``True`` for a bounded metric."""
     return metric in _BOUNDED_METRICS
 
-
-# -
-# Popcount machinery for packed-bit Tanimoto/Dice on binary fingerprints.
-# -
 
 _HAS_BITWISE_COUNT = hasattr(np, "bitwise_count")
 
@@ -49,7 +53,7 @@ def _popcount_u64(arr: np.ndarray) -> np.ndarray:
     """Elementwise popcount of a uint64 array, returned as int64 (safe for summation)."""
     if _HAS_BITWISE_COUNT:
         return np.bitwise_count(arr).astype(np.int64)
-    # Fallback: view as uint8 bytes, look up per-byte popcount, sum across the 8 bytes.
+    # fallback: view as uint8, look up per-byte popcount, sum across the 8 bytes
     as_bytes = arr.view(np.uint8).reshape(*arr.shape, 8)
     return _POPCOUNT_TABLE[as_bytes].sum(axis=-1, dtype=np.int64)
 
@@ -61,7 +65,7 @@ def _pack_rows_to_u64(X: np.ndarray) -> np.ndarray:
     pad = n_words * 64 - n_bits
     if pad:
         X = np.pad(X, ((0, 0), (0, pad)), mode="constant")
-    # Bit order is internal and self-consistent; only popcount/AND are used downstream.
+    # bit order is internal; only popcount and AND are used downstream
     packed_bytes = np.packbits(X, axis=-1, bitorder="little")
     words = packed_bytes.reshape(n, n_words * 8).view(np.uint64)
     return words
@@ -88,11 +92,6 @@ def _is_binary_like(Xf: FeatureMatrix) -> bool:
         return True
     sample = data if data.size <= 4096 else data.flat[:4096]
     return bool(np.all((sample == 0) | (sample == 1)))
-
-
-# -
-# Block-wise pairwise distance computation.
-# -
 
 
 def _block_ranges(n: int, block_size: int) -> Iterator[tuple[int, int]]:
@@ -132,7 +131,7 @@ def _dice_block(
 
 
 def _tanimoto_count_block(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    # min(x,y) = (x+y-|x-y|)/2: get mins/maxs from an L1 block instead of an (na,nb,d) array.
+    # min(x,y) = (x+y-|x-y|)/2, so an L1 block gives mins and maxs without an (na,nb,d) array
     a = a.astype(np.float64)
     b = b.astype(np.float64)
     l1 = cdist(a, b, metric="cityblock")
@@ -162,6 +161,31 @@ def _cosine_block(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return 1.0 - sim
 
 
+def _to_dense_f64(F: FeatureMatrix) -> np.ndarray:
+    return np.asarray(F.toarray() if sp.issparse(F) else F, dtype=np.float64)
+
+
+def _mahalanobis_whiten(*mats: FeatureMatrix) -> list[np.ndarray]:
+    """Map every matrix into a space where Euclidean distance equals Mahalanobis distance.
+
+    The inverse covariance ``VI`` is the pseudo-inverse of the covariance of *all* rows passed
+    (so ``d(a, b)`` does not depend on which argument a row came from) and is factored once as
+    ``VI = L @ L.T``; returning ``F @ L`` for each input keeps blocked computation identical to
+    unblocked. The pseudo-inverse makes a singular covariance (``n < d``, constant columns,
+    binary fingerprints) well-defined: directions of zero variance contribute zero distance.
+    """
+    dense = [_to_dense_f64(F) for F in mats]
+    stack = np.vstack(dense)
+    d = stack.shape[1]
+    if stack.shape[0] < 2 or d == 0:
+        return [np.zeros((F.shape[0], 0), dtype=np.float64) for F in dense]
+    C = np.atleast_2d(np.cov(stack, rowvar=False))
+    VI = np.linalg.pinv(C, hermitian=True)
+    w, U = np.linalg.eigh(VI)
+    L = U * np.sqrt(np.clip(w, 0.0, None))[None, :]
+    return [F @ L for F in dense]
+
+
 def _minkowski_block(a: np.ndarray, b: np.ndarray, p: int) -> np.ndarray:
     a = a.astype(np.float64)
     b = b.astype(np.float64)
@@ -175,12 +199,26 @@ def pairwise_distances(
     n_jobs: int = 1,
     block_size: int = 2048,
 ) -> np.ndarray:
-    """Full pairwise distance matrix, shape ``(n, m)``, dtype float32.
+    """Compute the full pairwise distance matrix.
 
-    ``n_jobs`` is accepted for API compatibility but the current implementation is single-process;
-    accepting it now (without silently changing results) keeps the signature stable for a future
-    parallel backend, per the determinism requirement that ``n_jobs`` must never change output.
+    ``metric="mahalanobis"`` estimates its covariance from the rows passed in this call, so the
+    same pair of records can come out at different distances in calls over different record
+    sets.
+
+    :param Xf: the left-hand feature matrix.
+    :param Yf: the right-hand feature matrix, or ``None`` to use ``Xf``.
+    :param metric: the metric name.
+    :param n_jobs: worker count. Single-process today; results never depend on it.
+    :param block_size: rows per block.
+    :raises UnknownMetricError: if ``metric`` is not recognised.
+    :return: an ``(n, m)`` float32 matrix.
     """
+    if metric == "mahalanobis":
+        if Yf is None:
+            (Xf,) = _mahalanobis_whiten(Xf)
+        else:
+            Xf, Yf = _mahalanobis_whiten(Xf, Yf)
+        metric = "euclidean"
     symmetric = Yf is None
     Yf = Xf if symmetric else Yf
     n = Xf.shape[0]
@@ -225,7 +263,8 @@ def pairwise_distances(
                 if metric == "cosine":
                     block = _cosine_block(Xd[i0:i1], Yd[j0:j1])
                 else:
-                    block = _minkowski_block(Xd[i0:i1], Yd[j0:j1], p=1 if metric == "manhattan" else 2)
+                    p = 1 if metric == "manhattan" else 2
+                    block = _minkowski_block(Xd[i0:i1], Yd[j0:j1], p=p)
                 out[i0:i1, j0:j1] = block
                 if symmetric and j0 != i0:
                     out[j0:j1, i0:i1] = block.T
@@ -241,9 +280,15 @@ def pairwise_distances(
 def condensed_distances(
     Xf: FeatureMatrix, metric: MetricName = "tanimoto", n_jobs: int = 1
 ) -> np.ndarray:
-    """Condensed (upper-triangle, i<j, i ascending then j ascending) float32 distance vector.
+    """Compute the condensed upper-triangle distance vector.
 
-    Matches ``scipy.spatial.distance.pdist``'s ordering convention.
+    Ordering matches ``scipy.spatial.distance.pdist``: ``i < j``, ``i`` ascending then ``j``.
+
+    :param Xf: the feature matrix.
+    :param metric: the metric name.
+    :param n_jobs: worker count. Results never depend on it.
+    :raises UnknownMetricError: if ``metric`` is not recognised.
+    :return: a float32 vector of length ``n * (n - 1) / 2``.
     """
     D = pairwise_distances(Xf, metric=metric, n_jobs=n_jobs)
     n = D.shape[0]
@@ -258,10 +303,22 @@ def nn_distance(
     n_jobs: int = 1,
     return_index: bool = False,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
-    """Nearest-neighbour distance (and optionally index) from each row of Q to R.
+    """Find each row of ``Q``'s nearest neighbour in ``R``.
 
-    Blocked over R to avoid materialising a full dense Q x R matrix at once when R is large.
+    Blocked over ``R``, so no full dense ``Q x R`` matrix is materialised.
+
+    :param Q: the query feature matrix.
+    :param R: the reference feature matrix.
+    :param metric: the metric name.
+    :param n_jobs: worker count. Results never depend on it.
+    :param return_index: also return the index of each nearest neighbour.
+    :raises UnknownMetricError: if ``metric`` is not recognised.
+    :return: the distances, or ``(distances, indices)`` when ``return_index`` is set.
     """
+    if metric == "mahalanobis":
+        # whiten once over Q and all of R, so every block shares one covariance
+        Q, R = _mahalanobis_whiten(Q, R)
+        metric = "euclidean"
     n_q = Q.shape[0]
     best_dist = np.full(n_q, np.inf, dtype=np.float64)
     best_idx = np.full(n_q, -1, dtype=np.int64)
@@ -281,5 +338,8 @@ def nn_distance(
 
 
 def tanimoto_similarity_matrix(Xf: FeatureMatrix) -> np.ndarray:
-    """Convenience wrapper: ``1 - pairwise_distances(Xf, metric="tanimoto")``."""
+    """Compute the pairwise Tanimoto similarity matrix.
+
+    :param Xf: the feature matrix.
+    :return: ``1 - pairwise_distances(Xf, metric="tanimoto")``."""
     return 1.0 - pairwise_distances(Xf, metric="tanimoto")

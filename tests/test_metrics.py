@@ -36,13 +36,21 @@ class TestZeroVectorConventions:
 class TestDiagonalAndSymmetry:
     @pytest.mark.parametrize("metric", ["tanimoto", "dice", "cosine", "euclidean", "manhattan"])
     def test_diagonal_is_exactly_zero(self, metric):
-        X = _random_binary(20, 32, seed=1) if metric in ("tanimoto", "dice") else np.random.default_rng(2).random((20, 8))
+        X = (
+            _random_binary(20, 32, seed=1)
+            if metric in ("tanimoto", "dice")
+            else np.random.default_rng(2).random((20, 8))
+        )
         D = metrics.pairwise_distances(X, metric=metric)
         assert np.all(np.diagonal(D) == 0.0)
 
     @pytest.mark.parametrize("metric", ["tanimoto", "dice", "cosine", "euclidean", "manhattan"])
     def test_symmetric(self, metric):
-        X = _random_binary(15, 32, seed=3) if metric in ("tanimoto", "dice") else np.random.default_rng(4).random((15, 6))
+        X = (
+            _random_binary(15, 32, seed=3)
+            if metric in ("tanimoto", "dice")
+            else np.random.default_rng(4).random((15, 6))
+        )
         D = metrics.pairwise_distances(X, metric=metric)
         assert np.array_equal(D, D.T)
 
@@ -160,7 +168,7 @@ class TestIsBoundedMetric:
     def test_bounded_metrics(self, metric):
         assert metrics.is_bounded_metric(metric) is True
 
-    @pytest.mark.parametrize("metric", ["euclidean", "manhattan"])
+    @pytest.mark.parametrize("metric", ["euclidean", "manhattan", "mahalanobis"])
     def test_unbounded_metrics(self, metric):
         assert metrics.is_bounded_metric(metric) is False
 
@@ -240,7 +248,68 @@ class TestIsBinaryLike:
         assert metrics._is_binary_like(np.array([], dtype=np.uint8)) is True
 
     def test_sparse_input(self):
-        assert metrics._is_binary_like(sp.csr_matrix(np.array([[0, 1], [1, 0]], dtype=np.uint8))) is True
+        assert (
+            metrics._is_binary_like(sp.csr_matrix(np.array([[0, 1], [1, 0]], dtype=np.uint8)))
+            is True
+        )
+
+
+class TestMahalanobis:
+    @staticmethod
+    def _correlated(n=40, d=4, seed=12):
+        rng = np.random.default_rng(seed)
+        return rng.normal(size=(n, d)) @ rng.normal(size=(d, d))
+
+    def test_matches_scipy_with_pinv_covariance(self):
+        from scipy.spatial.distance import cdist
+
+        X = self._correlated()
+        VI = np.linalg.pinv(np.cov(X, rowvar=False))
+        D = metrics.pairwise_distances(X, metric="mahalanobis")
+        np.testing.assert_allclose(D, cdist(X, X, "mahalanobis", VI=VI), atol=1e-5)
+
+    @pytest.mark.parametrize("block_size", [4, 7])
+    def test_block_size_invariant(self, block_size):
+        X = self._correlated(n=37)
+        D_ref = metrics.pairwise_distances(X, metric="mahalanobis", block_size=2048)
+        D_blk = metrics.pairwise_distances(X, metric="mahalanobis", block_size=block_size)
+        assert np.array_equal(D_ref, D_blk)
+
+    def test_diagonal_zero_and_symmetric(self):
+        D = metrics.pairwise_distances(self._correlated(), metric="mahalanobis")
+        assert np.all(np.diagonal(D) == 0.0)
+        assert np.array_equal(D, D.T)
+
+    def test_asymmetric_is_argument_order_independent(self):
+        X = self._correlated()
+        A, B = X[:15], X[15:]
+        D_ab = metrics.pairwise_distances(A, B, metric="mahalanobis")
+        D_ba = metrics.pairwise_distances(B, A, metric="mahalanobis")
+        np.testing.assert_allclose(D_ab, D_ba.T, atol=1e-6)
+
+    def test_nn_distance_uses_one_covariance_across_blocks(self):
+        from scipy.spatial.distance import cdist
+
+        X = self._correlated(n=30)
+        Q, R = X[:10], X[10:]
+        VI = np.linalg.pinv(np.cov(X, rowvar=False))
+        expected = cdist(Q, R, "mahalanobis", VI=VI).min(axis=1)
+        np.testing.assert_allclose(
+            metrics.nn_distance(Q, R, metric="mahalanobis"), expected, atol=1e-5
+        )
+
+    def test_singular_covariance_is_finite(self):
+        X = _random_binary(10, 50, density=0.3, seed=13)  # n < d: covariance is singular
+        D = metrics.pairwise_distances(X, metric="mahalanobis")
+        assert np.all(np.isfinite(D))
+
+    def test_scale_invariant(self):
+        X = self._correlated()
+        D = metrics.pairwise_distances(X, metric="mahalanobis")
+        D_scaled = metrics.pairwise_distances(
+            X * np.array([1.0, 10.0, 100.0, 0.1]), metric="mahalanobis"
+        )
+        np.testing.assert_allclose(D, D_scaled, atol=1e-4)
 
 
 @pytest.mark.slow
