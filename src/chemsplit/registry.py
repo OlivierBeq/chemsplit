@@ -24,8 +24,8 @@ if TYPE_CHECKING:
 # Deliberately done inside a function, not at module scope: every splitter family module imports
 # rdkit (and, for a couple of classes, lazily-triggers checks against optional extras) at ITS OWN
 # module-import time, and chemsplit's own performance budget is <400ms for bare
-# `import chemsplit` with "no RDKit imported at package import time". Importing all 46+6 splitter
-# classes here at `import chemsplit.registry` time would defeat that even though each individual
+# `import chemsplit` with "no RDKit imported at package import time". Importing every splitter
+# class here at `import chemsplit.registry` time would defeat that even though each individual
 # family's `import chemsplit.splitters.X` is itself unavoidable eventually -- the point is to defer
 # it until a caller actually asks the registry for something (`get_splitter`/`list_splitters`/
 # `SPLITTER_REGISTRY` access), not pay for it on every `import chemsplit`.
@@ -93,6 +93,7 @@ def _import_all_classes() -> list[type[BaseSplitter]]:
         PerimeterSplitter,
         SimilarityThresholdSplitter,
         SpectralSplitter,
+        SPXYSplitter,
     )
     from chemsplit.splitters.task import (
         AVESplitter,
@@ -128,6 +129,7 @@ def _import_all_classes() -> list[type[BaseSplitter]]:
         DensityClusterSplitter,
         SpectralSplitter,
         MaxMinSplitter,
+        SPXYSplitter,
         MaxDissimilaritySplitter,
         PerimeterSplitter,
         LeaveOneClusterOutSplitter,

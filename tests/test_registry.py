@@ -36,9 +36,9 @@ class TestGetSplitterLookupModes:
 
 
 class TestListSplitters:
-    def test_returns_all_52_by_default(self):
+    def test_returns_all_splitters_by_default(self):
         df = registry.list_splitters()
-        assert len(df) == 53
+        assert len(df) == 54
         assert set(df.columns) == {
             "id", "class_name", "family", "family_name", "strictness",
             "group_forming", "requires_labels", "requires_dates", "requires_targets",
@@ -58,7 +58,7 @@ class TestListSplitters:
     def test_group_forming_filter(self):
         df_grouping = registry.list_splitters(group_forming=True)
         df_non_grouping = registry.list_splitters(group_forming=False)
-        assert len(df_grouping) + len(df_non_grouping) == 53
+        assert len(df_grouping) + len(df_non_grouping) == 54
         assert set(df_grouping["group_forming"]) == {True}
         assert set(df_non_grouping["group_forming"]) == {False}
 

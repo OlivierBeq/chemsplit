@@ -7,7 +7,9 @@ import pytest
 
 from chemsplit.exceptions import (
     ConstraintUnsatisfiableError,
+    DegenerateClusterWarning,
     DegenerateGroupingError,
+    LabelError,
     ParameterError,
 )
 from chemsplit.splitters.similarity import (
@@ -21,6 +23,7 @@ from chemsplit.splitters.similarity import (
     PerimeterSplitter,
     SimilarityThresholdSplitter,
     SpectralSplitter,
+    SPXYSplitter,
 )
 
 # Two chemically distant "families": simple alkanes/alcohols vs. aromatic amines, so clustering
@@ -152,6 +155,62 @@ class TestMaxMinSplitter:
         splitter = MaxMinSplitter(n_picks=20, train_size=0.5, test_size=0.5, random_state=0)
         with pytest.raises(ParameterError):
             splitter.split_result(SMILES_20)
+
+
+class TestSPXYSplitter:
+    # 1-D points 0, 1, 3, 4 with record 1 the only label outlier. Scaled joint distances:
+    # (0,1)=1.25, (0,2)=0.75, (0,3)=1.0, (1,2)=1.5, (1,3)=1.75, (2,3)=0.25, so the first
+    # Kennard-Stone pair is (1, 3); on X alone it would be (0, 3).
+    X_1D = np.array([[0.0], [1.0], [3.0], [4.0]])
+    Y_1D = np.array([0.0, 3.0, 0.0, 0.0])
+
+    def test_hand_computed_trace(self):
+        splitter = SPXYSplitter(metric="euclidean", train_size=2, test_size=2)
+        result = splitter.split_result(self.X_1D, self.Y_1D)[0]
+        assert result.metadata["picked"] == [1, 3]
+        assert result.train.tolist() == [1, 3]
+        assert result.test.tolist() == [0, 2]
+        ks = MaxMinSplitter(init="kennard_stone", metric="euclidean", train_size=2, test_size=2)
+        assert ks.split_result(self.X_1D)[0].train.tolist() == [0, 3]
+
+    def test_constant_y_reduces_to_kennard_stone(self):
+        X = _rng(1).normal(size=(30, 4))
+        with pytest.warns(DegenerateClusterWarning, match="label"):
+            spxy = SPXYSplitter(metric="euclidean", train_size=0.7, test_size=0.3).split_result(X, np.ones(30))[0]
+        ks = MaxMinSplitter(init="kennard_stone", metric="euclidean", train_size=0.7, test_size=0.3).split_result(X)[0]
+        assert spxy.train.tolist() == ks.train.tolist()
+        assert spxy.metadata["zero_distance_terms"] == ["label"]
+
+    def test_deterministic_without_seed_for_two_way_split(self):
+        r1 = SPXYSplitter(train_size=0.5, test_size=0.5).split_result(SMILES_20, np.arange(20.0))[0]
+        r2 = SPXYSplitter(train_size=0.5, test_size=0.5).split_result(SMILES_20, np.arange(20.0))[0]
+        assert r1.train.tolist() == r2.train.tolist()
+        assert r1.test.tolist() == r2.test.tolist()
+
+    def test_three_way_sizes(self):
+        splitter = SPXYSplitter(train_size=0.6, valid_size=0.2, test_size=0.2, random_state=0)
+        result = splitter.split_result(SMILES_20, np.arange(20.0))[0]
+        assert (result.train.size, result.valid.size, result.test.size) == (12, 4, 4)
+
+    def test_multitask_y(self):
+        y = np.c_[np.arange(20.0), np.arange(20.0)[::-1] ** 2]
+        result = SPXYSplitter(train_size=0.5, test_size=0.5).split_result(SMILES_20, y)[0]
+        assert result.train.size == 10
+
+    def test_mahalanobis_metric(self):
+        X = _rng(2).normal(size=(30, 3)) @ np.array([[1.0, 0.9, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 5.0]])
+        result = SPXYSplitter(metric="mahalanobis", train_size=0.7, test_size=0.3).split_result(X, X[:, 0])[0]
+        assert result.train.size == 21
+
+    def test_non_finite_y_raises(self):
+        y = np.arange(20.0)
+        y[3] = np.nan
+        with pytest.raises(LabelError):
+            SPXYSplitter(train_size=0.5, test_size=0.5).split_result(SMILES_20, y)
+
+    def test_missing_y_raises(self):
+        with pytest.raises(LabelError):
+            SPXYSplitter(train_size=0.5, test_size=0.5).split_result(SMILES_20)
 
 
 class TestMaxDissimilaritySplitter:

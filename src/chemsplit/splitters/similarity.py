@@ -10,6 +10,7 @@ from typing import Any, ClassVar, Literal
 
 import numpy as np
 import scipy.sparse as sp
+from scipy.spatial.distance import cdist
 from sklearn.cluster import DBSCAN, AgglomerativeClustering, Birch, KMeans, MiniBatchKMeans
 from sklearn.decomposition import TruncatedSVD
 
@@ -53,6 +54,7 @@ __all__ = [
     "DensityClusterSplitter",
     "SpectralSplitter",
     "MaxMinSplitter",
+    "SPXYSplitter",
     "MaxDissimilaritySplitter",
     "PerimeterSplitter",
     "LeaveOneClusterOutSplitter",
@@ -794,6 +796,7 @@ class MaxMinSplitter(_SimilarityBase):
     - `coverage_radius` is a directly interpretable guarantee -- no record sits further than that from a training example.
     - Memory-light in its lazy form, running on datasets where Butina and spectral clustering can't.
     - Deterministic apart from a single initial pick, and fully deterministic with `init="kennard_stone"`.
+    - `init="kennard_stone"` with `metric="mahalanobis"` on a descriptor matrix is the MDKS variant; for label-aware selection see :class:`SPXYSplitter`.
 
     Pitfalls
     --------
@@ -861,6 +864,98 @@ class MaxMinSplitter(_SimilarityBase):
                 "init": self.init,
                 "min_pairwise_distance_in_picked": min_pairwise if picked else float("nan"),
                 "coverage_radius": coverage,
+                "realised_sizes": {k: int(v.size) for k, v in buckets.items() if k != "discard"},
+            },
+        )
+        _small_partition_check(result, n)
+        return [result]
+
+
+# -
+# SPXYSplitter
+# -
+
+
+class SPXYSplitter(_SimilarityBase):
+    """Kennard-Stone selection over a joint feature-and-label distance (SPXY).
+
+    The feature distance matrix and the pairwise Euclidean distance between labels (across all
+    columns for multi-task ``y``) are each divided by their own maximum and summed; Kennard-Stone
+    then picks ``n_train`` records from that joint matrix into **train**. The remainder fills
+    valid/test through a shuffle drawn from the ``"spxy.remainder"`` stream, so the split is
+    seed-free whenever no validation set is requested. With ``metric="mahalanobis"`` this is
+    the MDKS variant.
+
+    Advantages
+    ----------
+    - Covers the label range as well as chemical space, so the training set spans the response surface rather than only the descriptor space -- the standard fix for Kennard-Stone leaving extreme activities out of train.
+    - Fully deterministic without a seed for two-way splits: no random initial pick, ties broken by smallest index.
+    - Each term is scaled to `[0, 1]` before summing, so neither the fingerprint distance nor the label units dominate.
+
+    Pitfalls
+    --------
+    - The split depends on `y`, so the training set is chosen with knowledge of the labels -- fine for calibration-set design, but results aren't comparable with label-blind splits.
+    - Like Kennard-Stone, the first picks are the most extreme records, including outliers and label errors; clean data first.
+    - Optimises coverage, not separation -- test records can have near-duplicates in train. Not a leakage-control split.
+    - Label distances are Euclidean over the raw `y` columns, so in multi-task data a task with a wider range weighs more; standardise `y` first if that matters.
+    - Builds two dense `n x n` matrices.
+
+    """
+
+    splitter_id: ClassVar[str] = "spxy"
+    strictness: ClassVar[Strictness] = Strictness.MODERATE
+    requires_labels: ClassVar[bool] = True
+    bounded_metric_required: ClassVar[bool] = False
+    deterministic_without_seed: ClassVar[bool] = False  # True whenever n_valid == 0
+
+    def _check_preconditions(self, ctx: _Context) -> None:
+        y = np.asarray(ctx.y)
+        if y.ndim not in (1, 2) or y.shape[0] != ctx.n:
+            raise LabelError(f"{type(self).__name__} requires y of shape (n,) or (n, n_tasks)")
+        if not np.all(np.isfinite(y.astype(np.float64))):
+            raise LabelError(f"{type(self).__name__} requires finite numeric y")
+
+    def _partition(self, ctx: _Context) -> list[SplitResult]:
+        n = ctx.n
+        D_x = _dist_matrix(self, ctx).astype(np.float64)
+        y = np.asarray(ctx.y, dtype=np.float64)
+        y = y.reshape(n, -1)
+        D_y = cdist(y, y, metric="euclidean")
+        degenerate = []
+        for name, M in (("feature", D_x), ("label", D_y)):
+            m = float(M.max()) if M.size else 0.0
+            if m > 0.0:
+                M /= m
+            else:
+                degenerate.append(name)
+        if degenerate:
+            warn_with_details(
+                DegenerateClusterWarning(
+                    f"{type(self).__name__}: all pairwise {' and '.join(degenerate)} distances are "
+                    "zero; that term contributes nothing to the selection",
+                    details={"zero_terms": degenerate},
+                )
+            )
+        D = D_x + D_y
+        del D_x, D_y
+        n_picks = ctx.sizes.n_train
+        picked = _clustering.kennard_stone(D, n_picks)[:n_picks]
+        rem_rng = seed_for(ctx.rng_seeds, "spxy.remainder", 0)
+        buckets = _fill_remainder(picked, n, ctx.sizes, rem_rng, "train")
+        coverage = float(np.max(np.min(D[:, picked], axis=1))) if picked else float("nan")
+        result = SplitResult(
+            train=buckets["train"],
+            valid=buckets["valid"],
+            test=buckets["test"],
+            discard=buckets["discard"],
+            groups=None,
+            splitter_id=self.splitter_id,
+            params=self.get_params(),
+            n_records=n,
+            metadata={
+                "picked": picked,
+                "coverage_radius": coverage,
+                "zero_distance_terms": degenerate,
                 "realised_sizes": {k: int(v.size) for k, v in buckets.items() if k != "discard"},
             },
         )

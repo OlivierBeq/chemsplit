@@ -82,5 +82,5 @@ def test_every_splitter_has_a_golden():
     assert not missing, f"splitters with no golden file: {missing}"
 
 
-def test_golden_dir_has_exactly_53_files():
-    assert len(_GOLDEN_FILES) == 53
+def test_golden_dir_has_one_file_per_splitter():
+    assert len(_GOLDEN_FILES) == 54
