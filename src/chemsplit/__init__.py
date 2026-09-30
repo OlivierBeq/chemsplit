@@ -112,6 +112,7 @@ if TYPE_CHECKING:
         PerimeterSplitter,
         SimilarityThresholdSplitter,
         SpectralSplitter,
+        SphereExclusionSplitter,
         SPXYSplitter,
     )
     from chemsplit.splitters.task import (
@@ -126,8 +127,8 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
-    # -- 54 splitters across 9 families, in declared order: baseline (5), scaffold (6),
-    # similarity (11), embedding (3), property (5), lineage (4), task (8), biomolecular (5),
+    # -- 55 splitters across 9 families, in declared order: baseline (5), scaffold (6),
+    # similarity (12), embedding (3), property (5), lineage (4), task (8), biomolecular (5),
     # protocol (7) --
     "RandomSplitter",
     "StratifiedRandomSplitter",
@@ -142,6 +143,7 @@ __all__ = [
     "ActivityCliffSplitter",
     "SimilarityThresholdSplitter",
     "ButinaSplitter",
+    "SphereExclusionSplitter",
     "KMeansClusterSplitter",
     "DensityClusterSplitter",
     "SpectralSplitter",
@@ -256,6 +258,7 @@ _LAZY_SOURCE: dict[str, str] = {
     # splitters/similarity.py
     "SimilarityThresholdSplitter": "chemsplit.splitters.similarity",
     "ButinaSplitter": "chemsplit.splitters.similarity",
+    "SphereExclusionSplitter": "chemsplit.splitters.similarity",
     "KMeansClusterSplitter": "chemsplit.splitters.similarity",
     "DensityClusterSplitter": "chemsplit.splitters.similarity",
     "SpectralSplitter": "chemsplit.splitters.similarity",

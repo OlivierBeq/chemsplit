@@ -97,7 +97,7 @@ def _build_plan(fixtures: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str
     )
 
     # similarity
-    for sid in ["similarity_threshold", "butina", "k_means_cluster", "density_cluster", "spectral",
+    for sid in ["similarity_threshold", "butina", "sphere_exclusion", "k_means_cluster", "density_cluster", "spectral",
                 "max_min", "max_dissimilarity", "perimeter", "leave_one_cluster_out"]:
         plan[sid] = smiles_case("two_clusters")
     plan["spxy"] = lambda: (F["linear_series"].smiles, F["linear_series"].y, {}, {})
@@ -273,6 +273,7 @@ def _build_plan(fixtures: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str
             "activity_cliff": "activity_cliffs",
             "similarity_threshold": "two_clusters",
             "butina": "two_clusters",
+            "sphere_exclusion": "two_clusters",
             "k_means_cluster": "two_clusters",
             "density_cluster": "two_clusters",
             "spectral": "two_clusters",

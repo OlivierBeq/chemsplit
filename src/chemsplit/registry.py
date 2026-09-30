@@ -93,6 +93,7 @@ def _import_all_classes() -> list[type[BaseSplitter]]:
         PerimeterSplitter,
         SimilarityThresholdSplitter,
         SpectralSplitter,
+        SphereExclusionSplitter,
         SPXYSplitter,
     )
     from chemsplit.splitters.task import (
@@ -125,6 +126,7 @@ def _import_all_classes() -> list[type[BaseSplitter]]:
         # similarity
         SimilarityThresholdSplitter,
         ButinaSplitter,
+        SphereExclusionSplitter,
         KMeansClusterSplitter,
         DensityClusterSplitter,
         SpectralSplitter,

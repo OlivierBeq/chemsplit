@@ -45,11 +45,13 @@ from chemsplit.exceptions import (
     SizeToleranceWarning,
     warn_with_details,
 )
+from chemsplit.metrics import is_bounded_metric
 from chemsplit.types import IndexArray
 
 __all__ = [
     "SimilarityThresholdSplitter",
     "ButinaSplitter",
+    "SphereExclusionSplitter",
     "KMeansClusterSplitter",
     "DensityClusterSplitter",
     "SpectralSplitter",
@@ -155,6 +157,59 @@ def _small_partition_check(result: SplitResult, n: int) -> None:
                     details={"partition": name, "size": int(arr.size), "n": n},
                 )
             )
+
+
+def _check_cluster_degeneracy(clusters: list[list[int]], n: int, owner: str, setting: str) -> None:
+    """Shared degeneracy guard for radius-based clusterers (Butina, sphere exclusion, OptiSim):
+    raise when every record is a singleton or one cluster covers >95% of records, warn above
+    60%. ``setting`` names the parameter that produced ``clusters``, for the error message."""
+    if len(clusters) == n:
+        raise DegenerateGroupingError(
+            f"{owner}: {setting} produced {n} singleton clusters (every record its own group)"
+        )
+    largest_frac = max(len(c) for c in clusters) / n if clusters else 0.0
+    if largest_frac > 0.95:
+        raise DegenerateGroupingError(f"{owner}: largest cluster covers {largest_frac:.1%} of records")
+    if largest_frac > 0.6:
+        warn_with_details(
+            DegenerateClusterWarning(
+                f"{owner}: largest cluster covers {largest_frac:.1%} of records",
+                details={"largest_cluster_frac": largest_frac},
+            )
+        )
+
+
+_RADIUS_KINDS = ("distance", "similarity", "fraction_of_range")
+
+
+def _validate_radius(splitter: Any, radius: float, radius_is: str) -> None:
+    """Eager ``radius``/``radius_is`` validation shared by sphere exclusion and OptiSim."""
+    if radius_is not in _RADIUS_KINDS:
+        raise ParameterError(f"invalid radius_is: {radius_is!r}; expected one of {list(_RADIUS_KINDS)}")
+    splitter._validate_similarity_params(bounded_metric_required=radius_is == "similarity")
+    bounded = is_bounded_metric(splitter.metric)
+    if radius_is == "distance" and not bounded:
+        if not radius > 0.0:
+            raise ParameterError(f"radius must be > 0, got {radius!r}")
+    elif not (0.0 < radius < 1.0):
+        raise ParameterError(f"radius must be in (0,1) for radius_is={radius_is!r}, got {radius!r}")
+
+
+def _resolve_radius(D: np.ndarray, radius: float, radius_is: str) -> float:
+    """Convert ``radius`` to a distance threshold. ``"fraction_of_range"`` maps ``radius`` linearly
+    onto ``[min, max]`` of the off-diagonal distances, giving a scale-free radius for unbounded
+    metrics (raw descriptors under ``"euclidean"``/``"mahalanobis"``)."""
+    if radius_is == "distance":
+        return float(radius)
+    if radius_is == "similarity":
+        return 1.0 - float(radius)
+    d_max = float(D.max())
+    # Off-diagonal minimum without an n x n mask copy: mask the zero diagonal in place, then
+    # restore it.
+    np.fill_diagonal(D, np.inf)
+    d_min = float(D.min())
+    np.fill_diagonal(D, 0.0)
+    return d_min + float(radius) * (d_max - d_min)
 
 
 # -
@@ -419,28 +474,97 @@ class ButinaSplitter(_SimilarityGroupBase):
             "cluster_sizes": sorted((len(c) for c in clusters), reverse=True),
             "centroids": [c[0] for c in clusters],
         }
-        if n_groups == n:
-            raise DegenerateGroupingError(
-                f"{type(self).__name__}: cutoff={self.cutoff} ({self.cutoff_is}) produced {n} "
-                "singleton clusters (every record its own group)"
-            )
-        largest_frac = max(len(c) for c in clusters) / n if clusters else 0.0
-        if largest_frac > 0.95:
-            raise DegenerateGroupingError(
-                f"{type(self).__name__}: largest cluster covers {largest_frac:.1%} of records"
-            )
-        if largest_frac > 0.6:
-            warn_with_details(
-                DegenerateClusterWarning(
-                    f"{type(self).__name__}: largest cluster covers {largest_frac:.1%} of records",
-                    details={"largest_cluster_frac": largest_frac},
-                )
-            )
+        _check_cluster_degeneracy(
+            clusters, n, type(self).__name__, f"cutoff={self.cutoff} ({self.cutoff_is})"
+        )
         return dense_label_encode(labels.tolist())
 
     def _group_metadata(self, ctx: _Context, labels: IndexArray) -> dict[str, Any]:
         return getattr(self, "_last_meta", {})
 
+
+# -
+# SphereExclusionSplitter
+# -
+
+
+class SphereExclusionSplitter(_SimilarityGroupBase):
+    """Sphere-exclusion clustering: scan records in random (or index) order; each record not yet
+    claimed becomes a representative and claims every unclaimed record within ``radius`` of it.
+
+    Unlike :class:`ButinaSplitter`, the scan order is not density-driven, and the radius can be
+    given as a fraction of the observed distance range (``radius_is="fraction_of_range"``), so it
+    also works on raw descriptors with unbounded metrics. The scan order is drawn from the
+    ``"sphere_exclusion.order"`` stream when ``order="random"``.
+
+    Advantages
+    ----------
+    - Clusters have a guaranteed maximum radius around their representative -- cluster tightness is a direct, interpretable parameter.
+    - Linear number of passes over the distance matrix, with no density pre-computation, so it's cheaper than Butina at the same `n`.
+    - `order="random"` gives a different but equally valid clustering per seed -- repeat over seeds to get variance from the clustering itself, not just from group assignment.
+    - `radius_is="fraction_of_range"` makes one radius meaningful across metrics and descriptor scales.
+
+    Pitfalls
+    --------
+    - Random scan order means a dense region can be split among several representatives while an outlier founds its own cluster -- cluster sizes are far more uneven than Butina's.
+    - The radius bounds distance to the representative, not between clusters -- records of different clusters can be closer than `radius` to each other. Not a hard leakage constraint; use `similarity_threshold` for that.
+    - `fraction_of_range` depends on the extreme pairwise distances, so one outlier stretches the range and silently enlarges every cluster.
+    - Results depend on the seed unless `order="index"`, which in turn depends on input order.
+
+    """
+
+    splitter_id: ClassVar[str] = "sphere_exclusion"
+    strictness: ClassVar[Strictness] = Strictness.STRICT
+    bounded_metric_required: ClassVar[bool] = False
+    deterministic_without_seed: ClassVar[bool] = False  # True only for order="index"
+
+    def __init__(
+        self,
+        *,
+        radius: float = 0.35,
+        radius_is: Literal["distance", "similarity", "fraction_of_range"] = "distance",
+        order: Literal["random", "index"] = "random",
+        featurizer: str | Any = "ecfp4",
+        metric: str = "tanimoto",
+        max_memory_bytes: int = 2 * 1024**3,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs)
+        self.radius = radius
+        self.radius_is = radius_is
+        self.order = order
+        _validate_radius(self, radius, radius_is)
+        if order not in ("random", "index"):
+            raise ParameterError(f"invalid order: {order!r}")
+
+    def _group_labels(self, ctx: _Context) -> IndexArray:
+        D = _dist_matrix(self, ctx)
+        n = ctx.n
+        threshold = _resolve_radius(D, self.radius, self.radius_is)
+        scan = (
+            seed_for(ctx.rng_seeds, "sphere_exclusion.order", 0).permutation(n).tolist()
+            if self.order == "random"
+            else None
+        )
+        reps, clusters = _clustering.sphere_exclusion(D, threshold, order=scan)
+        labels = np.empty(n, dtype=np.int64)
+        for cid, members in enumerate(clusters):
+            labels[members] = cid
+        self._last_meta = {
+            "radius": self.radius,
+            "radius_is": self.radius_is,
+            "distance_threshold": threshold,
+            "n_clusters": len(clusters),
+            "cluster_sizes": sorted((len(c) for c in clusters), reverse=True),
+            "representatives": reps,
+        }
+        _check_cluster_degeneracy(
+            clusters, n, type(self).__name__, f"radius={self.radius} ({self.radius_is})"
+        )
+        return dense_label_encode(labels.tolist())
+
+    def _group_metadata(self, ctx: _Context, labels: IndexArray) -> dict[str, Any]:
+        return getattr(self, "_last_meta", {})
 
 # -
 # KMeansClusterSplitter

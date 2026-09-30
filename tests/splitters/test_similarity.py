@@ -23,6 +23,7 @@ from chemsplit.splitters.similarity import (
     PerimeterSplitter,
     SimilarityThresholdSplitter,
     SpectralSplitter,
+    SphereExclusionSplitter,
     SPXYSplitter,
 )
 
@@ -94,6 +95,80 @@ class TestButinaSplitter:
         splitter = ButinaSplitter(cutoff=1e-6, train_size=0.5, test_size=0.5, random_state=0)
         with pytest.raises(DegenerateGroupingError):
             splitter.compute_groups(features)
+
+
+class TestSphereExclusionSplitter:
+    def test_separates_families(self):
+        splitter = SphereExclusionSplitter(radius=0.6, train_size=0.5, test_size=0.5, random_state=0)
+        groups = splitter.compute_groups(SMILES_20)
+        assert set(groups[:10].tolist()).isdisjoint(groups[10:].tolist())
+
+    def test_members_within_radius_of_representative(self):
+        from rdkit import Chem
+
+        from chemsplit.featurizers import get_featurizer
+        from chemsplit.metrics import pairwise_distances
+
+        splitter = SphereExclusionSplitter(radius=0.6, train_size=0.5, test_size=0.5, random_state=3)
+        result = splitter.split_result(SMILES_20)[0]
+        mols = [Chem.MolFromSmiles(smi) for smi in SMILES_20]
+        D = pairwise_distances(get_featurizer("ecfp4").transform(mols), metric="tanimoto")
+        for rep in result.metadata["representatives"]:
+            members = np.flatnonzero(result.groups == result.groups[rep])
+            assert np.all(D[rep, members] <= 0.6 + 1e-6)
+        # a representative is never within the radius of an earlier representative
+        reps = result.metadata["representatives"]
+        for k, rep in enumerate(reps):
+            assert all(D[rep, prev] > 0.6 for prev in reps[:k])
+
+    def test_index_order_is_seed_free(self):
+        g1 = SphereExclusionSplitter(radius=0.6, order="index", random_state=0).compute_groups(SMILES_20)
+        g2 = SphereExclusionSplitter(radius=0.6, order="index", random_state=1).compute_groups(SMILES_20)
+        assert g1.tolist() == g2.tolist()
+
+    def test_random_order_is_seeded(self):
+        g1 = SphereExclusionSplitter(radius=0.6, random_state=5).compute_groups(SMILES_20)
+        g2 = SphereExclusionSplitter(radius=0.6, random_state=5).compute_groups(SMILES_20)
+        assert g1.tolist() == g2.tolist()
+
+    def test_radius_is_similarity_matches_distance(self):
+        gd = SphereExclusionSplitter(radius=0.6, radius_is="distance", random_state=0).compute_groups(SMILES_20)
+        gs = SphereExclusionSplitter(radius=0.4, radius_is="similarity", random_state=0).compute_groups(SMILES_20)
+        assert gd.tolist() == gs.tolist()
+
+    def test_fraction_of_range_on_unscaled_euclidean_features(self):
+        rng = _rng(4)
+        X = np.r_[rng.normal(0.0, 1.0, (15, 3)), rng.normal(20.0, 1.0, (15, 3))] * [1.0, 100.0, 0.01]
+        splitter = SphereExclusionSplitter(
+            metric="euclidean", radius=0.2, radius_is="fraction_of_range",
+            train_size=0.5, test_size=0.5, random_state=0,
+        )
+        groups = splitter.compute_groups(X)
+        assert set(groups[:15].tolist()).isdisjoint(groups[15:].tolist())
+
+    def test_all_singletons_raises(self):
+        features = np.eye(20, dtype=np.uint8)
+        with pytest.raises(DegenerateGroupingError):
+            SphereExclusionSplitter(radius=1e-6, random_state=0).compute_groups(features)
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"radius": 0.0},
+            {"radius": 1.0},
+            {"radius": 1.5, "radius_is": "fraction_of_range", "metric": "euclidean"},
+            {"radius": -1.0, "metric": "euclidean"},
+            {"radius": 0.5, "radius_is": "similarity", "metric": "euclidean"},
+            {"radius_is": "bogus"},
+            {"order": "bogus"},
+        ],
+    )
+    def test_invalid_params_raise(self, kwargs):
+        with pytest.raises(ParameterError):
+            SphereExclusionSplitter(**kwargs)
+
+    def test_unbounded_distance_radius_may_exceed_one(self):
+        SphereExclusionSplitter(radius=5.0, metric="euclidean")
 
 
 class TestKMeansClusterSplitter:
