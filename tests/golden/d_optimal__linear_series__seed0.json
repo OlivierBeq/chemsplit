@@ -1,0 +1,4 @@
+{
+  "split_result_json": "{\"discard\":[],\"groups\":null,\"metadata\":{\"n_components\":10,\"realised_sizes\":{\"test\":16,\"train\":64,\"valid\":0},\"train_design\":{\"log_det\":10.5807834,\"n_passes\":2,\"n_swaps\":30},\"valid_design\":{}},\"n_records\":80,\"params\":{\"featurizer\":\"physchem\",\"init\":\"kennard_stone\",\"max_memory_bytes\":2147483648,\"max_passes\":100,\"n_components\":null,\"n_jobs\":1,\"n_splits\":1,\"random_state\":0,\"ridge\":1e-08,\"test_size\":null,\"train_size\":null,\"valid_size\":null,\"verbose\":0},\"schema\":\"chemsplit/split/1\",\"splitter_id\":\"d_optimal\",\"test\":[[40,44],[55,65]],\"train\":[[0,39],[45,54],[66,79]],\"valid\":[]}",
+  "tier": "exact"
+}

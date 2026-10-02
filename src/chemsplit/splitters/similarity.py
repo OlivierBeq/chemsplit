@@ -68,6 +68,7 @@ __all__ = [
     "MinimalTestSetDissimilaritySplitter",
     "SupportPointsSplitter",
     "DuplexSplitter",
+    "DOptimalSplitter",
     "MaxDissimilaritySplitter",
     "PerimeterSplitter",
     "LeaveOneClusterOutSplitter",
@@ -1746,6 +1747,208 @@ class DuplexSplitter(_SimilarityBase):
                 "seed_pairs": {name: part[:2] for name, part in zip(names, parts, strict=True) if part},
                 "coverage_radius": coverage,
                 "realised_sizes": {name: int(buckets[name].size) for name in names},
+            },
+        )
+        _small_partition_check(result, n)
+        return [result]
+
+
+# -
+# DOptimalSplitter
+# -
+
+
+def _d_optimal_exchange(
+    X: np.ndarray, pool: list[int], start: list[int], ridge: float, max_passes: int
+) -> tuple[list[int], dict[str, Any]]:
+    """Modified Fedorov exchange over the rows of ``X``: improve ``start`` (a subset of ``pool``)
+    until no single swap with a non-design record raises ``det(XᵀX + ridge·I)``."""
+    design = sorted(start)
+    in_design = set(design)
+    eye = ridge * np.eye(X.shape[1])
+
+    def inverse(rows: list[int]) -> np.ndarray:
+        Xd = X[rows]
+        return np.linalg.inv(Xd.T @ Xd + eye)
+
+    Minv = inverse(design)
+    n_passes = n_swaps = 0
+    for _ in range(max_passes):
+        n_passes += 1
+        swapped = False
+        for i in list(design):
+            candidates = np.asarray([j for j in pool if j not in in_design], dtype=np.int64)
+            if candidates.size == 0:
+                break
+            xi = X[i]
+            Xc = X[candidates]
+            d_i = float(xi @ Minv @ xi)
+            d_j = np.einsum("ij,jk,ik->i", Xc, Minv, Xc)
+            d_ij = Xc @ (Minv @ xi)
+            delta = d_j - d_i - (d_i * d_j - d_ij**2)
+            best = int(row_argmin(-delta[None, :])[0])
+            if delta[best] > 1e-10:
+                j = int(candidates[best])
+                design[design.index(i)] = j
+                in_design.discard(i)
+                in_design.add(j)
+                Minv = inverse(design)
+                n_swaps += 1
+                swapped = True
+        if not swapped:
+            break
+    Xd = X[design]
+    _, log_det = np.linalg.slogdet(Xd.T @ Xd + eye)
+    return sorted(design), {"log_det": float(log_det), "n_passes": n_passes, "n_swaps": n_swaps}
+
+
+class DOptimalSplitter(BaseSplitter):
+    """D-optimal design: the training set is the subset that maximises ``det(XᵀX)``.
+
+    Features are standardised (constant columns dropped) and projected onto their leading
+    ``n_components`` principal components (signs fixed); the design matrix is those scores plus an
+    intercept column. Starting from a Kennard-Stone selection on the scores (or, with
+    ``init="random"``, a draw from the ``"d_optimal.init"`` stream), a modified Fedorov exchange
+    visits the design points in index order and swaps each one for the non-design record that most
+    increases the determinant -- ``Δ(i, j) = d(j) − d(i) − [d(i)·d(j) − d(i, j)²]`` with
+    ``d(a, b) = x_aᵀ (XᵀX)⁻¹ x_b``, ties to the smallest index -- until a full pass makes no swap.
+    A validation set, if requested, is the D-optimal subset of the remaining records; the rest is
+    test.
+
+    :param featurizer: Feature representation. Defaults to ``"physchem"``: D-optimality is
+        defined on continuous design variables.
+    :param n_components: Principal components in the design matrix; ``None`` uses
+        ``min(10, n_train - 2, n_features)``. Defaults to ``None``.
+    :param init: Starting design, ``"kennard_stone"`` (deterministic) or ``"random"``. Defaults
+        to ``"kennard_stone"``.
+    :param ridge: Added to the diagonal of ``XᵀX`` so near-singular designs stay invertible.
+        Defaults to 1e-8.
+    :param max_passes: Maximum exchange passes over the design. Defaults to 100.
+    :param max_memory_bytes: Ceiling for the Kennard-Stone distance matrix. Defaults to 2 GiB.
+    :param base: See :class:`chemsplit.base.BaseSplitter`.
+
+    Advantages
+    ----------
+    - The training set gives the most precise estimates of a linear model's coefficients in the chosen descriptor space -- the classical optimal-design criterion.
+    - Deterministic without a seed under the default Kennard-Stone start.
+    - `metadata["log_det"]` reports the achieved criterion, so designs can be compared.
+    - Works on PCA scores, so it stays well-posed with many correlated descriptors.
+
+    Pitfalls
+    --------
+    - **Picks the edges of descriptor space.** D-optimal training sets concentrate on extreme records, so test holds the interior -- test scores can overestimate predictive power, as Gramatica and co-workers noted.
+    - Optimal for a linear model in the chosen components; a nonlinear model or different descriptors would want a different design.
+    - The exchange finds a local optimum, which depends on the starting design.
+    - Each pass costs `O(n_train · n · p²)`; large sets with many components are slow.
+    - Selection ignores `y`; label imbalance between train and test is not controlled.
+
+    References
+    ----------
+    .. [1] Fedorov, V. V. *Theory of Optimal Experiments*; Academic Press: New York, **1972**.
+    .. [2] Cook, R. D.; Nachtsheim, C. J. A Comparison of Algorithms for Constructing Exact
+       D-Optimal Designs. *Technometrics* **1980**, 22 (3), 315-324.
+       https://doi.org/10.1080/00401706.1980.10486162
+    .. [3] de Aguiar, P. F.; Bourguignon, B.; Khots, M. S.; Massart, D. L.; Phan-Than-Luu, R.
+       D-Optimal Designs. *Chemom. Intell. Lab. Syst.* **1995**, 30 (2), 199-210.
+       https://doi.org/10.1016/0169-7439(94)00076-X
+    """
+
+    splitter_id: ClassVar[str] = "d_optimal"
+    family: ClassVar[str] = "similarity"
+    strictness: ClassVar[Strictness] = Strictness.MODERATE
+    group_forming: ClassVar[bool] = False
+    accepts: ClassVar[tuple[str, ...]] = ("smiles", "mol", "features")
+    deterministic_without_seed: ClassVar[bool] = True  # False for init="random"
+
+    def __init__(
+        self,
+        *,
+        featurizer: str | Any = "physchem",
+        n_components: int | None = None,
+        init: Literal["kennard_stone", "random"] = "kennard_stone",
+        ridge: float = 1e-8,
+        max_passes: int = 100,
+        max_memory_bytes: int = 2 * 1024**3,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.featurizer = featurizer
+        self.n_components = n_components
+        self.init = init
+        self.ridge = ridge
+        self.max_passes = max_passes
+        self.max_memory_bytes = max_memory_bytes
+        if n_components is not None and (
+            isinstance(n_components, bool) or not isinstance(n_components, (int, np.integer)) or n_components < 1
+        ):
+            raise ParameterError(f"n_components must be None or an int >= 1, got {n_components!r}")
+        if init not in ("kennard_stone", "random"):
+            raise ParameterError(f"invalid init: {init!r}")
+        if not (isinstance(ridge, (int, float)) and ridge >= 0):
+            raise ParameterError(f"ridge must be >= 0, got {ridge!r}")
+        if isinstance(max_passes, bool) or not isinstance(max_passes, (int, np.integer)) or max_passes < 1:
+            raise ParameterError(f"max_passes must be an int >= 1, got {max_passes!r}")
+
+    def _design(self, ctx: _Context, n_select: int) -> np.ndarray:
+        F = ctx.get_features(resolve_featurizer(self.featurizer))
+        X = np.asarray(F.toarray() if sp.issparse(F) else F, dtype=np.float64)
+        if not np.all(np.isfinite(X)):
+            raise ParameterError(f"{type(self).__name__}: features contain NaN or infinite values")
+        sd = X.std(axis=0)
+        keep = sd > 0
+        if not keep.any():
+            raise DegenerateGroupingError(f"{type(self).__name__}: every feature column is constant")
+        Xs = (X[:, keep] - X[:, keep].mean(axis=0)) / sd[keep]
+        limit = min(Xs.shape[1], n_select - 2)
+        p = self.n_components if self.n_components is not None else min(10, limit)
+        if not (1 <= p <= limit):
+            raise ParameterError(
+                f"{type(self).__name__}: n_components={p} must be between 1 and "
+                f"min(n_features, n_selected - 2) = {limit}"
+            )
+        U, S, _ = np.linalg.svd(Xs, full_matrices=False)
+        scores = _fix_svd_signs(U[:, :p] * S[:p])
+        return np.hstack([np.ones((ctx.n, 1)), scores])
+
+    def _select(self, X: np.ndarray, pool: list[int], k: int, ctx: _Context, stage: int) -> tuple[list[int], dict[str, Any]]:
+        if k <= 0:
+            return [], {}
+        if k >= len(pool):
+            return list(pool), {}
+        idx = np.asarray(pool, dtype=np.int64)
+        if self.init == "kennard_stone":
+            guard_memory(len(pool), self.max_memory_bytes, type(self).__name__)
+            scores = X[idx, 1:]
+            D = cdist(scores, scores)
+            start = [int(idx[j]) for j in _clustering.kennard_stone(D, k)[:k]]
+        else:
+            rng = seed_for(ctx.rng_seeds, "d_optimal.init", stage)
+            start = sorted(int(j) for j in rng.choice(idx, size=k, replace=False))
+        return _d_optimal_exchange(X, pool, start, float(self.ridge), int(self.max_passes))
+
+    def _partition(self, ctx: _Context) -> list[SplitResult]:
+        n = ctx.n
+        X = self._design(ctx, ctx.sizes.n_train)
+        train, train_meta = self._select(X, list(range(n)), ctx.sizes.n_train, ctx, 0)
+        train_set = set(train)
+        remaining = [i for i in range(n) if i not in train_set]
+        valid, valid_meta = self._select(X, remaining, ctx.sizes.n_valid, ctx, 1)
+        valid_set = set(valid)
+        test = [i for i in remaining if i not in valid_set]
+        result = SplitResult(
+            train=np.asarray(train, dtype=np.int64),
+            valid=np.asarray(valid, dtype=np.int64),
+            test=np.asarray(test, dtype=np.int64),
+            discard=np.array([], dtype=np.int64),
+            groups=None,
+            splitter_id=self.splitter_id,
+            params=self.get_params(),
+            n_records=n,
+            metadata={
+                "n_components": int(X.shape[1] - 1),
+                "train_design": train_meta,
+                "valid_design": valid_meta,
+                "realised_sizes": {"train": len(train), "valid": len(valid), "test": len(test)},
             },
         )
         _small_partition_check(result, n)

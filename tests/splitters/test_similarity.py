@@ -16,6 +16,7 @@ from chemsplit.splitters.similarity import (
     BalancedMultiTaskSplitter,
     ButinaSplitter,
     DensityClusterSplitter,
+    DOptimalSplitter,
     DuplexSplitter,
     KMeansClusterSplitter,
     LeaveOneClusterOutSplitter,
@@ -526,6 +527,59 @@ class TestDuplexSplitter:
             test = RandomSplitter(train_size=0.75, test_size=0.25, random_state=seed).split_result(X)[0].test
             random_radius.append(float(np.max(np.min(D[:, test], axis=1))))
         assert duplex.metadata["coverage_radius"]["test"] < min(random_radius)
+
+
+class TestDOptimalSplitter:
+    GRID = np.array([[x, y] for x in range(5) for y in range(5)], dtype=float)
+
+    def test_grid_corners_are_d_optimal(self):
+        result = DOptimalSplitter(n_components=2, train_size=4, test_size=21).split_result(self.GRID)[0]
+        assert sorted(map(tuple, self.GRID[result.train].tolist())) == [(0, 0), (0, 4), (4, 0), (4, 4)]
+
+    def test_log_det_beats_start_and_random_subsets(self):
+        from chemsplit.splitters.similarity import _d_optimal_exchange
+
+        X = _rng(7).normal(size=(60, 4))
+        result = DOptimalSplitter(train_size=0.5, test_size=0.5, n_components=4).split_result(X)[0]
+        achieved = result.metadata["train_design"]["log_det"]
+        Xs = (X - X.mean(axis=0)) / X.std(axis=0)
+        U, S, _ = np.linalg.svd(Xs, full_matrices=False)
+        design = np.hstack([np.ones((60, 1)), U[:, :4] * S[:4]])
+        rng = _rng(8)
+        for _ in range(20):
+            rows = rng.choice(60, size=30, replace=False)
+            _, random_log_det = np.linalg.slogdet(design[rows].T @ design[rows] + 1e-8 * np.eye(5))
+            assert achieved >= random_log_det - 1e-9
+        # the exchange never ends below its starting design
+        start = list(range(30))
+        _, start_log_det = np.linalg.slogdet(design[start].T @ design[start] + 1e-8 * np.eye(5))
+        _, meta = _d_optimal_exchange(design, list(range(60)), start, 1e-8, 100)
+        assert meta["log_det"] >= start_log_det
+        assert meta["n_swaps"] > 0
+
+    def test_deterministic_without_seed_and_random_init_is_seeded(self):
+        X = _rng(9).normal(size=(40, 3))
+        r1 = DOptimalSplitter(train_size=0.75, test_size=0.25).split_result(X)[0]
+        r2 = DOptimalSplitter(train_size=0.75, test_size=0.25, random_state=5).split_result(X)[0]
+        assert r1.train.tolist() == r2.train.tolist()
+        r3 = DOptimalSplitter(init="random", train_size=0.75, test_size=0.25, random_state=5).split_result(X)[0]
+        r4 = DOptimalSplitter(init="random", train_size=0.75, test_size=0.25, random_state=5).split_result(X)[0]
+        assert r3.train.tolist() == r4.train.tolist()
+
+    def test_three_way_sizes_with_smiles(self):
+        result = DOptimalSplitter(train_size=0.6, valid_size=0.2, test_size=0.2, n_components=3).split_result(SMILES_20)[0]
+        assert (result.train.size, result.valid.size, result.test.size) == (12, 4, 4)
+
+    def test_too_many_components_raise(self):
+        with pytest.raises(ParameterError):
+            DOptimalSplitter(n_components=9, train_size=4, test_size=21).split_result(self.GRID)
+
+    @pytest.mark.parametrize(
+        "kwargs", [{"n_components": 0}, {"init": "bogus"}, {"ridge": -1.0}, {"max_passes": 0}]
+    )
+    def test_invalid_params_raise(self, kwargs):
+        with pytest.raises(ParameterError):
+            DOptimalSplitter(**kwargs)
 
 
 class TestMaxDissimilaritySplitter:
