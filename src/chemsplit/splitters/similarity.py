@@ -539,6 +539,13 @@ class SphereExclusionSplitter(_SimilarityGroupBase):
     - `fraction_of_range` depends on the extreme pairwise distances, so one outlier stretches the range and silently enlarges every cluster.
     - Results depend on the seed unless `order="index"`, which in turn depends on input order.
 
+    References
+    ----------
+    .. [1] Gobbi, A.; Lee, M.-L. DISE: Directed Sphere Exclusion. *J. Chem. Inf. Comput. Sci.*
+       **2003**, 43 (1), 317-323. https://doi.org/10.1021/ci025554v
+    .. [2] Golbraikh, A.; Tropsha, A. Predictive QSAR Modeling Based on Diversity Sampling of
+       Experimental Datasets for the Training and Test Set Selection. *J. Comput.-Aided Mol. Des.*
+       **2002**, 16 (5-6), 357-369. https://doi.org/10.1023/A:1020869118689
     """
 
     splitter_id: ClassVar[str] = "sphere_exclusion"
@@ -1145,7 +1152,8 @@ class SPXYSplitter(_SimilarityBase):
     then picks ``n_train`` records from that joint matrix into **train**. The remainder fills
     valid/test through a shuffle drawn from the ``"spxy.remainder"`` stream, so the split is
     seed-free whenever no validation set is requested. With ``metric="mahalanobis"`` this is
-    the MDKS variant.
+    M-SPXY (Apinantanakon et al. 2019, eq. 9): Mahalanobis distance on the features and Euclidean
+    distance on the labels, each scaled by its maximum.
 
     Advantages
     ----------
@@ -1161,6 +1169,14 @@ class SPXYSplitter(_SimilarityBase):
     - Label distances are Euclidean over the raw `y` columns, so in multi-task data a task with a wider range weighs more; standardise `y` first if that matters.
     - Builds two dense `n x n` matrices.
 
+    References
+    ----------
+    .. [1] Galvão, R. K. H.; Araujo, M. C. U.; José, G. E.; Pontes, M. J. C.; Silva, E. C.;
+       Saldanha, T. C. B. A Method for Calibration and Validation Subset Partitioning. *Talanta*
+       **2005**, 67 (4), 736-740. https://doi.org/10.1016/j.talanta.2005.03.025
+    .. [2] Apinantanakon, W.; Sunat, K.; Kinmond, J. A. Optimal Data Division for Empowering
+       Artificial Neural Network Models Employing a Modified M-SPXY Algorithm. *Eng. Appl. Sci.
+       Res.* **2019**, 46 (4), 276-284. https://doi.org/10.14456/easr.2019.31
     """
 
     splitter_id: ClassVar[str] = "spxy"
@@ -1260,6 +1276,11 @@ class OptiSimSplitter(_SimilarityGroupBase):
     - Pick mode optimises coverage, not separation -- like MaxMin, it's not a leakage-control split. Only cluster mode is group-forming.
     - `radius` is in the chosen metric's units unless `radius_is="fraction_of_range"`.
 
+    References
+    ----------
+    .. [1] Clark, R. D. OptiSim: An Extended Dissimilarity Selection Method for Finding Diverse
+       Representative Subsets. *J. Chem. Inf. Comput. Sci.* **1997**, 37 (6), 1181-1188.
+       https://doi.org/10.1021/ci970282v
     """
 
     splitter_id: ClassVar[str] = "opti_sim"

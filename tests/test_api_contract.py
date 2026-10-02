@@ -416,3 +416,22 @@ def test_unknown_splitter_raises_with_suggestions():
 
     with pytest.raises(UnknownSplitterError):
         reg.get_splitter("not_a_real_splitter_xyz")
+
+
+# -
+# Docstring sections: splitters implementing a published method cite it.
+# -
+
+_REFERENCED_IDS = [
+    "spxy", "sphere_exclusion", "opti_sim", "minimal_test_set_dissimilarity", "support_points",
+    "duplex", "d_optimal", "self_organizing_map", "distinct_label", "fidelity", "substructure",
+    "max_min", "spectral", "stratified_random", "k_fold",
+]
+
+
+@pytest.mark.parametrize("splitter_id", _REFERENCED_IDS)
+def test_docstring_has_advantages_pitfalls_and_references(splitter_id):
+    doc = REGISTRY[splitter_id].__doc__ or ""
+    for section in ("Advantages\n    ----------", "Pitfalls\n    --------", "References\n    ----------"):
+        assert section in doc, f"{splitter_id}: docstring lacks {section.split()[0]!r}"
+    assert "https://" in doc.split("References", 1)[1]
