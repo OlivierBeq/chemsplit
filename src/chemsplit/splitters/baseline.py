@@ -8,6 +8,7 @@ from typing import Any, ClassVar, Literal
 
 import numpy as np
 
+from chemsplit._multilabel import iterative_stratification
 from chemsplit.base import (
     BaseSplitter,
     SplitResult,
@@ -148,6 +149,9 @@ def _largest_remainder(m: int, targets: tuple[int, int, int], total: int) -> tup
     return (out[0], out[1], out[2])
 
 
+_ITERATIVE_MODES = ("iterative", "iterative_pairs")
+
+
 def _compute_strata(
     y: np.ndarray,
     *,
@@ -161,16 +165,11 @@ def _compute_strata(
         if multitask == "error":
             raise LabelError(
                 "StratifiedRandomSplitter: y is 2-D (multi-task); pass multitask="
-                '"first"/"sum_labels"/"iterative" or reduce y to 1-D'
+                '"first"/"sum_labels"/"iterative"/"iterative_pairs" or reduce y to 1-D'
             )
         if multitask == "first":
             y = y[:, 0]
         elif multitask == "sum_labels":
-            y = np.nan_to_num(y, nan=0.0).sum(axis=1)
-        elif multitask == "iterative":
-            # Best-effort simplification of Sechidis et al.'s iterative stratification: stratify
-            # on the row-sum of non-NaN positive labels, which at least balances gross label mass
-            # per stratum even though it does not implement the full per-label greedy algorithm.
             y = np.nan_to_num(y, nan=0.0).sum(axis=1)
         else:
             raise ParameterError(f"invalid multitask={multitask!r}")
@@ -227,16 +226,21 @@ class StratifiedRandomSplitter(BaseSplitter):
     :param binning: ``"quantile"``, ``"uniform"``, or ``"kmeans"``.
     :param min_per_stratum: Minimum stratum size before ``on_small_stratum`` kicks in.
     :param on_small_stratum: ``"merge"``, ``"raise"``, or ``"ignore"``.
-    :param multitask: ``"error"``, ``"first"``, ``"sum_labels"``, or ``"iterative"``.
+    :param multitask: How 2-D ``y`` is handled: ``"error"``, ``"first"``, ``"sum_labels"``,
+        ``"iterative"`` (iterative stratification of binary multi-label data, Sechidis et al.) or
+        ``"iterative_pairs"`` (its second-order variant over label pairs, Szymański &
+        Kajdanowicz).
     :param base: See :class:`chemsplit.base.BaseSplitter`.
 
     Notes
     -----
     Per-stratum quotas use Hare-quota (largest-remainder) apportionment,
     which guarantees exact totals and off-target deviation of at most one record per stratum.
-    ``purpose="stratified.permutation"``. The ``multitask="iterative"`` path is a documented
-    best-effort simplification (row-sum-weighted stratification), not the full Sechidis et al.
-    greedy per-label algorithm.
+    ``purpose="stratified.permutation"``. ``multitask="iterative"``/``"iterative_pairs"`` need
+    binary labels (0, 1 or NaN for unmeasured) and assign records label by label, rarest first,
+    to the partition that most needs that label (ties to the emptier partition, then to the
+    ``"stratified.iterative"`` stream); full partitions are skipped so sizes are exact. In
+    ``"iterative_pairs"`` a record with a single positive label is balanced on that label.
 
     Advantages
     ----------
@@ -250,9 +254,19 @@ class StratifiedRandomSplitter(BaseSplitter):
     - Only controls the **label** distribution; says nothing about chemical similarity, and the word "stratified" tempts people to treat it as a rigorous split.
     - Quantile binning on a heavily tied label (e.g. a censored `pIC50 = 5.0` for every inactive) produces degenerate bins -- check `metadata["bin_edges"]`.
     - Stratifying on the label leaks the label distribution into the split design; on very small `n` this mildly biases the test set toward looking like train.
-    - Multi-task stratification is genuinely hard: `multitask="sum_labels"` is a crude heuristic and `"iterative"` only approximate. Prefer `BalancedMultiTaskSplitter` for sparse multi-task matrices.
+    - Multi-task stratification is genuinely hard: `multitask="sum_labels"` is a crude heuristic. `"iterative"` balances each label to within about one record per partition but not label co-occurrence; `"iterative_pairs"` balances co-occurrence at some cost to rare single labels. For sparse multi-task regression matrices prefer `BalancedMultiTaskSplitter`.
     - Merging small strata changes the effective `n_bins`; read it back from `metadata["n_strata"]` instead of assuming the requested value held.
 
+
+    References
+    ----------
+    .. [1] Sechidis, K.; Tsoumakas, G.; Vlahavas, I. On the Stratification of Multi-Label Data. In
+       *Machine Learning and Knowledge Discovery in Databases (ECML PKDD 2011)*; Lecture Notes in
+       Computer Science 6913; Springer, **2011**; pp 145-158.
+       https://doi.org/10.1007/978-3-642-23808-6_10
+    .. [2] Szymański, P.; Kajdanowicz, T. A Network Perspective on Stratification of Multi-Label
+       Data. *Proc. Mach. Learn. Res.* **2017**, 74, 22-35.
+       https://proceedings.mlr.press/v74/szyma%C5%84ski17a.html
     """
 
     splitter_id: ClassVar[str] = "stratified_random"
@@ -273,7 +287,7 @@ class StratifiedRandomSplitter(BaseSplitter):
         binning: Literal["quantile", "uniform", "kmeans"] = "quantile",
         min_per_stratum: int = 2,
         on_small_stratum: Literal["merge", "raise", "ignore"] = "merge",
-        multitask: Literal["error", "first", "sum_labels", "iterative"] = "error",
+        multitask: Literal["error", "first", "sum_labels", "iterative", "iterative_pairs"] = "error",
         **base: Any,
     ) -> None:
         super().__init__(**base)
@@ -293,10 +307,12 @@ class StratifiedRandomSplitter(BaseSplitter):
             raise ParameterError(f"min_per_stratum must be >= 1, got {min_per_stratum!r}")
         if on_small_stratum not in ("merge", "raise", "ignore"):
             raise ParameterError(f"invalid on_small_stratum={on_small_stratum!r}")
-        if multitask not in ("error", "first", "sum_labels", "iterative"):
+        if multitask not in ("error", "first", "sum_labels", "iterative", "iterative_pairs"):
             raise ParameterError(f"invalid multitask={multitask!r}")
 
     def _partition(self, ctx: _Context) -> list[SplitResult]:
+        if self.multitask in _ITERATIVE_MODES and np.asarray(ctx.y).ndim == 2:
+            return self._iterative_partition(ctx)
         strata, resolved_task = _compute_strata(
             ctx.y, task=self.task, n_bins=self.n_bins, binning=self.binning, multitask=self.multitask
         )
@@ -352,6 +368,37 @@ class StratifiedRandomSplitter(BaseSplitter):
             )
         return results
 
+    def _iterative_partition(self, ctx: _Context) -> list[SplitResult]:
+        order = 2 if self.multitask == "iterative_pairs" else 1
+        sizes = (ctx.sizes.n_train, ctx.sizes.n_valid, ctx.sizes.n_test)
+        discard_n = ctx.n - sum(sizes)
+        results = []
+        for k in range(self.get_n_splits()):
+            rng = seed_for(ctx.rng_seeds, "stratified.iterative", k)
+            fold = iterative_stratification(
+                np.asarray(ctx.y), (*sizes, discard_n), rng, order=order, owner=type(self).__name__
+            )
+            train, valid, test, discard = (np.flatnonzero(fold == m).astype(np.int64) for m in range(4))
+            results.append(
+                SplitResult(
+                    train=train,
+                    test=test,
+                    valid=valid,
+                    discard=discard,
+                    groups=None,
+                    splitter_id=self.splitter_id,
+                    params=_resolved_random_state_params(self, ctx),
+                    n_records=ctx.n,
+                    metadata={
+                        "multitask": self.multitask,
+                        "realised_sizes": _realised_sizes(train, valid, test),
+                        "resolved_seed": ctx.extra["resolved_seed"],
+                        "fold_index": k,
+                    },
+                )
+            )
+        return results
+
     def _handle_small_strata(self, strata: np.ndarray, resolved_task: str) -> np.ndarray:
         counts = {int(s): int(np.sum(strata == s)) for s in np.unique(strata)}
         small = [s for s, c in counts.items() if c < self.min_per_stratum]
@@ -389,6 +436,10 @@ class KFoldSplitter(BaseSplitter):
     :param shuffle: Whether to shuffle before folding.
     :param stratify: Whether to stratify folds on the label.
     :param stratify_kwargs: Extra kwargs forwarded to the stratification helper, or ``None``.
+    :param multitask: With ``stratify=True`` and 2-D binary ``y``: ``"iterative"`` or
+        ``"iterative_pairs"`` stratify the folds by iterative multi-label stratification (see
+        :class:`StratifiedRandomSplitter`; ``"kfold.iterative"`` stream). ``"error"`` rejects 2-D
+        ``y``. Defaults to ``"error"``.
     :param base: See :class:`chemsplit.base.BaseSplitter`. ``train_size``/``valid_size``/
         ``test_size`` MUST be left ``None`` here (fold sizes are determined by ``n_splits``);
         passing any raises :class:`chemsplit.exceptions.ConfigurationError`.
@@ -414,6 +465,16 @@ class KFoldSplitter(BaseSplitter):
     - Selecting hyperparameters on the same folds used for reporting inflates the score; use `NestedCVSplitter` instead.
     - Leave-one-out has very high variance for classification metrics and ROC-AUC is undefined per fold, so per-fold ranking metrics are left to the caller rather than computed here.
 
+
+    References
+    ----------
+    .. [1] Sechidis, K.; Tsoumakas, G.; Vlahavas, I. On the Stratification of Multi-Label Data. In
+       *Machine Learning and Knowledge Discovery in Databases (ECML PKDD 2011)*; Lecture Notes in
+       Computer Science 6913; Springer, **2011**; pp 145-158.
+       https://doi.org/10.1007/978-3-642-23808-6_10
+    .. [2] Szymański, P.; Kajdanowicz, T. A Network Perspective on Stratification of Multi-Label
+       Data. *Proc. Mach. Learn. Res.* **2017**, 74, 22-35.
+       https://proceedings.mlr.press/v74/szyma%C5%84ski17a.html
     """
 
     splitter_id: ClassVar[str] = "k_fold"
@@ -438,12 +499,18 @@ class KFoldSplitter(BaseSplitter):
         shuffle: bool = True,
         stratify: bool = False,
         stratify_kwargs: dict[str, Any] | None = None,
+        multitask: Literal["error", "iterative", "iterative_pairs"] = "error",
         **base: Any,
     ) -> None:
         super().__init__(n_splits=n_splits, **base)
         self.shuffle = shuffle
         self.stratify = stratify
         self.stratify_kwargs = stratify_kwargs
+        self.multitask = multitask
+        if multitask not in ("error", "iterative", "iterative_pairs"):
+            raise ParameterError(f"invalid multitask={multitask!r}")
+        if multitask != "error" and not stratify:
+            raise ParameterError(f"multitask={multitask!r} needs stratify=True")
         if not isinstance(n_splits, (int, np.integer)) and n_splits != "loo":
             raise ParameterError(f"n_splits must be an int or 'loo', got {n_splits!r}")
         if isinstance(n_splits, (int, np.integer)) and n_splits < 2:
@@ -494,7 +561,17 @@ class KFoldSplitter(BaseSplitter):
         else:
             perm = np.arange(n)
 
-        if self.stratify:
+        if self.stratify and self.multitask in _ITERATIVE_MODES and np.asarray(ctx.y).ndim == 2:
+            fold_sizes = [n // k + (1 if i < n % k else 0) for i in range(k)]
+            fold_of = iterative_stratification(
+                np.asarray(ctx.y),
+                fold_sizes,
+                seed_for(ctx.rng_seeds, "kfold.iterative", 0),
+                order=2 if self.multitask == "iterative_pairs" else 1,
+                owner=type(self).__name__,
+            )
+            folds = [np.flatnonzero(fold_of == i).tolist() for i in range(k)]
+        elif self.stratify:
             strata, _ = _compute_strata(ctx.y, task="auto", n_bins=10, binning="quantile", multitask="error")
             folds: list[list[int]] = [[] for _ in range(k)]
             for s in sorted(np.unique(strata).tolist()):

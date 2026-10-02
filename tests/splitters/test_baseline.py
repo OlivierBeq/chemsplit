@@ -24,9 +24,6 @@ def _X(n: int) -> np.ndarray:
     return np.arange(n, dtype=np.float64).reshape(-1, 1)
 
 
-# RandomSplitter
-
-
 def test_random_splitter_basic_shapes():
     X = _X(20)
     sp = RandomSplitter(train_size=0.7, test_size=0.3, random_state=0)
@@ -98,11 +95,8 @@ def test_random_splitter_generator_random_state_is_json_safe():
     X = _X(20)
     sp = RandomSplitter(random_state=np.random.default_rng(3))
     [result] = sp.split_result(X)
-    # must not raise (I4 invariant already checked at construction); random_state resolved to int
+    # must not raise: params were already checked at construction
     assert isinstance(result.params["random_state"], int)
-
-
-# StratifiedRandomSplitter
 
 
 def test_stratified_classification_balances_classes():
@@ -168,7 +162,9 @@ def test_stratified_multitask_sum_labels():
     n = 40
     y = (np.random.default_rng(0).random((n, 3)) > 0.5).astype(float)
     X = _X(n)
-    sp = StratifiedRandomSplitter(multitask="sum_labels", train_size=0.8, test_size=0.2, random_state=0)
+    sp = StratifiedRandomSplitter(
+        multitask="sum_labels", train_size=0.8, test_size=0.2, random_state=0
+    )
     [result] = sp.split_result(X, y=y)
     assert len(result.train) + len(result.test) + len(result.valid) + len(result.discard) == n
 
@@ -183,9 +179,6 @@ def test_stratified_determinism():
     [r2] = sp2.split_result(X, y=y)
     assert np.array_equal(r1.train, r2.train)
     assert np.array_equal(r1.test, r2.test)
-
-
-# KFoldSplitter
 
 
 def test_kfold_yields_n_splits_disjoint_test_sets():
@@ -226,9 +219,6 @@ def test_kfold_n_splits_exceeds_n_raises():
         list(sp.split(X))
 
 
-# MonteCarloSplitter
-
-
 def test_montecarlo_yields_n_splits_possibly_overlapping():
     X = _X(20)
     sp = MonteCarloSplitter(n_splits=5, train_size=0.7, test_size=0.3, random_state=0)
@@ -246,9 +236,6 @@ def test_montecarlo_determinism():
     for (tr1, te1), (tr2, te2) in zip(f1, f2, strict=True):
         assert np.array_equal(tr1, tr2)
         assert np.array_equal(te1, te2)
-
-
-# PredefinedSplitter
 
 
 def test_predefined_sequence_assignment():
@@ -307,9 +294,6 @@ def test_predefined_fold_column():
     assert set(fold0.train.tolist()) == {2, 3, 4, 5}
 
 
-# coverage additions
-
-
 def test_stratified_multitask_first():
     X = _X(40)
     y = np.column_stack([np.arange(40) % 4, np.arange(40) % 2])
@@ -320,10 +304,42 @@ def test_stratified_multitask_first():
 
 def test_stratified_multitask_iterative():
     X = _X(40)
-    y = np.column_stack([np.arange(40) % 4, np.arange(40) % 2]).astype(np.float64)
-    sp = StratifiedRandomSplitter(multitask="iterative", train_size=0.7, test_size=0.3, random_state=0)
+    y = np.column_stack([np.arange(40) % 4 == 0, np.arange(40) % 2]).astype(np.float64)
+    sp = StratifiedRandomSplitter(
+        multitask="iterative", train_size=0.7, test_size=0.3, random_state=0
+    )
     result = sp.split_result(X, y)[0]
-    assert result.n_records == 40
+    assert (result.train.size, result.test.size) == (28, 12)
+    assert int(y[result.test, 0].sum()) == 3  # 10 positives, 30% of them
+    assert int(y[result.test, 1].sum()) == 6  # 20 positives
+
+
+def test_stratified_multitask_iterative_rejects_non_binary_labels():
+    X = _X(40)
+    y = np.column_stack([np.arange(40) % 4, np.arange(40) % 2]).astype(np.float64)
+    sp = StratifiedRandomSplitter(
+        multitask="iterative", train_size=0.7, test_size=0.3, random_state=0
+    )
+    with pytest.raises(LabelError):
+        sp.split_result(X, y)
+
+
+def test_kfold_iterative_multilabel_folds():
+    X = _X(60)
+    rng = np.random.default_rng(0)
+    y = (rng.random((60, 3)) < [0.5, 0.2, 0.1]).astype(np.float64)
+    results = KFoldSplitter(
+        n_splits=3, stratify=True, multitask="iterative", random_state=0
+    ).split_result(X, y)
+    assert [r.test.size for r in results] == [20, 20, 20]
+    for j in range(3):
+        per_fold = [int(y[r.test, j].sum()) for r in results]
+        assert max(per_fold) - min(per_fold) <= 1
+
+
+def test_kfold_multitask_requires_stratify():
+    with pytest.raises(ParameterError):
+        KFoldSplitter(multitask="iterative")
 
 
 def test_stratified_multitask_invalid():
@@ -350,7 +366,9 @@ def test_stratified_regression_uniform_binning():
 def test_stratified_regression_kmeans_binning():
     X = _X(50)
     y = np.random.default_rng(0).standard_normal(50)
-    sp = StratifiedRandomSplitter(binning="kmeans", n_bins=4, train_size=0.7, test_size=0.3, random_state=0)
+    sp = StratifiedRandomSplitter(
+        binning="kmeans", n_bins=4, train_size=0.7, test_size=0.3, random_state=0
+    )
     result = sp.split_result(X, y)[0]
     assert result.n_records == 50
 
@@ -363,7 +381,9 @@ def test_stratified_binning_invalid():
 def test_stratified_on_small_stratum_raise():
     X = _X(10)
     y = np.array([0, 0, 0, 0, 0, 0, 0, 0, 0, 1])  # class 1 has only 1 member
-    sp = StratifiedRandomSplitter(on_small_stratum="raise", train_size=0.7, test_size=0.3, random_state=0)
+    sp = StratifiedRandomSplitter(
+        on_small_stratum="raise", train_size=0.7, test_size=0.3, random_state=0
+    )
     with pytest.raises(LabelError):
         sp.split_result(X, y)
 
@@ -371,7 +391,9 @@ def test_stratified_on_small_stratum_raise():
 def test_stratified_on_small_stratum_ignore():
     X = _X(10)
     y = np.array([0, 0, 0, 0, 0, 0, 0, 0, 0, 1])
-    sp = StratifiedRandomSplitter(on_small_stratum="ignore", train_size=0.7, test_size=0.3, random_state=0)
+    sp = StratifiedRandomSplitter(
+        on_small_stratum="ignore", train_size=0.7, test_size=0.3, random_state=0
+    )
     result = sp.split_result(X, y)[0]
     assert result.n_records == 10
 
@@ -391,9 +413,6 @@ def test_stratified_n_bins_and_min_per_stratum_validation():
         StratifiedRandomSplitter(n_bins=1)
     with pytest.raises(ParameterError):
         StratifiedRandomSplitter(min_per_stratum=0)
-
-
-# KFoldSplitter
 
 
 def test_kfold_stratified():
@@ -436,13 +455,12 @@ def test_kfold_get_n_splits_loo_with_x():
     assert sp.get_n_splits(X) == 15
 
 
-# MonteCarloSplitter
-
-
 def test_montecarlo_stratified():
     X = _X(40)
     y = np.arange(40) % 4
-    sp = MonteCarloSplitter(n_splits=3, stratify=True, train_size=0.7, test_size=0.3, random_state=0)
+    sp = MonteCarloSplitter(
+        n_splits=3, stratify=True, train_size=0.7, test_size=0.3, random_state=0
+    )
     results = sp.split_result(X, y)
     assert len(results) == 3
 
@@ -450,9 +468,6 @@ def test_montecarlo_stratified():
 def test_montecarlo_n_splits_validation():
     with pytest.raises(ParameterError):
         MonteCarloSplitter(n_splits=0)
-
-
-# PredefinedSplitter
 
 
 def test_predefined_mapping_index_assigned_twice_raises():
