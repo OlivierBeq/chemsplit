@@ -33,6 +33,7 @@ __all__ = [
     "GenericScaffoldSplitter",
     "ScaffoldTreeSplitter",
     "RingSystemSplitter",
+    "SubstructureSplitter",
     "MatchedMolecularSeriesSplitter",
     "ActivityCliffSplitter",
 ]
@@ -569,6 +570,169 @@ class RingSystemSplitter(_ScaffoldFamilyBase):
         meta["largest_component_frac"] = getattr(self, "_largest_component_frac", 0.0)
         meta["linkage"] = self.linkage
         return meta
+
+
+# -
+# SubstructureSplitter
+# -
+
+
+class SubstructureSplitter(BaseSplitter):
+    """Hold out every molecule that contains a given substructure, element or functional group.
+
+    Patterns come from any combination of ``smarts`` (SMARTS strings), ``elements`` (element
+    symbols, e.g. ``["F"]`` for any fluorine) and ``functional_groups`` (names of RDKit's ``fr_*``
+    counters in ``rdkit.Chem.Fragments``, e.g. ``"fr_halogen"``). A molecule matches when it
+    contains any pattern (``match="any"``) or all of them (``match="all"``). Matching molecules go
+    to test (``matched_goes_to="test"``) and the rest to train, or the reverse with
+    ``matched_goes_to="train"``. A validation set, if requested, is drawn at random from the
+    training side (``"substructure.valid"`` stream), so test chemistry stays unseen. Sizes follow
+    the matches; a :class:`~chemsplit.exceptions.SizeToleranceWarning` flags realised fractions
+    more than ``size_tolerance`` (default 0.05) off target.
+
+    Advantages
+    ----------
+    - Tests one concrete, chemically meaningful question -- "does the model generalise to fluorinated compounds, or to esters?" -- that scaffold and similarity splits only touch indirectly.
+    - Works where scaffolds fail: acyclic molecules and side-chain chemistry, which Bemis-Murcko splits ignore.
+    - Fully transparent: the held-out set is defined by a pattern anyone can rerun.
+    - `functional_groups` gives ready-made, named patterns for the common chemotypes.
+
+    Pitfalls
+    --------
+    - **Sizes are not under your control**: a rare group gives a tiny test set, a common one a huge one. Read `metadata["n_matched"]`.
+    - Train still contains molecules that are similar overall but lack the pattern, so this measures generalisation to one feature, not to new chemistry in general.
+    - SMARTS details (aromaticity, explicit hydrogens, charges) decide what matches; check a few matches before trusting the split.
+    - The `fr_*` set and its definitions follow the installed RDKit version.
+    - `match="all"` over several patterns quickly matches nothing (raises `DegenerateGroupingError`).
+
+    References
+    ----------
+    .. [1] RDKit: Cheminformatics and Machine Learning Software. https://www.rdkit.org
+       (functional-group definitions in ``rdkit.Chem.Fragments``).
+    """
+
+    splitter_id: ClassVar[str] = "substructure"
+    family: ClassVar[str] = "scaffold"
+    strictness: ClassVar[Strictness] = Strictness.EXTRAPOLATIVE
+    group_forming: ClassVar[bool] = False
+    requires_labels: ClassVar[bool] = False
+    accepts: ClassVar[tuple[str, ...]] = ("smiles", "mol")
+    deterministic_without_seed: ClassVar[bool] = False  # True when no validation set is requested
+    deterministic_method: ClassVar[bool] = True
+    order_invariant: ClassVar[bool] = False
+
+    def __init__(
+        self,
+        *,
+        smarts: str | list[str] | None = None,
+        elements: list[str] | None = None,
+        functional_groups: list[str] | None = None,
+        match: Literal["any", "all"] = "any",
+        matched_goes_to: Literal["test", "train"] = "test",
+        size_tolerance: float = 0.05,
+        **base: Any,
+    ) -> None:
+        super().__init__(**base)
+        self.smarts = smarts
+        self.elements = elements
+        self.functional_groups = functional_groups
+        self.match = match
+        self.matched_goes_to = matched_goes_to
+        self.size_tolerance = size_tolerance
+        if match not in ("any", "all"):
+            raise ParameterError(f"invalid match: {match!r}")
+        if matched_goes_to not in ("test", "train"):
+            raise ParameterError(f"invalid matched_goes_to: {matched_goes_to!r}")
+        if not (isinstance(size_tolerance, (int, float)) and 0 <= size_tolerance < 1):
+            raise ParameterError(f"size_tolerance must be in [0, 1), got {size_tolerance!r}")
+        if not self._patterns():
+            raise ParameterError("SubstructureSplitter needs at least one of smarts, elements or functional_groups")
+
+    def _patterns(self) -> list[tuple[str, Any]]:
+        """``(label, matcher)`` pairs; a matcher maps a molecule to True when the pattern is present."""
+        patterns: list[tuple[str, Any]] = []
+        smarts = [self.smarts] if isinstance(self.smarts, str) else list(self.smarts or [])
+        for sma in smarts:
+            query = Chem.MolFromSmarts(sma)
+            if query is None:
+                raise ParameterError(f"invalid SMARTS: {sma!r}")
+            patterns.append((sma, lambda m, q=query: m.HasSubstructMatch(q)))
+        table = Chem.GetPeriodicTable()
+        for symbol in self.elements or []:
+            try:
+                z = table.GetAtomicNumber(str(symbol))
+            except RuntimeError:
+                raise ParameterError(f"unknown element symbol: {symbol!r}") from None
+            if z <= 0:
+                raise ParameterError(f"unknown element symbol: {symbol!r}")
+            query = Chem.MolFromSmarts(f"[#{z}]")
+            patterns.append((str(symbol), lambda m, q=query: m.HasSubstructMatch(q)))
+        if self.functional_groups:
+            from rdkit.Chem import Fragments
+
+            from chemsplit.featurizers.descriptors import functional_group_names
+
+            known = set(functional_group_names())
+            for name in self.functional_groups:
+                if name not in known:
+                    raise ParameterError(f"unknown functional group {name!r}; expected an rdkit.Chem.Fragments fr_* name")
+                counter = getattr(Fragments, name)
+                patterns.append((name, lambda m, fn=counter: fn(m) > 0))
+        return patterns
+
+    def _partition(self, ctx: _Context) -> list[SplitResult]:
+        n = ctx.n
+        patterns = self._patterns()
+        mols = ctx.mols if ctx.mols is not None else [Chem.MolFromSmiles(s) for s in ctx.smiles]
+        hits = np.zeros((n, len(patterns)), dtype=bool)
+        for i, mol in enumerate(mols):
+            if mol is not None:
+                hits[i] = [matcher(mol) for _, matcher in patterns]
+        matched = hits.all(axis=1) if self.match == "all" else hits.any(axis=1)
+        if not matched.any() or matched.all():
+            raise DegenerateGroupingError(
+                f"SubstructureSplitter: {int(matched.sum())} of {n} records match, so one side would be empty"
+            )
+        test_side = matched if self.matched_goes_to == "test" else ~matched
+        test = np.flatnonzero(test_side).astype(np.int64)
+        train_side = np.flatnonzero(~test_side).astype(np.int64)
+        n_valid = min(ctx.sizes.n_valid, train_side.size - 1)
+        if n_valid > 0:
+            order = seed_for(ctx.rng_seeds, "substructure.valid", 0).permutation(train_side.size)
+            valid = np.sort(train_side[order[:n_valid]])
+            train = np.sort(train_side[order[n_valid:]])
+        else:
+            valid = np.array([], dtype=np.int64)
+            train = train_side
+        realised = {"train": int(train.size), "valid": int(valid.size), "test": int(test.size)}
+        wanted = {"train": ctx.sizes.n_train, "valid": ctx.sizes.n_valid, "test": ctx.sizes.n_test}
+        if any(abs(realised[k] - wanted[k]) / n > self.size_tolerance for k in wanted):
+            from chemsplit.exceptions import SizeToleranceWarning
+
+            warn_with_details(
+                SizeToleranceWarning(
+                    f"SubstructureSplitter: realised sizes {realised} differ from targets {wanted} by "
+                    f"more than size_tolerance={self.size_tolerance} (sizes follow the matches)",
+                    details={"realised": realised, "targets": wanted},
+                )
+            )
+        return [
+            SplitResult(
+                train=train,
+                valid=valid,
+                test=test,
+                discard=np.array([], dtype=np.int64),
+                groups=None,
+                splitter_id=self.splitter_id,
+                params=self.get_params(),
+                n_records=n,
+                metadata={
+                    "n_matched": int(matched.sum()),
+                    "matches_per_pattern": {label: int(hits[:, j].sum()) for j, (label, _) in enumerate(patterns)},
+                    "realised_sizes": realised,
+                },
+            )
+        ]
 
 
 # -

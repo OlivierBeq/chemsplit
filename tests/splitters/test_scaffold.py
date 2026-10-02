@@ -65,13 +65,17 @@ def test_murcko_on_empty_scaffold_own_group_vs_shared_group():
 
 
 def test_murcko_all_acyclic_raises_degenerate():
-    sp = MurckoScaffoldSplitter(on_empty_scaffold="own_group", train_size=0.7, test_size=0.3, random_state=0)
+    sp = MurckoScaffoldSplitter(
+        on_empty_scaffold="own_group", train_size=0.7, test_size=0.3, random_state=0
+    )
     with pytest.raises(DegenerateGroupingError):
         list(sp.split_result(ACYCLIC * 3))  # every record its own group -> degenerate
 
 
 def test_murcko_split_result_end_to_end():
-    sp = MurckoScaffoldSplitter(train_size=0.6, test_size=0.4, random_state=0, on_empty_scaffold="discard")
+    sp = MurckoScaffoldSplitter(
+        train_size=0.6, test_size=0.4, random_state=0, on_empty_scaffold="discard"
+    )
     [result] = sp.split_result(MIXED_SMILES)
     assert result.n_records == len(MIXED_SMILES)
     assert result.splitter_id == "murcko_scaffold"
@@ -83,12 +87,16 @@ def test_murcko_split_result_end_to_end():
     # params round-trips through JSON and includes base params.
     assert "n_splits" in result.params
     assert "train_size" in result.params
-    assert result.to_json()  # I4 invariant already checked by SplitResult.__post_init__
+    assert result.to_json()  # params already checked by SplitResult.__post_init__
 
 
 def test_murcko_deterministic_same_seed():
-    sp1 = MurckoScaffoldSplitter(train_size=0.6, test_size=0.4, random_state=42, on_empty_scaffold="discard")
-    sp2 = MurckoScaffoldSplitter(train_size=0.6, test_size=0.4, random_state=42, on_empty_scaffold="discard")
+    sp1 = MurckoScaffoldSplitter(
+        train_size=0.6, test_size=0.4, random_state=42, on_empty_scaffold="discard"
+    )
+    sp2 = MurckoScaffoldSplitter(
+        train_size=0.6, test_size=0.4, random_state=42, on_empty_scaffold="discard"
+    )
     [r1] = sp1.split_result(MIXED_SMILES)
     [r2] = sp2.split_result(MIXED_SMILES)
     assert np.array_equal(r1.train, r2.train)
@@ -276,9 +284,6 @@ def test_sklearn_clone_compatible():
     assert cloned.get_params() == sp.get_params()
 
 
-# coverage additions
-
-
 def test_scaffold_tree_level_above_zero_peripheral_first():
     sp = ScaffoldTreeSplitter(
         level=1, prune_rule="peripheral_first", train_size=0.5, test_size=0.5, random_state=0,
@@ -352,8 +357,12 @@ def test_ring_system_degenerate_cluster_warning_and_error():
 
     # 70% sharing one ring system (7 benzene-linked + 3 pyridine-linked) -> DegenerateClusterWarning
     # (>60%, <=95%), not an error.
-    mixed = [f"c1ccccc1{'C' * i}" for i in range(1, 8)] + [f"c1ccncc1{'C' * i}" for i in range(1, 4)]
-    sp_warn = RingSystemSplitter(linkage="any_shared", train_size=0.5, test_size=0.5, random_state=0)
+    mixed = [f"c1ccccc1{'C' * i}" for i in range(1, 8)] + [
+        f"c1ccncc1{'C' * i}" for i in range(1, 4)
+    ]
+    sp_warn = RingSystemSplitter(
+        linkage="any_shared", train_size=0.5, test_size=0.5, random_state=0
+    )
     with pytest.warns(Warning):
         sp_warn.split_result(mixed)
 
@@ -468,3 +477,83 @@ def test_activity_cliff_substructure_scalability_guard():
     inst = ACS(similarity="substructure", allow_slow=False)
     with pytest.raises(ScalabilityError):
         inst._candidate_pairs(_FakeCtx(), [None] * 5001)
+
+
+_SUBSTRUCTURE_SMILES = [
+    "c1ccccc1F", "FC(F)(F)c1ccccc1", "CCF", "c1ccccc1Cl", "CCCl",
+    "CC(=O)OC", "CCC(=O)OCC", "c1ccccc1O", "CCO", "CCCC",
+]
+
+
+def test_substructure_elements_hold_out_fluorinated():
+    from chemsplit.splitters.scaffold import SubstructureSplitter
+
+    splitter = SubstructureSplitter(elements=["F"], train_size=0.7, test_size=0.3, random_state=0)
+    result = splitter.split_result(_SUBSTRUCTURE_SMILES)[0]
+    assert result.test.tolist() == [0, 1, 2]
+    assert result.metadata["matches_per_pattern"] == {"F": 3}
+
+
+def test_substructure_functional_group_matches_rdkit_count():
+    from rdkit import Chem
+    from rdkit.Chem import Fragments
+
+    from chemsplit.splitters.scaffold import SubstructureSplitter
+
+    expected = [
+        i
+        for i, s in enumerate(_SUBSTRUCTURE_SMILES)
+        if Fragments.fr_halogen(Chem.MolFromSmiles(s)) > 0
+    ]
+    splitter = SubstructureSplitter(
+        functional_groups=["fr_halogen"], train_size=0.5, test_size=0.5, random_state=0
+    )
+    result = splitter.split_result(_SUBSTRUCTURE_SMILES)[0]
+    assert result.test.tolist() == expected
+    assert len(expected) == 5
+
+
+def test_substructure_match_all_and_reverse_direction():
+    from chemsplit.splitters.scaffold import SubstructureSplitter
+
+    both = SubstructureSplitter(
+        smarts=["c1ccccc1", "[F,Cl]"], match="all", train_size=0.7, test_size=0.3, random_state=0
+    )
+    assert both.split_result(_SUBSTRUCTURE_SMILES)[0].test.tolist() == [0, 1, 3]
+    reverse = SubstructureSplitter(
+        elements=["F"], matched_goes_to="train", train_size=0.3, test_size=0.7, random_state=0
+    )
+    result = reverse.split_result(_SUBSTRUCTURE_SMILES)[0]
+    assert result.train.tolist() == [0, 1, 2]
+
+
+def test_substructure_valid_comes_from_training_side():
+    from chemsplit.splitters.scaffold import SubstructureSplitter
+
+    splitter = SubstructureSplitter(
+        elements=["F"], train_size=0.5, valid_size=0.2, test_size=0.3, random_state=0
+    )
+    result = splitter.split_result(_SUBSTRUCTURE_SMILES)[0]
+    assert result.test.tolist() == [0, 1, 2]
+    assert result.valid.size == 2
+    assert set(result.valid.tolist()).isdisjoint({0, 1, 2})
+
+
+def test_substructure_degenerate_and_invalid():
+    from chemsplit.exceptions import DegenerateGroupingError, ParameterError
+    from chemsplit.splitters.scaffold import SubstructureSplitter
+
+    with pytest.raises(DegenerateGroupingError):
+        SubstructureSplitter(elements=["Br"], random_state=0).split_result(_SUBSTRUCTURE_SMILES)
+    with pytest.raises(DegenerateGroupingError):
+        SubstructureSplitter(elements=["C"], random_state=0).split_result(_SUBSTRUCTURE_SMILES)
+    for kwargs in (
+        {},
+        {"smarts": "[[["},
+        {"elements": ["Xx"]},
+        {"functional_groups": ["fr_nope"]},
+        {"elements": ["F"], "match": "some"},
+        {"elements": ["F"], "matched_goes_to": "valid"},
+    ):
+        with pytest.raises(ParameterError):
+            SubstructureSplitter(**kwargs)

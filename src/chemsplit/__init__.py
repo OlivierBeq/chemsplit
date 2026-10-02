@@ -103,6 +103,7 @@ if TYPE_CHECKING:
         MurckoScaffoldSplitter,
         RingSystemSplitter,
         ScaffoldTreeSplitter,
+        SubstructureSplitter,
     )
     from chemsplit.splitters.similarity import (
         BalancedMultiTaskSplitter,
@@ -135,7 +136,7 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
-    # -- 63 splitters across 9 families, in declared order: baseline (5), scaffold (6),
+    # -- 64 splitters across 9 families, in declared order: baseline (5), scaffold (7),
     # similarity (17), embedding (4), property (6), lineage (5), task (8), biomolecular (5),
     # protocol (7) --
     "RandomSplitter",
@@ -147,6 +148,7 @@ __all__ = [
     "GenericScaffoldSplitter",
     "ScaffoldTreeSplitter",
     "RingSystemSplitter",
+    "SubstructureSplitter",
     "MatchedMolecularSeriesSplitter",
     "ActivityCliffSplitter",
     "SimilarityThresholdSplitter",
@@ -251,27 +253,25 @@ __all__ = [
     "SmallPartitionWarning",
     "CircularityWarning",
     "HomologyLeakWarning",
-    # version
     "__version__",
 ]
 
-# name -> the submodule that actually defines it. Every entry not listed here (there are none
-# left over once this dict is complete) would fall through to AttributeError in __getattr__.
+# name -> the submodule that defines it; anything missing falls through to AttributeError in
+# __getattr__. chemsplit.featurizers and chemsplit.exceptions are listed too, even though they
+# import no rdkit or sklearn at module scope and so would be cheap to import eagerly.
 _LAZY_SOURCE: dict[str, str] = {
-    # splitters/baseline.py
     "RandomSplitter": "chemsplit.splitters.baseline",
     "StratifiedRandomSplitter": "chemsplit.splitters.baseline",
     "KFoldSplitter": "chemsplit.splitters.baseline",
     "MonteCarloSplitter": "chemsplit.splitters.baseline",
     "PredefinedSplitter": "chemsplit.splitters.baseline",
-    # splitters/scaffold.py
     "MurckoScaffoldSplitter": "chemsplit.splitters.scaffold",
     "GenericScaffoldSplitter": "chemsplit.splitters.scaffold",
     "ScaffoldTreeSplitter": "chemsplit.splitters.scaffold",
     "RingSystemSplitter": "chemsplit.splitters.scaffold",
+    "SubstructureSplitter": "chemsplit.splitters.scaffold",
     "MatchedMolecularSeriesSplitter": "chemsplit.splitters.scaffold",
     "ActivityCliffSplitter": "chemsplit.splitters.scaffold",
-    # splitters/similarity.py
     "SimilarityThresholdSplitter": "chemsplit.splitters.similarity",
     "ButinaSplitter": "chemsplit.splitters.similarity",
     "SphereExclusionSplitter": "chemsplit.splitters.similarity",
@@ -289,25 +289,21 @@ _LAZY_SOURCE: dict[str, str] = {
     "PerimeterSplitter": "chemsplit.splitters.similarity",
     "LeaveOneClusterOutSplitter": "chemsplit.splitters.similarity",
     "BalancedMultiTaskSplitter": "chemsplit.splitters.similarity",
-    # splitters/embedding.py
     "UMAPClusterSplitter": "chemsplit.splitters.embedding",
     "ProjectionSplitter": "chemsplit.splitters.embedding",
     "SelfOrganizingMapSplitter": "chemsplit.splitters.embedding",
     "LatentSpaceSplitter": "chemsplit.splitters.embedding",
-    # splitters/property_.py
     "PropertySplitter": "chemsplit.splitters.property_",
     "LabelExtrapolationSplitter": "chemsplit.splitters.property_",
     "DistinctLabelSplitter": "chemsplit.splitters.property_",
     "StratifiedDistributionSplitter": "chemsplit.splitters.property_",
     "MOODSplitter": "chemsplit.splitters.property_",
     "AdversarialSplitter": "chemsplit.splitters.property_",
-    # splitters/lineage.py
     "TemporalSplitter": "chemsplit.splitters.lineage",
     "SIMPDSplitter": "chemsplit.splitters.lineage",
     "SourceSplitter": "chemsplit.splitters.lineage",
     "FidelitySplitter": "chemsplit.splitters.lineage",
     "PartySplitter": "chemsplit.splitters.lineage",
-    # splitters/task.py
     "HiSplitter": "chemsplit.splitters.task",
     "LoSplitter": "chemsplit.splitters.task",
     "ScaffoldHopSplitter": "chemsplit.splitters.task",
@@ -316,13 +312,11 @@ _LAZY_SOURCE: dict[str, str] = {
     "ColdPairSplitter": "chemsplit.splitters.task",
     "AVESplitter": "chemsplit.splitters.task",
     "DecoyBenchmarkSplitter": "chemsplit.splitters.task",
-    # splitters/biomolecular.py
     "SequenceIdentitySplitter": "chemsplit.splitters.biomolecular",
     "ProteinFamilySplitter": "chemsplit.splitters.biomolecular",
     "BindingSiteSplitter": "chemsplit.splitters.biomolecular",
     "DepositionDateSplitter": "chemsplit.splitters.biomolecular",
     "ComplexJointSplitter": "chemsplit.splitters.biomolecular",
-    # splitters/protocol.py
     "GroupKFoldSplitter": "chemsplit.splitters.protocol",
     "ThreeWaySplitter": "chemsplit.splitters.protocol",
     "RepeatedSplitter": "chemsplit.splitters.protocol",
@@ -330,25 +324,20 @@ _LAZY_SOURCE: dict[str, str] = {
     "ExternalHoldoutSplitter": "chemsplit.splitters.protocol",
     "ApplicabilityDomainSplitter": "chemsplit.splitters.protocol",
     "IntersectionSplitter": "chemsplit.splitters.protocol",
-    # base.py
     "BaseSplitter": "chemsplit.base",
     "GroupSplitter": "chemsplit.base",
     "SplitResult": "chemsplit.base",
     "Strictness": "chemsplit.base",
-    # registry.py
     "get_splitter": "chemsplit.registry",
     "list_splitters": "chemsplit.registry",
     "SPLITTER_REGISTRY": "chemsplit.registry",
-    # audit.py
     "audit_split": "chemsplit.audit",
     "LeakageReport": "chemsplit.audit",
     "adversarial_validation": "chemsplit.audit",
     "nn_similarity_profile": "chemsplit.audit",
     "y_scramble_control": "chemsplit.audit",
-    # featurizers/__init__.py (cheap: no rdkit/sklearn at its own module scope)
     "get_featurizer": "chemsplit.featurizers",
     "Featurizer": "chemsplit.featurizers",
-    # exceptions.py (cheap: no rdkit/sklearn at its own module scope)
     "ChemSplitError": "chemsplit.exceptions",
     "ParameterError": "chemsplit.exceptions",
     "ConfigurationError": "chemsplit.exceptions",

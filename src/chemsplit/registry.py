@@ -18,21 +18,19 @@ from chemsplit.exceptions import UnknownSplitterError
 if TYPE_CHECKING:
     from chemsplit.base import BaseSplitter
 
-# -
-# Import every concrete splitter class, in family + declared order.
-#
-# Deliberately done inside a function, not at module scope: every splitter family module imports
-# rdkit (and, for a couple of classes, lazily-triggers checks against optional extras) at ITS OWN
-# module-import time, and chemsplit's own performance budget is <400ms for bare
-# `import chemsplit` with "no RDKit imported at package import time". Importing every splitter
-# class here at `import chemsplit.registry` time would defeat that even though each individual
-# family's `import chemsplit.splitters.X` is itself unavoidable eventually -- the point is to defer
-# it until a caller actually asks the registry for something (`get_splitter`/`list_splitters`/
-# `SPLITTER_REGISTRY` access), not pay for it on every `import chemsplit`.
-# -
-
-
 def _import_all_classes() -> list[type[BaseSplitter]]:
+    """Import every concrete splitter class, grouped by family in declaration order.
+
+    That order -- baseline, scaffold, similarity, embedding, property, lineage, task,
+    biomolecular, protocol -- is the single source of truth for ``SPLITTER_REGISTRY``,
+    :func:`list_splitters` and the package's ``__all__``.
+
+    The imports live in here rather than at module scope because every family module pulls in
+    rdkit when it loads, and ``import chemsplit`` is meant to stay under 400 ms without it.
+    Deferring until a caller actually asks the registry for something keeps that budget.
+
+    :return: the 64 classes, in declared order.
+    """
     from chemsplit.splitters.baseline import (
         KFoldSplitter,
         MonteCarloSplitter,
@@ -84,6 +82,7 @@ def _import_all_classes() -> list[type[BaseSplitter]]:
         MurckoScaffoldSplitter,
         RingSystemSplitter,
         ScaffoldTreeSplitter,
+        SubstructureSplitter,
     )
     from chemsplit.splitters.similarity import (
         BalancedMultiTaskSplitter,
@@ -115,8 +114,6 @@ def _import_all_classes() -> list[type[BaseSplitter]]:
         ScaffoldHopSplitter,
     )
 
-    # Declared order within each of the 9 families -- the single source of truth for
-    # SPLITTER_REGISTRY, list_splitters(), and chemsplit/__init__.py's __all__ ordering.
     return [
         # baseline
         RandomSplitter,
@@ -129,6 +126,7 @@ def _import_all_classes() -> list[type[BaseSplitter]]:
         GenericScaffoldSplitter,
         ScaffoldTreeSplitter,
         RingSystemSplitter,
+        SubstructureSplitter,
         MatchedMolecularSeriesSplitter,
         ActivityCliffSplitter,
         # similarity
@@ -224,9 +222,8 @@ SPLITTER_REGISTRY: dict[str, type[BaseSplitter]] = {}
 
 
 def _ensure_built() -> None:
-    # Deferred build (rather than at module import time) so `import chemsplit.registry` itself
-    # stays cheap: importing every single splitter family is only paid for once a caller actually
-    # asks the registry for something.
+    # built on demand, so importing every splitter family is only paid for once a caller
+    # actually asks the registry for something
     if SPLITTER_REGISTRY:
         return
     SPLITTER_REGISTRY.update(_build_registry())
@@ -249,11 +246,13 @@ def _levenshtein(a: str, b: str) -> int:
 
 
 def get_splitter(name: str, **kwargs: Any) -> BaseSplitter:
-    """Instantiate a splitter by id (``"butina"``, case-insensitive) or class name
-    (``"ButinaSplitter"``, case-sensitive).
+    """Construct a splitter by id or class name.
 
-    Unknown name raises :class:`~chemsplit.exceptions.UnknownSplitterError` naming the three
-    closest ids by Levenshtein distance.
+    :param name: a snake_case ``splitter_id``, or the class name.
+    :param kwargs: forwarded to the splitter's constructor.
+    :raises UnknownSplitterError: if ``name`` matches nothing. The
+        :class:`~chemsplit.exceptions.UnknownSplitterError` names the closest ids.
+    :return: the constructed splitter.
     """
     _ensure_built()
     if name in SPLITTER_REGISTRY:
@@ -276,11 +275,14 @@ def list_splitters(
     strictness: str | None = None,
     group_forming: bool | None = None,
 ) -> pd.DataFrame:
-    """Return a DataFrame describing every registered splitter, one row per class.
+    """List the registered splitters.
 
-    Columns: ``id, class_name, family, family_name, strictness,
-    group_forming, requires_labels, requires_dates, requires_targets,
-    deterministic_without_seed, extras``.
+    :param family: restrict to one of the nine family names, or ``None`` for all of them.
+    :param strictness: restrict to one strictness level, or ``None`` for all of them.
+    :param group_forming: restrict to group-forming or non-group-forming splitters, or ``None``
+        for both.
+    :return: one row per splitter, carrying its id, class name, family, strictness, the input
+        kinds it needs, and whether it is deterministic without a seed.
     """
     _ensure_built()
     rows = []
@@ -290,7 +292,9 @@ def list_splitters(
             "class_name": cls.__name__,
             "family": cls.family,
             "family_name": cls.family,
-            "strictness": cls.strictness.value if hasattr(cls.strictness, "value") else cls.strictness,
+            "strictness": (
+                cls.strictness.value if hasattr(cls.strictness, "value") else cls.strictness
+            ),
             "group_forming": cls.group_forming,
             "requires_labels": cls.requires_labels,
             "requires_dates": cls.requires_dates,

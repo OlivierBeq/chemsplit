@@ -13,7 +13,7 @@ from chemsplit.datasets import make_linear_series
 
 @pytest.fixture()
 def mols_csv(tmp_path):
-    fx = make_linear_series(n=63, seed=0)
+    fx = make_linear_series(n=64, seed=0)
     df = pd.DataFrame({"smiles": fx.smiles, "y": fx.y})
     path = tmp_path / "mols.csv"
     df.to_csv(path, index=False)
@@ -32,7 +32,7 @@ def test_cli_list_json(capsys):
     assert rc == cli.EXIT_OK
     out = capsys.readouterr().out
     rows = json.loads(out)
-    assert len(rows) == 63
+    assert len(rows) == 64
     ids = {r["id"] for r in rows}
     assert "applicability_domain" in ids
     assert "random" in ids
@@ -42,7 +42,7 @@ def test_cli_list_family_filter(capsys):
     rc = cli.main(["list", "--family", "scaffold", "--json"])
     assert rc == cli.EXIT_OK
     rows = json.loads(capsys.readouterr().out)
-    assert len(rows) == 6
+    assert len(rows) == 7
     assert all(r["family"] == "scaffold" for r in rows)
 
 
@@ -101,7 +101,7 @@ def test_python_dash_m_chemsplit_list():
         [sys.executable, "-m", "chemsplit", "list"],
         capture_output=True,
         text=True,
-        timeout=63,
+        timeout=64,
     )
     assert result.returncode == cli.EXIT_OK
     assert "random" in result.stdout

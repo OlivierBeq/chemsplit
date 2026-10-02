@@ -88,6 +88,7 @@ def _build_plan(fixtures: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str
     plan["generic_scaffold"] = smiles_case("scaffold_families")
     plan["scaffold_tree"] = smiles_case("scaffold_families")
     plan["ring_system"] = smiles_case("scaffold_families")
+    plan["substructure"] = smiles_case("scaffold_families", smarts="c1ccncc1")
     plan["matched_molecular_series"] = smiles_case("scaffold_families")
     plan["activity_cliff"] = lambda: (
         F["activity_cliffs"].smiles,
@@ -280,6 +281,7 @@ def _build_plan(fixtures: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str
             "generic_scaffold": "scaffold_families",
             "scaffold_tree": "scaffold_families",
             "ring_system": "scaffold_families",
+            "substructure": "scaffold_families",
             "matched_molecular_series": "scaffold_families",
             "activity_cliff": "activity_cliffs",
             "similarity_threshold": "two_clusters",
