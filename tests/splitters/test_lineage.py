@@ -27,11 +27,6 @@ except ImportError:
     HAS_DEAP = False
 
 
-# -
-# TemporalSplitter
-# -
-
-
 def test_temporal_requires_dates():
     fx = make_dated_series(n=100, seed=0)
     sp = TemporalSplitter(random_state=0)
@@ -105,11 +100,6 @@ def test_temporal_valid_cut_date():
         assert fx.dates[r.valid].min() >= np.datetime64(str(fx.dates[100]), "D")
 
 
-# -
-# SIMPDSplitter
-# -
-
-
 def test_simpd_requires_n_at_least_200():
     fx = make_two_clusters(n=100, seed=0)
     sp = SIMPDSplitter(random_state=0)
@@ -154,11 +144,6 @@ def test_simpd_missing_deap_raises_missing_dependency(monkeypatch):
         sp.split_result(fx.smiles, y=y)
 
 
-# -
-# SourceSplitter
-# -
-
-
 def test_source_requires_source():
     fx = make_scaffold_families(n_scaffolds=10, per_scaffold=10, seed=0)
     sp = SourceSplitter(random_state=0)
@@ -182,7 +167,9 @@ def test_source_small_source_policy_discard():
     # source 0 has 1 record (below min_source_size=2), everything else has >= 2
     source = [0] + [1 + (i % 20) for i in range(1, n)]
     fx = make_scaffold_families(n_scaffolds=10, per_scaffold=10, seed=0)
-    sp = SourceSplitter(source=source, min_source_size=2, small_source_policy="discard", random_state=0)
+    sp = SourceSplitter(
+        source=source, min_source_size=2, small_source_policy="discard", random_state=0
+    )
     r = sp.split_result(fx.smiles)[0]
     assert 0 not in r.train and 0 not in r.test
     assert 0 in r.discard
@@ -194,11 +181,6 @@ def test_source_missing_value_becomes_own_group():
     sp = SourceSplitter(source=source, random_state=0)
     r = sp.split_result(fx.smiles)[0]
     assert r.metadata["n_missing_source"] == 1
-
-
-# -
-# PartySplitter
-# -
 
 
 def test_party_given_leave_one_out():
@@ -255,14 +237,13 @@ def test_party_valid_set_picks_party_closest_to_target_size():
     assert len(result.valid) == 10
 
 
-# coverage additions
-
-
 def test_temporal_tie_policy_discard():
     fx = make_dated_series(n=100, seed=0)
     dates = fx.extra["dates"] if hasattr(fx, "extra") and fx.extra else fx.dates
     cut = np.sort(dates)[50]
-    sp = TemporalSplitter(cut_date=str(cut), tie_policy="discard", train_size=None, test_size=None, random_state=0)
+    sp = TemporalSplitter(
+        cut_date=str(cut), tie_policy="discard", train_size=None, test_size=None, random_state=0
+    )
     result = sp.split_result(fx.smiles, dates=dates)[0]
     assert result.n_records == 100
 
@@ -273,7 +254,9 @@ def test_temporal_tie_policy_test_sends_ties_to_test():
     cut = np.sort(dates)[50]
     n_ties = int(np.sum(dates == cut))
     assert n_ties > 0
-    sp = TemporalSplitter(cut_date=str(cut), tie_policy="test", train_size=None, test_size=None, random_state=0)
+    sp = TemporalSplitter(
+        cut_date=str(cut), tie_policy="test", train_size=None, test_size=None, random_state=0
+    )
     result = sp.split_result(fx.smiles, dates=dates)[0]
     tie_indices = np.nonzero(dates == cut)[0]
     assert set(tie_indices.tolist()) <= set(result.test.tolist())
@@ -284,7 +267,9 @@ def test_temporal_valid_size_auto_without_valid_cut_date():
     fx = make_dated_series(n=100, seed=0)
     dates = fx.dates if hasattr(fx, "dates") else fx.extra["dates"]
     cut = np.sort(dates)[60]
-    sp = TemporalSplitter(cut_date=str(cut), valid_size=0.1, train_size=0.6, test_size=0.3, random_state=0)
+    sp = TemporalSplitter(
+        cut_date=str(cut), valid_size=0.1, train_size=0.6, test_size=0.3, random_state=0
+    )
     result = sp.split_result(fx.smiles, dates=dates)[0]
     assert result.valid.size > 0
 
@@ -303,9 +288,6 @@ def test_simpd_explicit_clusterer_instance():
     )
     result = sp.split_result(fx.smiles, y=y)[0]
     assert result.n_records == 200
-
-
-# SourceSplitter
 
 
 def test_source_col_not_implemented_raises():
@@ -354,12 +336,11 @@ def test_source_degenerate_error_and_warning():
         sp_err.split_result(smiles)
 
     source_mostly_same = ["lab_a"] * 14 + ["lab_b"] * 6
-    sp_warn = SourceSplitter(source=source_mostly_same, train_size=0.5, test_size=0.5, random_state=0)
+    sp_warn = SourceSplitter(
+        source=source_mostly_same, train_size=0.5, test_size=0.5, random_state=0
+    )
     with pytest.warns(Warning):
         sp_warn.split_result(smiles)
-
-
-# PartySplitter
 
 
 def test_party_label_skew_success():
@@ -374,7 +355,13 @@ def test_party_held_out_party_explicit_with_valid():
     fx = make_scaffold_families(n_scaffolds=10, per_scaffold=20, seed=0)
     party = [i % 5 for i in range(len(fx.smiles))]
     sp = PartySplitter(
-        party=party, n_parties=5, held_out_party=1, valid_size=0.1, train_size=0.6, test_size=0.3, random_state=0,
+        party=party,
+        n_parties=5,
+        held_out_party=1,
+        valid_size=0.1,
+        train_size=0.6,
+        test_size=0.3,
+        random_state=0,
     )
     [result] = sp.split_result(fx.smiles)
     assert result.metadata["held_out_party"] == 1
@@ -401,3 +388,78 @@ def test_party_synthesis_invalid():
         PartySplitter(synthesis="bogus")
     with pytest.raises(ParameterError):
         PartySplitter(n_parties=0)
+
+
+def _fidelity_smiles():
+    return make_scaffold_families(n_scaffolds=4, per_scaffold=10, seed=0).smiles
+
+
+def test_fidelity_whole_levels_in_order():
+    from chemsplit.splitters.lineage import FidelitySplitter
+
+    smiles = _fidelity_smiles()
+    fidelity = ["hts"] * 28 + ["confirm"] * 4 + ["dose"] * 8
+    splitter = FidelitySplitter(
+        fidelity=fidelity,
+        levels=["hts", "confirm", "dose"],
+        train_size=0.7,
+        valid_size=0.1,
+        test_size=0.2,
+    )
+    result = splitter.split_result(smiles)[0]
+    assert result.metadata["level_partition"] == {
+        "hts": "train",
+        "confirm": "valid",
+        "dose": "test",
+    }
+    assert result.test.tolist() == list(range(32, 40))
+    assert result.valid.tolist() == list(range(28, 32))
+
+
+def test_fidelity_levels_order_overrides_sorting():
+    from chemsplit.splitters.lineage import FidelitySplitter
+
+    smiles = _fidelity_smiles()
+    fidelity = ["a"] * 30 + ["b"] * 10
+    high_b = FidelitySplitter(fidelity=fidelity, train_size=0.75, test_size=0.25).split_result(
+        smiles
+    )[0]
+    high_a = FidelitySplitter(fidelity=fidelity, levels=["b", "a"], train_size=0.75, test_size=0.25)
+    with pytest.warns(Warning):
+        result_a = high_a.split_result(smiles)[0]
+    assert high_b.metadata["level_partition"] == {"a": "train", "b": "test"}
+    assert result_a.metadata["level_partition"] == {"b": "train", "a": "test"}
+
+
+def test_fidelity_discards_low_fidelity_records_of_test_molecules():
+    from chemsplit.splitters.lineage import FidelitySplitter
+
+    base = _fidelity_smiles()[:10]
+    smiles = base + base[:4]  # the first 4 molecules are measured again at high fidelity
+    fidelity = [0] * 10 + [1] * 4
+    discard = FidelitySplitter(fidelity=fidelity, train_size=0.7, test_size=0.3)
+    with pytest.warns(Warning):
+        result = discard.split_result(smiles)[0]
+    assert result.discard.tolist() == [0, 1, 2, 3]
+    assert result.metadata["n_structure_discards"] == 4
+    allow = FidelitySplitter(
+        fidelity=fidelity, structure_leakage="allow", train_size=0.7, test_size=0.3
+    )
+    assert allow.split_result(smiles)[0].discard.size == 0
+
+
+def test_fidelity_errors():
+    from chemsplit.exceptions import ConstraintUnsatisfiableError, InputError, ParameterError
+    from chemsplit.splitters.lineage import FidelitySplitter
+
+    smiles = _fidelity_smiles()
+    with pytest.raises(InputError):
+        FidelitySplitter().split_result(smiles)
+    with pytest.raises(ConstraintUnsatisfiableError):
+        FidelitySplitter(fidelity=[1] * 40).split_result(smiles)
+    with pytest.raises(ParameterError):
+        FidelitySplitter(fidelity=["x"] * 40, levels=["y"]).split_result(smiles)
+    with pytest.raises(ParameterError):
+        FidelitySplitter(structure_leakage="bogus")
+    with pytest.raises(ParameterError):
+        FidelitySplitter(fidelity=[0, 1] * 20).split_result(np.zeros((40, 3)))

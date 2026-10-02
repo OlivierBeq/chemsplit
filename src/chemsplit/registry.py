@@ -54,6 +54,7 @@ def _import_all_classes() -> list[type[BaseSplitter]]:
         UMAPClusterSplitter,
     )
     from chemsplit.splitters.lineage import (
+        FidelitySplitter,
         PartySplitter,
         SIMPDSplitter,
         SourceSplitter,
@@ -164,6 +165,7 @@ def _import_all_classes() -> list[type[BaseSplitter]]:
         TemporalSplitter,
         SIMPDSplitter,
         SourceSplitter,
+        FidelitySplitter,
         PartySplitter,
         # task
         HiSplitter,

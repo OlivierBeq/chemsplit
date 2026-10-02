@@ -30,7 +30,7 @@ from chemsplit.exceptions import (
 )
 from chemsplit.types import IndexArray
 
-__all__ = ["PartySplitter", "SIMPDSplitter", "SourceSplitter", "TemporalSplitter"]
+__all__ = ["FidelitySplitter", "PartySplitter", "SIMPDSplitter", "SourceSplitter", "TemporalSplitter"]
 
 #: Folded into chemsplit.registry / chemsplit.__init__'s __all__ at integration time.
 _EXPORTED = __all__
@@ -764,6 +764,180 @@ class SourceSplitter(GroupSplitter):
             "largest_source_frac": largest_frac,
             "n_missing_source": int(ctx.extra.get("_lineage_source_n_missing", 0)),
         }
+
+
+# -
+# FidelitySplitter
+# -
+
+
+class FidelitySplitter(BaseSplitter):
+    """Train on low-fidelity measurements, test on the highest fidelity (``fidelity``).
+
+    Records carry a fidelity level (e.g. ``"HTS"`` < ``"confirmatory"`` < ``"dose-response"``,
+    or a numeric tier). Whole levels are assigned from the highest down: test takes levels until
+    it reaches its size, then valid, and the remaining, lowest levels form train. A level is never
+    split across partitions, so realised sizes follow level boundaries. With
+    ``structure_leakage="discard"``, a molecule measured at several fidelities keeps only its
+    highest-fidelity record in play: its records in a lower partition are moved to ``discard``
+    (matched by canonical SMILES), so the model never trains on a cheap label of a test molecule.
+    Fully deterministic.
+
+    :param fidelity: Per-record fidelity levels. Required.
+    :param levels: The levels ordered from lowest to highest fidelity; ``None`` sorts the observed
+        values. Every record's level must be listed. Defaults to ``None``.
+    :param structure_leakage: ``"discard"`` or ``"allow"``; see above. ``"discard"`` needs
+        molecular input (SMILES or molecules). Defaults to ``"discard"``.
+    :param size_tolerance: Warn with :class:`~chemsplit.exceptions.SizeToleranceWarning` when a
+        realised partition fraction misses its target by more than this. Defaults to 0.05.
+    :ivar splitter_id: ``"fidelity"``.
+
+    Advantages
+    ----------
+    - Measures the realistic multi-fidelity use case: learn from abundant cheap data, predict the scarce expensive measurement.
+    - Whole levels stay together, so assay-protocol artefacts specific to one level cannot leak across the split.
+    - `structure_leakage="discard"` removes the most common multi-fidelity leak -- the same compound's low-fidelity label sitting in train.
+    - No seed, no free parameter beyond the level order.
+
+    Pitfalls
+    --------
+    - **Sizes are coarse.** With few levels, realised sizes can be far from the targets; read `metadata["level_partition"]`.
+    - Confounds two shifts: the label's fidelity and the chemistry measured at each level (high-fidelity assays usually run on optimised compounds). A drop shows degradation, not its cause.
+    - Low- and high-fidelity labels may be on different scales or even different quantities; the split doesn't harmonise them.
+    - Needs at least two levels, and `structure_leakage="discard"` can empty train when most molecules are measured at every level.
+
+    References
+    ----------
+    .. [1] Buterez, D.; Janet, J. P.; Kiddle, S. J.; Oglic, D.; Liò, P. Transfer Learning with Graph
+       Neural Networks for Improved Molecular Property Prediction in the Multi-Fidelity Setting.
+       *Nat. Commun.* **2024**, 15, 1517. https://doi.org/10.1038/s41467-024-45566-8
+    """
+
+    splitter_id: ClassVar[str] = "fidelity"
+    family: ClassVar[str] = "lineage"
+    strictness: ClassVar[Strictness] = Strictness.EXTRAPOLATIVE
+    group_forming: ClassVar[bool] = False
+    requires_labels: ClassVar[bool] = False
+    requires_dates: ClassVar[bool] = False
+    requires_targets: ClassVar[bool] = False
+    accepts: ClassVar[tuple[str, ...]] = ("smiles", "mol", "features", "interactions", "sequences")
+    extras: ClassVar[tuple[str, ...]] = ()
+    deterministic_without_seed: ClassVar[bool] = True
+    deterministic_method: ClassVar[bool] = True
+    order_invariant: ClassVar[bool] = True
+
+    def __init__(
+        self,
+        *,
+        fidelity: Any | None = None,
+        levels: Any | None = None,
+        structure_leakage: Literal["discard", "allow"] = "discard",
+        size_tolerance: float = 0.05,
+        **base: Any,
+    ) -> None:
+        super().__init__(**base)
+        self.fidelity = fidelity
+        self.levels = levels
+        self.structure_leakage = structure_leakage
+        self.size_tolerance = size_tolerance
+        if structure_leakage not in ("discard", "allow"):
+            raise ParameterError(f"invalid structure_leakage: {structure_leakage!r}")
+        if not (isinstance(size_tolerance, (int, float)) and 0 <= size_tolerance < 1):
+            raise ParameterError(f"size_tolerance must be in [0, 1), got {size_tolerance!r}")
+        if levels is not None and len(set(levels)) != len(list(levels)):
+            raise ParameterError("levels must not contain duplicates")
+
+    def _level_ranks(self, ctx: _Context) -> tuple[list[Any], np.ndarray]:
+        if self.fidelity is None:
+            raise InputError("FidelitySplitter requires `fidelity` (a per-record fidelity level sequence)")
+        fidelity = list(self.fidelity)
+        if len(fidelity) != ctx.n:
+            raise InputError(f"len(fidelity)={len(fidelity)} does not match n={ctx.n}")
+        if self.levels is not None:
+            levels = list(self.levels)
+            unknown = sorted({str(v) for v in fidelity} - {str(v) for v in levels})
+            if unknown:
+                raise ParameterError(f"fidelity values not listed in levels: {unknown}")
+        else:
+            try:
+                levels = sorted(set(fidelity))
+            except TypeError:
+                raise ParameterError("fidelity values are not mutually orderable; pass `levels`") from None
+        rank = {str(level): r for r, level in enumerate(levels)}
+        return levels, np.asarray([rank[str(v)] for v in fidelity], dtype=np.int64)
+
+    def _structure_keys(self, ctx: _Context) -> list[str]:
+        if ctx.mols is not None:
+            from rdkit import Chem
+
+            return [Chem.MolToSmiles(m) if m is not None else f"<unparsed:{i}>" for i, m in enumerate(ctx.mols)]
+        if ctx.smiles is not None:
+            return list(ctx.smiles)
+        raise ParameterError(
+            "FidelitySplitter(structure_leakage='discard') needs SMILES or molecules to match "
+            "structures; pass structure_leakage='allow' for other inputs"
+        )
+
+    def _partition(self, ctx: _Context) -> list[SplitResult]:
+        n = ctx.n
+        levels, ranks = self._level_ranks(ctx)
+        present = sorted(set(ranks.tolist()))
+        if len(present) < 2:
+            raise ConstraintUnsatisfiableError(f"FidelitySplitter: all {n} records share one fidelity level")
+        counts = {r: int(np.sum(ranks == r)) for r in present}
+        level_partition: dict[int, str] = {}
+        filled = {"test": 0, "valid": 0}
+        targets = {"test": ctx.sizes.n_test, "valid": ctx.sizes.n_valid}
+        for r in reversed(present):
+            if r == present[0]:
+                level_partition[r] = "train"
+            elif filled["test"] < targets["test"] or not filled["test"]:
+                level_partition[r] = "test"
+                filled["test"] += counts[r]
+            elif filled["valid"] < targets["valid"]:
+                level_partition[r] = "valid"
+                filled["valid"] += counts[r]
+            else:
+                level_partition[r] = "train"
+        part = np.asarray([level_partition[int(r)] for r in ranks], dtype=object)
+        discard = np.zeros(n, dtype=bool)
+        if self.structure_leakage == "discard":
+            keys = self._structure_keys(ctx)
+            later = {"train": ("valid", "test"), "valid": ("test",)}
+            for lower, uppers in later.items():
+                held = {keys[i] for i in range(n) if part[i] in uppers}
+                discard |= (part == lower) & np.asarray([k in held for k in keys], dtype=bool)
+        buckets = {name: np.flatnonzero((part == name) & ~discard).astype(np.int64) for name in ("train", "valid", "test")}
+        if buckets["train"].size == 0:
+            raise EmptyPartitionError("FidelitySplitter: train is empty after removing shared structures")
+        realised = {k: int(v.size) for k, v in buckets.items()}
+        wanted = {"train": ctx.sizes.n_train, "valid": ctx.sizes.n_valid, "test": ctx.sizes.n_test}
+        if any(abs(realised[k] - wanted[k]) / n > self.size_tolerance for k in wanted):
+            from chemsplit.exceptions import SizeToleranceWarning
+
+            warn_with_details(
+                SizeToleranceWarning(
+                    f"FidelitySplitter: realised sizes {realised} differ from targets {wanted} by more "
+                    f"than size_tolerance={self.size_tolerance} (whole fidelity levels are kept together)",
+                    details={"realised": realised, "targets": wanted},
+                )
+            )
+        result = SplitResult(
+            train=buckets["train"],
+            valid=buckets["valid"],
+            test=buckets["test"],
+            discard=np.flatnonzero(discard).astype(np.int64),
+            groups=None,
+            splitter_id=self.splitter_id,
+            params=self.get_params(),
+            n_records=n,
+            metadata={
+                "level_partition": {str(levels[r]): level_partition[r] for r in present},
+                "n_structure_discards": int(discard.sum()),
+                "realised_sizes": realised,
+            },
+        )
+        return [result]
 
 
 # -

@@ -73,6 +73,7 @@ if TYPE_CHECKING:
         UMAPClusterSplitter,
     )
     from chemsplit.splitters.lineage import (
+        FidelitySplitter,
         PartySplitter,
         SIMPDSplitter,
         SourceSplitter,
@@ -134,8 +135,8 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
-    # -- 62 splitters across 9 families, in declared order: baseline (5), scaffold (6),
-    # similarity (17), embedding (4), property (6), lineage (4), task (8), biomolecular (5),
+    # -- 63 splitters across 9 families, in declared order: baseline (5), scaffold (6),
+    # similarity (17), embedding (4), property (6), lineage (5), task (8), biomolecular (5),
     # protocol (7) --
     "RandomSplitter",
     "StratifiedRandomSplitter",
@@ -178,6 +179,7 @@ __all__ = [
     "TemporalSplitter",
     "SIMPDSplitter",
     "SourceSplitter",
+    "FidelitySplitter",
     "PartySplitter",
     "HiSplitter",
     "LoSplitter",
@@ -303,6 +305,7 @@ _LAZY_SOURCE: dict[str, str] = {
     "TemporalSplitter": "chemsplit.splitters.lineage",
     "SIMPDSplitter": "chemsplit.splitters.lineage",
     "SourceSplitter": "chemsplit.splitters.lineage",
+    "FidelitySplitter": "chemsplit.splitters.lineage",
     "PartySplitter": "chemsplit.splitters.lineage",
     # splitters/task.py
     "HiSplitter": "chemsplit.splitters.task",

@@ -163,6 +163,12 @@ def _build_plan(fixtures: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str
         {},
         {"source": F["scaffold_families"].groups_true.tolist()},
     )
+    plan["fidelity"] = lambda: (
+        F["scaffold_families"].smiles,
+        None,
+        {},
+        {"fidelity": [0] * 56 + [1] * 8 + [2] * 16},
+    )
     plan["party"] = lambda: (
         F["scaffold_families"].smiles,
         None,
@@ -306,6 +312,7 @@ def _build_plan(fixtures: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str
             "temporal": "dated_series",
             "simpd": "scaffold_families",
             "source": "scaffold_families",
+            "fidelity": "scaffold_families",
             "party": "scaffold_families",
             "hi": "two_clusters",
             "lo": "linear_series",

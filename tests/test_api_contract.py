@@ -20,7 +20,7 @@ reg._ensure_built()
 REGISTRY: dict[str, type[BaseSplitter]] = dict(reg.SPLITTER_REGISTRY)
 ALL_IDS = sorted(REGISTRY)
 
-assert len(REGISTRY) == 62, f"expected 62 registered splitters, found {len(REGISTRY)}"
+assert len(REGISTRY) == 63, f"expected 63 registered splitters, found {len(REGISTRY)}"
 
 
 # -
@@ -41,6 +41,7 @@ _DEPLOYMENT_SET = ds.make_two_clusters(n=50, seed=2).smiles
 _SPECIAL_KWARGS = {
     "predefined": lambda: {"assignment": ["train"] * 40 + ["test"] * 10},  # PredefinedSplitter
     "source": lambda: {"source": _SCAFFOLD_FX.groups_true},  # SourceSplitter
+    "fidelity": lambda: {"fidelity": [i % 3 for i in range(len(_SCAFFOLD_FX.smiles))]},  # FidelitySplitter
     "mood": lambda: {  # MOODSplitter
         "deployment_set": _DEPLOYMENT_SET,
         "candidates": [RandomSplitter(random_state=0), RandomSplitter(random_state=1, shuffle=True)],
@@ -174,7 +175,7 @@ def _instance_and_data(splitter_id: str):
     return inst, X, y, extra_kw
 
 
-# A handful of splitters are legitimately slow/heavy for a "run this 62 times in a loop" suite
+# A handful of splitters are legitimately slow/heavy for a "run this 63 times in a loop" suite
 # (genetic algorithms, O(n^2) similarity work at n=50 is fine, but GA population*generations is
 # not) -- give those a smaller n or fewer repeats rather than skipping the contract entirely.
 _SLOW_IDS = {"simpd", "ave"}  # SIMPDSplitter, AVESplitter (deap GA)
@@ -262,7 +263,7 @@ def test_eager_validation_of_train_size_range(splitter_id):
 
 # -
 # 5-7, 9-10. split() output contract, no mutation, determinism, JSON round-trip, group atomicity
-# -- one combined pass over all 62 splitters, since constructing (instance, X, y) is the expensive
+# -- one combined pass over all 63 splitters, since constructing (instance, X, y) is the expensive
 # shared part.
 # -
 
