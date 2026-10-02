@@ -11,11 +11,11 @@
 
 </div>
 
-A self-contained, scikit-learn-compatible Python library of dataset-splitting strategies for cheminformatics machine learning. `chemsplit` implements **56 splitting strategies across nine families** -- baseline, scaffold, similarity, embedding, property, lineage, task, biomolecular, and protocol splitters -- behind one coherent, deterministic API, plus a leakage-audit module and a set of reference/synthetic datasets to try them on.
+A self-contained, scikit-learn-compatible Python library of dataset-splitting strategies for cheminformatics machine learning. `chemsplit` implements **64 splitting strategies across nine families** -- baseline, scaffold, similarity, embedding, property, lineage, task, biomolecular, and protocol splitters -- behind one coherent, deterministic API, plus a leakage-audit module and a set of reference/synthetic datasets to try them on.
 
 ## ✨ Features
 
-- 🧩 **9 families, 56 strategies** -- from a plain random split to scaffold-tree pruning, Butina/spectral clustering, UMAP-space holdouts, temporal and provenance cuts, protein-family and binding-site holdouts, drug-target cold-start benchmarks, and full CV/nested-CV protocol wrappers.
+- 🧩 **9 families, 64 strategies** -- from a plain random split to scaffold-tree pruning, Butina/spectral clustering, UMAP-space holdouts, temporal and provenance cuts, protein-family and binding-site holdouts, drug-target cold-start benchmarks, and full CV/nested-CV protocol wrappers.
 - 🎯 **Deterministic by construction** -- every splitter accepts a `random_state` and produces bit-identical output regardless of record order or `n_jobs`, checked continuously by a golden-file regression suite and Hypothesis property tests.
 - 🛡️ **Contract-checked results** -- every `SplitResult` is validated against five structural invariants (index coverage, disjointness, group-label consistency, JSON round-tripping of `params`, id format) before it ever reaches your code.
 - 🔍 **Built-in leakage auditing** -- `chemsplit.audit` reports nearest-neighbour similarity, adversarial-validation AUC, exact/scaffold/ring-system overlap, and property/label shift between train and test.
@@ -144,7 +144,7 @@ This project is licensed under the [MIT License](LICENSE).
 ## 📋 Available splitters
 
 <details>
-<summary><strong>Full list of splitters (56 classes)</strong> -- click to expand</summary>
+<summary><strong>Full list of splitters (64 classes)</strong> -- click to expand</summary>
 
 | Family | Class | `splitter_id` | Description | Strictness | Group-forming | Needs | Extra |
 |:---:|:---|:---|:---|:---:|:---:|:---:|:---:|
@@ -157,6 +157,7 @@ This project is licensed under the [MIT License](LICENSE).
 | Scaffold | `GenericScaffoldSplitter` | `generic_scaffold` | Groups by generic (all-carbon) scaffold framework | 🟢 strict | :heavy_check_mark: | -- | -- |
 | Scaffold | `ScaffoldTreeSplitter` | `scaffold_tree` | Groups by scaffold-tree node at a chosen pruning level | 🟢 strict | :heavy_check_mark: | -- | -- |
 | Scaffold | `RingSystemSplitter` | `ring_system` | Groups by shared ring systems, transitively | 🟠 moderate | :heavy_check_mark: | -- | -- |
+| Scaffold | `SubstructureSplitter` | `substructure` | Holds out molecules containing a SMARTS pattern, element or functional group | 🚀 extrapolative | -- | -- | -- |
 | Scaffold | `MatchedMolecularSeriesSplitter` | `matched_molecular_series` | Groups molecules sharing a matched-pair constant context | 🟢 strict | :heavy_check_mark: | -- | `mmpa` |
 | Scaffold | `ActivityCliffSplitter` | `activity_cliff` | Places activity-cliff compounds in the test set | 🚀 extrapolative | -- | labels | -- |
 | Similarity | `SimilarityThresholdSplitter` | `similarity_threshold` | No test record above a similarity threshold to train | 🟢 strict | :heavy_check_mark: | -- | -- |
@@ -168,21 +169,28 @@ This project is licensed under the [MIT License](LICENSE).
 | Similarity | `MaxMinSplitter` | `max_min` | Greedy maximally-diverse selection (MaxMin / Kennard-Stone) | 🟠 moderate | -- | -- | -- |
 | Similarity | `SPXYSplitter` | `spxy` | Kennard-Stone selection over joint feature and label distances | 🟠 moderate | -- | labels | -- |
 | Similarity | `OptiSimSplitter` | `opti_sim` | OptiSim selection as cluster centres or a diverse picked set | 🟢 strict | :heavy_check_mark: | -- | -- |
+| Similarity | `MinimalTestSetDissimilaritySplitter` | `minimal_test_set_dissimilarity` | One most-typical record per activity bin goes to test (MTSD) | 🔴 optimistic | -- | labels | -- |
+| Similarity | `SupportPointsSplitter` | `support_points` | Subsets nearest the energy-distance support points of the data (SPlit) | 🔴 optimistic | -- | -- | -- |
+| Similarity | `DuplexSplitter` | `duplex` | Partitions take turns adding their most distant record (DUPLEX) | 🟠 moderate | -- | -- | -- |
+| Similarity | `DOptimalSplitter` | `d_optimal` | Training set maximises det(XᵀX) by Fedorov exchange | 🟠 moderate | -- | -- | -- |
 | Similarity | `MaxDissimilaritySplitter` | `max_dissimilarity` | Pushes train and test to opposite regions of chemical space | 🚀 extrapolative | -- | -- | -- |
 | Similarity | `PerimeterSplitter` | `perimeter` | Holds out the outskirts; trains on the dense core | 🚀 extrapolative | -- | -- | -- |
 | Similarity | `LeaveOneClusterOutSplitter` | `leave_one_cluster_out` | Each cluster takes a turn as the test fold | 🚀 extrapolative | :heavy_check_mark: | -- | -- |
 | Similarity | `BalancedMultiTaskSplitter` | `balanced_multi_task` | Assigns whole clusters to folds, balancing every task | 🟢 strict | :heavy_check_mark: | labels | -- |
 | Embedding | `UMAPClusterSplitter` | `umap_cluster` | UMAP embedding followed by clustering | 🚀 extrapolative | :heavy_check_mark: | -- | `umap` |
 | Embedding | `ProjectionSplitter` | `projection` | Linear/manifold projection, then clustering, axis cut, or grid | 🟢 strict | :heavy_check_mark: | -- | -- |
+| Embedding | `SelfOrganizingMapSplitter` | `self_organizing_map` | Kohonen map cells held out whole, or sampled proportionally | 🟢 strict | :heavy_check_mark: | -- | `som` |
 | Embedding | `LatentSpaceSplitter` | `latent_space` | Clusters in a caller-supplied embedding | 🟢 strict | :heavy_check_mark: | -- | -- |
 | Property | `PropertySplitter` | `property` | Cuts along a continuous molecular property | 🟢 strict | -- | -- | -- |
 | Property | `LabelExtrapolationSplitter` | `label_extrapolation` | Trains on one part of the label range, tests on another | 🚀 extrapolative | -- | labels | -- |
+| Property | `DistinctLabelSplitter` | `distinct_label` | One record per distinct label value trains; repeats are held out (SWNW) | 🔴 optimistic | -- | labels | -- |
 | Property | `StratifiedDistributionSplitter` | `stratified_distribution` | Matches the full label distribution across partitions | 🔴 optimistic | -- | labels | -- |
 | Property | `MOODSplitter` | `mood` | Picks the candidate split whose train→test distances best match train→deployment | 🟢 strict | -- | -- | -- |
 | Property | `AdversarialSplitter` | `adversarial` | Audits or constructs a split with a train-vs-test discriminator | 🟢 strict | -- | -- | -- |
 | Lineage | `TemporalSplitter` | `temporal` | Date cut: train on the past, test on the future | 🟢 strict | -- | dates | -- |
 | Lineage | `SIMPDSplitter` | `simpd` | Simulated time split optimized by a genetic algorithm | 🟢 strict | -- | labels | `ga` |
 | Lineage | `SourceSplitter` | `source` | Groups by provenance (document, assay, lab, vendor, ...) | 🟢 strict | :heavy_check_mark: | -- | -- |
+| Lineage | `FidelitySplitter` | `fidelity` | Trains on low-fidelity levels, tests on the highest fidelity | 🚀 extrapolative | -- | fidelity levels | -- |
 | Lineage | `PartySplitter` | `party` | Non-IID partition across data owners for federated evaluation | 🚀 extrapolative | :heavy_check_mark: | -- | -- |
 | Task | `HiSplitter` | `hi` | Hit-identification: no test molecule similar to any train molecule | 🚀 extrapolative | :heavy_check_mark: | -- | -- |
 | Task | `LoSplitter` | `lo` | Lead-optimisation: holds out analogue clusters spanning an activity range | 🟢 strict | :heavy_check_mark: | labels | -- |
@@ -208,3 +216,41 @@ This project is licensed under the [MIT License](LICENSE).
 </details>
 
 Strictness ranks how hard the test set is expected to be, from 🔴 `optimistic` (random-like) through 🟠 `moderate` and 🟢 `strict` to 🚀 `extrapolative` (deliberately out-of-distribution). *Needs* lists inputs required beyond SMILES; *Extra* names the optional install extra that enables or accelerates the splitter. The same table is available at runtime via `chemsplit.list_splitters()` or `chemsplit list`.
+
+## 🔎 Finding a published method
+
+Many published splitting methods are a splitter or an option in chemsplit:
+
+| Method | chemsplit | Reference |
+| --- | --- | --- |
+| Random split | `RandomSplitter` | -- |
+| Stratified random split | `StratifiedRandomSplitter` | -- |
+| Multi-label iterative stratification | `StratifiedRandomSplitter(multitask="iterative")`, `"iterative_pairs"`; `KFoldSplitter(stratify=True, multitask=...)` | Sechidis et al. 2011; Szymański & Kajdanowicz 2017 |
+| Kennard-Stone | `MaxMinSplitter(init="kennard_stone")` | Kennard & Stone 1969 |
+| MDKS (Kennard-Stone with Mahalanobis distance) | `MaxMinSplitter(init="kennard_stone", metric="mahalanobis")` | Saptoro et al. 2012 |
+| MLM (random-mutation Kennard-Stone) | `MaxMinSplitter(init="kennard_stone", swap_fraction=0.1)` | Morais et al. 2019 |
+| SPXY | `SPXYSplitter` | Galvão et al. 2005 |
+| M-SPXY | `SPXYSplitter(metric="mahalanobis")` | Apinantanakon et al. 2019 |
+| DUPLEX | `DuplexSplitter` | Snee 1977 |
+| D-optimal design | `DOptimalSplitter` | Cook & Nachtsheim 1980; de Aguiar et al. 1995 |
+| SPlit (support points) | `SupportPointsSplitter` | Joseph & Vakayil 2022 |
+| Minimal test set dissimilarity (MTSD) | `MinimalTestSetDissimilaritySplitter` | Martin et al. 2012 |
+| SWNW | `DistinctLabelSplitter` | Li et al. 2021 |
+| OptiSim | `OptiSimSplitter` | Clark 1997 |
+| Sphere exclusion | `SphereExclusionSplitter` | Gobbi & Lee 2003; Golbraikh & Tropsha 2002 |
+| Taylor-Butina clustering | `ButinaSplitter` | -- |
+| MaxMin diversity picking | `MaxMinSplitter` | -- |
+| Bemis-Murcko scaffold | `MurckoScaffoldSplitter` | -- |
+| Substructure, element or functional-group holdout | `SubstructureSplitter` | -- |
+| k-means clustering | `KMeansClusterSplitter` | -- |
+| DBSCAN / HDBSCAN | `DensityClusterSplitter` | -- |
+| Spectral clustering | `SpectralSplitter` | -- |
+| Landmark spectral clustering | `SpectralSplitter(graph="landmark")` | Chen & Cai 2011 |
+| Kohonen self-organizing map | `SelfOrganizingMapSplitter` | Kohonen 1982; Guha et al. 2004 |
+| Target-property sort | `LabelExtrapolationSplitter` | -- |
+| Molecular-weight sort | `PropertySplitter(property="MolWt")` | -- |
+| Time split | `TemporalSplitter` | -- |
+| Rolling / expanding time folds | `TemporalSplitter(mode="rolling")`, `"expanding"` | -- |
+| Multi-fidelity split | `FidelitySplitter` | -- |
+
+Full citations are in each class's docstring.
