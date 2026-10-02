@@ -21,9 +21,20 @@ class Featurizer(Protocol):
     n_features: int
     is_binary: bool
 
-    def transform(self, mols: Sequence[Any]) -> FeatureMatrix:...
+    def transform(self, mols: Sequence[Any]) -> FeatureMatrix:
+        """Featurize a batch of molecules.
 
-    def get_params(self) -> dict[str, Any]:...
+        :param mols: the molecules. A ``None`` entry becomes an all-zero row.
+        :return: the feature matrix, one row per molecule.
+        """
+        ...
+
+    def get_params(self) -> dict[str, Any]:
+        """Report the featurizer's configuration.
+
+        :return: the constructor parameters, as JSON-native values.
+        """
+        ...
 
 
 def _levenshtein(a: str, b: str) -> int:
@@ -40,18 +51,28 @@ def _levenshtein(a: str, b: str) -> int:
 
 
 def get_featurizer(spec: str | Featurizer, **kw: Any) -> Featurizer:
-    """Resolve a string alias (case-insensitive) or pass through an existing Featurizer instance.
+    """Resolve a featurizer alias, or pass an existing instance through.
 
-    Accepted aliases: ``ecfp2``/``ecfp4``/``ecfp6``/``ecfp8`` (radius = k // 2),
-    ``morgan2``==``ecfp4``, ``morgan3``==``ecfp6``, ``fcfp2``/``fcfp4``/``fcfp6``/``fcfp8``
-    (same radius mapping, feature-invariant Morgan), plus each featurizer's own ``name``:
-    ``maccs``, ``rdkitfp``, ``avalon``, ``atompair``, ``toptorsion``, ``physchem``, ``mqn``,
-    ``precomputed``.
+    Aliases are case-insensitive. ``ecfp2``/``ecfp4``/``ecfp6``/``ecfp8`` map the diameter to
+    radius ``k // 2``, with ``morgan2`` and ``morgan3`` as synonyms for ``ecfp4`` and ``ecfp6``,
+    and the ``fcfp*`` family mapping the same way onto feature-invariant Morgan fingerprints.
+    Each featurizer's own ``name`` also works: ``maccs``, ``rdkitfp``, ``avalon``, ``atompair``,
+    ``toptorsion``, ``physchem``, ``mqn``, ``functional_groups`` and ``precomputed``.
+
+    :param spec: an alias, or an already-built featurizer.
+    :param kw: forwarded to the featurizer's constructor when ``spec`` is an alias.
+    :raises UnknownFeaturizerError: if the alias is not recognised, with the closest known ones
+        suggested.
+    :return: the featurizer.
     """
     if not isinstance(spec, str):
         return spec
 
-    from chemsplit.featurizers.descriptors import MQNFeaturizer, PhysChemFeaturizer
+    from chemsplit.featurizers.descriptors import (
+        FunctionalGroupFeaturizer,
+        MQNFeaturizer,
+        PhysChemFeaturizer,
+    )
     from chemsplit.featurizers.fingerprints import (
         AtomPairFeaturizer,
         AvalonFeaturizer,
@@ -89,11 +110,14 @@ def get_featurizer(spec: str | Featurizer, **kw: Any) -> Featurizer:
         return PhysChemFeaturizer(**kw)
     if key == "mqn":
         return MQNFeaturizer(**kw)
+    if key == "functional_groups":
+        return FunctionalGroupFeaturizer(**kw)
     if key == "precomputed":
         return PrecomputedFeaturizer(**kw)
 
     known = list(ecfp_like) + list(fcfp_like) + [
-        "maccs", "rdkitfp", "avalon", "atompair", "toptorsion", "physchem", "mqn", "precomputed",
+        "maccs", "rdkitfp", "avalon", "atompair", "toptorsion", "physchem", "mqn",
+        "functional_groups", "precomputed",
     ]
     closest = sorted(known, key=lambda k: _levenshtein(key, k))[:3]
     raise UnknownFeaturizerError(

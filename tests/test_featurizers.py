@@ -6,6 +6,7 @@ from rdkit import Chem
 from chemsplit.featurizers import get_featurizer
 from chemsplit.featurizers.descriptors import (
     _PHYSCHEM_DESCRIPTORS,
+    FunctionalGroupFeaturizer,
     MQNFeaturizer,
     PhysChemFeaturizer,
 )
@@ -37,7 +38,9 @@ class TestEcfpRadiusMapping:
         assert feat.radius != 6
         assert feat.radius == 3
 
-    @pytest.mark.parametrize("alias,expected_radius", [("fcfp2", 1), ("fcfp4", 2), ("fcfp6", 3), ("fcfp8", 4)])
+    @pytest.mark.parametrize(
+        "alias,expected_radius", [("fcfp2", 1), ("fcfp4", 2), ("fcfp6", 3), ("fcfp8", 4)]
+    )
     def test_fcfp_alias_radius(self, alias, expected_radius):
         feat = get_featurizer(alias)
         assert feat.radius == expected_radius
@@ -190,6 +193,7 @@ class TestGetFeaturizerDirectNames:
             ("toptorsion", TopTorsionFeaturizer),
             ("physchem", PhysChemFeaturizer),
             ("mqn", MQNFeaturizer),
+            ("functional_groups", FunctionalGroupFeaturizer),
             ("precomputed", PrecomputedFeaturizer),
         ],
     )
@@ -211,3 +215,25 @@ class TestUnknownAlias:
     def test_get_featurizer_passthrough(self):
         feat = ECFPFeaturizer()
         assert get_featurizer(feat) is feat
+
+
+class TestFunctionalGroupFeaturizer:
+    def test_counts_match_rdkit_fragments(self):
+        from rdkit import Chem
+        from rdkit.Chem import Fragments
+
+        mols = [Chem.MolFromSmiles(s) for s in ("OC(=O)c1ccccc1F", "CCN", "CCCC")]
+        feat = FunctionalGroupFeaturizer()
+        X = feat.transform(mols)
+        assert X.shape == (3, feat.n_features)
+        assert feat.n_features == len([n for n in dir(Fragments) if n.startswith("fr_")])
+        halogen = feat.feature_names.index("fr_halogen")
+        assert X[:, halogen].tolist() == [1.0, 0.0, 0.0]
+        for j, name in enumerate(feat.feature_names):
+            assert X[0, j] == getattr(Fragments, name)(mols[0])
+
+    def test_none_mol_gives_zero_row_and_names_are_sorted(self):
+        feat = FunctionalGroupFeaturizer()
+        assert feat.transform([None]).tolist() == [[0.0] * feat.n_features]
+        assert list(feat.feature_names) == sorted(feat.feature_names)
+        assert feat.is_binary is False
