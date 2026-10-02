@@ -9,13 +9,14 @@ from typing import Literal
 import numpy as np
 import scipy.sparse as sp
 
-from chemsplit.determinism import argmax_tiebreak, argmin_tiebreak
+from chemsplit.determinism import argmax_tiebreak, argmin_tiebreak, row_argmin
 
 #: Tolerance for the float32 distance matrices used here (~1.2e-7 rounding noise).
 EPS = 1e-6
 
 __all__ = [
     "butina",
+    "duplex_order",
     "kennard_stone",
     "leader",
     "maxmin_pick",
@@ -237,6 +238,63 @@ def optisim_pick(
         mind = np.minimum(mind, D[:, best])
         recycle.extend(i for i in subsample if i != best)
     return picked
+
+
+def _farthest_pair(D: np.ndarray, pool: np.ndarray) -> tuple[int, int]:
+    """Farthest-apart pair among ``pool`` (ascending record indices); ties -> lexicographically
+    smallest ``(i, j)``."""
+    sub = D[np.ix_(pool, pool)]
+    iu = np.triu_indices(pool.size, k=1)
+    vals = sub[iu]
+    top = vals.max()
+    k = int(np.flatnonzero(vals >= top - EPS)[0])  # row-major order = lexicographic (i, j)
+    return int(pool[iu[0][k]]), int(pool[iu[1][k]])
+
+
+def duplex_order(D: np.ndarray, targets: Sequence[int]) -> list[list[int]]:
+    """DUPLEX partitioning (Snee 1977), generalised to any number of partitions.
+
+    Each partition with a non-zero target, in the given order, is seeded with the farthest-apart
+    pair of still-unassigned records (only the pair's first record when the target is 1). The
+    partitions below target then take turns, in the same order, adding the unassigned record whose
+    minimum distance to that partition's own members is largest (ties -> smallest index); a
+    partition leaves the rotation once it reaches its target. Targets must sum to ``D.shape[0]``.
+    Returns each partition's records in the order they were added.
+    """
+    n = D.shape[0]
+    if sum(targets) != n:
+        raise ValueError(f"targets sum to {sum(targets)}, expected n={n}")
+    assigned = np.zeros(n, dtype=bool)
+    members: list[list[int]] = [[] for _ in targets]
+    mind = [np.full(n, np.inf) for _ in targets]
+
+    def add(p: int, i: int) -> None:
+        members[p].append(i)
+        assigned[i] = True
+        mind[p] = np.minimum(mind[p], D[:, i])
+
+    for p, target in enumerate(targets):
+        if target <= 0:
+            continue
+        pool = np.flatnonzero(~assigned)
+        if pool.size == 1:
+            add(p, int(pool[0]))
+            continue
+        i, j = _farthest_pair(D, pool)
+        add(p, i)
+        if target > 1:
+            add(p, j)
+    while not assigned.all():
+        progressed = False
+        for p, target in enumerate(targets):
+            if len(members[p]) >= target or assigned.all():
+                continue
+            score = np.where(assigned, -np.inf, mind[p])
+            add(p, int(row_argmin(-score[None, :])[0]))
+            progressed = True
+        if not progressed:
+            break
+    return members
 
 
 def _fix_eigenvector_signs(U: np.ndarray) -> np.ndarray:

@@ -16,6 +16,7 @@ from chemsplit.splitters.similarity import (
     BalancedMultiTaskSplitter,
     ButinaSplitter,
     DensityClusterSplitter,
+    DuplexSplitter,
     KMeansClusterSplitter,
     LeaveOneClusterOutSplitter,
     MaxDissimilaritySplitter,
@@ -497,6 +498,34 @@ class TestSupportPointsSplitter:
     def test_invalid_params_raise(self, kwargs):
         with pytest.raises(ParameterError):
             SupportPointsSplitter(**kwargs)
+
+
+class TestDuplexSplitter:
+    def test_exact_three_way_sizes(self):
+        splitter = DuplexSplitter(train_size=0.6, valid_size=0.2, test_size=0.2)
+        result = splitter.split_result(SMILES_20)[0]
+        assert (result.train.size, result.valid.size, result.test.size) == (12, 4, 4)
+
+    def test_deterministic_without_seed(self):
+        r1 = DuplexSplitter(train_size=0.5, test_size=0.5).split_result(SMILES_20)[0]
+        r2 = DuplexSplitter(train_size=0.5, test_size=0.5, random_state=99).split_result(SMILES_20)[0]
+        assert r1.test.tolist() == r2.test.tolist()
+
+    def test_test_set_spans_both_families(self):
+        result = DuplexSplitter(train_size=0.5, test_size=0.5).split_result(SMILES_20)[0]
+        assert 0 < int((result.test < 10).sum()) < 10
+
+    def test_test_set_covers_data_better_than_random(self):
+        from chemsplit.splitters.baseline import RandomSplitter
+
+        X = _rng(6).normal(size=(80, 2))
+        duplex = DuplexSplitter(metric="euclidean", train_size=0.75, test_size=0.25).split_result(X)[0]
+        D = np.linalg.norm(X[:, None, :] - X[None, :, :], axis=-1)
+        random_radius = []
+        for seed in range(10):
+            test = RandomSplitter(train_size=0.75, test_size=0.25, random_state=seed).split_result(X)[0].test
+            random_radius.append(float(np.max(np.min(D[:, test], axis=1))))
+        assert duplex.metadata["coverage_radius"]["test"] < min(random_radius)
 
 
 class TestMaxDissimilaritySplitter:

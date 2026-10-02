@@ -106,6 +106,7 @@ if TYPE_CHECKING:
         BalancedMultiTaskSplitter,
         ButinaSplitter,
         DensityClusterSplitter,
+        DuplexSplitter,
         KMeansClusterSplitter,
         LeaveOneClusterOutSplitter,
         MaxDissimilaritySplitter,
@@ -131,8 +132,8 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
-    # -- 59 splitters across 9 families, in declared order: baseline (5), scaffold (6),
-    # similarity (15), embedding (4), property (5), lineage (4), task (8), biomolecular (5),
+    # -- 60 splitters across 9 families, in declared order: baseline (5), scaffold (6),
+    # similarity (16), embedding (4), property (5), lineage (4), task (8), biomolecular (5),
     # protocol (7) --
     "RandomSplitter",
     "StratifiedRandomSplitter",
@@ -156,6 +157,7 @@ __all__ = [
     "OptiSimSplitter",
     "MinimalTestSetDissimilaritySplitter",
     "SupportPointsSplitter",
+    "DuplexSplitter",
     "MaxDissimilaritySplitter",
     "PerimeterSplitter",
     "LeaveOneClusterOutSplitter",
@@ -275,6 +277,7 @@ _LAZY_SOURCE: dict[str, str] = {
     "OptiSimSplitter": "chemsplit.splitters.similarity",
     "MinimalTestSetDissimilaritySplitter": "chemsplit.splitters.similarity",
     "SupportPointsSplitter": "chemsplit.splitters.similarity",
+    "DuplexSplitter": "chemsplit.splitters.similarity",
     "MaxDissimilaritySplitter": "chemsplit.splitters.similarity",
     "PerimeterSplitter": "chemsplit.splitters.similarity",
     "LeaveOneClusterOutSplitter": "chemsplit.splitters.similarity",

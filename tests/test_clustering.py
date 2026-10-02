@@ -20,12 +20,9 @@ def _blob_distance_matrix():
 
 
 def _spectral_blob_distance_matrix():
-    # Like _blob_distance_matrix but with a separation small enough that the Gaussian affinity
-    # kernel doesn't underflow to a bit-exact 0 cross-block similarity: an exactly-disconnected
-    # affinity graph has a degenerate (multiplicity > 1) zero eigenvalue, a case spectral
-    # clustering must refuse (ConstraintUnsatisfiableError) rather than silently cluster. Use a
-    # merely very-small-but-nonzero cross-similarity instead, so this test exercises ordinary
-    # (non-degenerate) spectral separation.
+    # Like _blob_distance_matrix, but close enough that the Gaussian kernel doesn't underflow
+    # to a bit-exact 0 cross-similarity. An exactly disconnected graph has a degenerate zero
+    # eigenvalue, which spectral clustering refuses; this keeps the separation non-degenerate.
     rng = np.random.default_rng(0)
     pts = np.vstack(
         [
@@ -142,7 +139,40 @@ class TestOptiSimPick:
 
     def test_empty_and_zero_picks(self):
         assert clustering.optisim_pick(np.zeros((0, 0)), 3, 2, 0.1, np.random.default_rng(0)) == []
-        assert clustering.optisim_pick(_blob_distance_matrix(), 0, 2, 0.1, np.random.default_rng(0)) == []
+        assert (
+            clustering.optisim_pick(_blob_distance_matrix(), 0, 2, 0.1, np.random.default_rng(0))
+            == []
+        )
+
+
+class TestDuplexOrder:
+    # corners of a 10x10 square, its centre, two points near opposite corners, and an edge midpoint
+    PTS = np.array(
+        [[0, 0], [10, 0], [0, 10], [10, 10], [5, 5], [1, 1], [9, 9], [5, 0]], dtype=float
+    )
+
+    def _D(self):
+        return np.linalg.norm(self.PTS[:, None, :] - self.PTS[None, :, :], axis=-1)
+
+    def test_hand_traced_two_way(self):
+        # seed pairs: train (0, 3) (tied with (1, 2), lexicographically first), test (1, 2);
+        # then train takes 4 (7.07 from both corners), test 5 (9.06, tied with 6 -> lower index),
+        # train 7 (5.0 from {0, 3, 4}), test 6.
+        train, test = clustering.duplex_order(self._D(), [4, 4])
+        assert train == [0, 3, 4, 7]
+        assert test == [1, 2, 5, 6]
+
+    def test_three_way_and_unequal_targets(self):
+        parts = clustering.duplex_order(self._D(), [4, 2, 2])
+        assert [len(p) for p in parts] == [4, 2, 2]
+        assert sorted(sum(parts, [])) == list(range(8))
+        train, test = clustering.duplex_order(self._D(), [7, 1])
+        assert test == [1]
+        assert len(train) == 7
+
+    def test_targets_must_cover_all_records(self):
+        with pytest.raises(ValueError):
+            clustering.duplex_order(self._D(), [3, 3])
 
 
 class TestSpectralPartition:

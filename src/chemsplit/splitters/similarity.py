@@ -67,6 +67,7 @@ __all__ = [
     "OptiSimSplitter",
     "MinimalTestSetDissimilaritySplitter",
     "SupportPointsSplitter",
+    "DuplexSplitter",
     "MaxDissimilaritySplitter",
     "PerimeterSplitter",
     "LeaveOneClusterOutSplitter",
@@ -1663,6 +1664,88 @@ class SupportPointsSplitter(BaseSplitter):
                 "test_selection": test_meta,
                 "valid_selection": valid_meta,
                 "realised_sizes": {"train": len(train), "valid": len(valid), "test": len(test)},
+            },
+        )
+        _small_partition_check(result, n)
+        return [result]
+
+
+# -
+# DuplexSplitter
+# -
+
+
+class DuplexSplitter(_SimilarityBase):
+    """DUPLEX: train, test and valid each grow as a maximally spread-out set, taking turns.
+
+    Train is seeded with the farthest-apart pair of records, test with the farthest-apart pair of
+    the rest, then valid likewise (ties -> lexicographically smallest pair). The partitions then
+    take turns adding the unassigned record farthest (by minimum distance) from their own members
+    -- ties -> smallest index -- and drop out of the rotation once they reach their size. Snee
+    described two sets; this generalises the rotation to three and to unequal sizes, so every size
+    is met exactly. Fully deterministic: no random draws.
+
+    Advantages
+    ----------
+    - Every partition spans the whole data space, so test covers the same range as train -- unlike Kennard-Stone, which puts all the extremes in train.
+    - The alternation makes the partitions statistically similar in spread, which suits model validation in the sense Snee intended.
+    - Exact sizes and fully deterministic without a seed.
+    - `metadata["coverage_radius"]` reports how far any record is from each partition.
+
+    Pitfalls
+    --------
+    - **An interpolation split.** Test records are spread through the same space as train, so scores are optimistic for genuinely new chemistry.
+    - Seeding by the farthest pairs puts outliers into every partition first; clean the data before splitting.
+    - Builds the full `n x n` distance matrix, and each step is `O(n)`, so the whole split is `O(n²)`.
+    - Not a leakage-control split: near-duplicates can land in different partitions.
+
+    References
+    ----------
+    .. [1] Snee, R. D. Validation of Regression Models: Methods and Examples. *Technometrics*
+       **1977**, 19 (4), 415-428. https://doi.org/10.1080/00401706.1977.10489581
+    """
+
+    splitter_id: ClassVar[str] = "duplex"
+    strictness: ClassVar[Strictness] = Strictness.MODERATE
+    bounded_metric_required: ClassVar[bool] = False
+    deterministic_without_seed: ClassVar[bool] = True
+
+    def __init__(
+        self,
+        *,
+        featurizer: str | Any = "ecfp4",
+        metric: str = "tanimoto",
+        max_memory_bytes: int = 2 * 1024**3,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs)
+        self._validate_similarity_params()
+
+    def _partition(self, ctx: _Context) -> list[SplitResult]:
+        n = ctx.n
+        D = _dist_matrix(self, ctx).astype(np.float64)
+        names = ("train", "test", "valid")
+        targets = (ctx.sizes.n_train, ctx.sizes.n_test, ctx.sizes.n_valid)
+        parts = _clustering.duplex_order(D, targets)
+        buckets = {name: np.sort(np.asarray(part, dtype=np.int64)) for name, part in zip(names, parts, strict=True)}
+        coverage = {
+            name: float(np.max(np.min(D[:, buckets[name]], axis=1)))
+            for name in names
+            if buckets[name].size
+        }
+        result = SplitResult(
+            train=buckets["train"],
+            valid=buckets["valid"],
+            test=buckets["test"],
+            discard=np.array([], dtype=np.int64),
+            groups=None,
+            splitter_id=self.splitter_id,
+            params=self.get_params(),
+            n_records=n,
+            metadata={
+                "seed_pairs": {name: part[:2] for name, part in zip(names, parts, strict=True) if part},
+                "coverage_radius": coverage,
+                "realised_sizes": {name: int(buckets[name].size) for name in names},
             },
         )
         _small_partition_check(result, n)
