@@ -236,6 +236,40 @@ class TestMaxMinSplitter:
         with pytest.raises(ParameterError):
             splitter.split_result(SMILES_20)
 
+    def test_swap_fraction_zero_matches_plain_kennard_stone(self):
+        plain = MaxMinSplitter(init="kennard_stone", train_size=0.5, test_size=0.5, random_state=0).split_result(SMILES_20)[0]
+        zero = MaxMinSplitter(init="kennard_stone", swap_fraction=0.0, train_size=0.5, test_size=0.5, random_state=0).split_result(SMILES_20)[0]
+        assert plain.train.tolist() == zero.train.tolist()
+        assert "swapped_in" not in zero.metadata
+
+    def test_mlm_swaps_rounded_fraction_each_way(self):
+        X = _rng(10).normal(size=(50, 3))
+        ks = MaxMinSplitter(init="kennard_stone", metric="euclidean", train_size=0.8, test_size=0.2, random_state=0).split_result(X)[0]
+        mlm = MaxMinSplitter(
+            init="kennard_stone", metric="euclidean", swap_fraction=0.1, train_size=0.8, test_size=0.2, random_state=0
+        ).split_result(X)[0]
+        out, inn = mlm.metadata["swapped_out"], mlm.metadata["swapped_in"]
+        assert len(out) == len(inn) == 4  # floor_round(0.1 * 40)
+        assert set(out) <= set(ks.train.tolist()) and set(out).isdisjoint(mlm.train.tolist())
+        assert set(inn) <= set(ks.test.tolist()) and set(inn) <= set(mlm.train.tolist())
+        assert mlm.train.size == 40
+        again = MaxMinSplitter(
+            init="kennard_stone", metric="euclidean", swap_fraction=0.1, train_size=0.8, test_size=0.2, random_state=0
+        ).split_result(X)[0]
+        assert again.train.tolist() == mlm.train.tolist()
+
+    def test_swap_capped_by_unpicked_records(self):
+        X = _rng(11).normal(size=(20, 2))
+        result = MaxMinSplitter(
+            init="kennard_stone", metric="euclidean", swap_fraction=0.5, train_size=0.9, test_size=0.1, random_state=0
+        ).split_result(X)[0]
+        assert len(result.metadata["swapped_in"]) == 2
+
+    @pytest.mark.parametrize("swap_fraction", [-0.1, 0.6, True, "0.1"])
+    def test_invalid_swap_fraction(self, swap_fraction):
+        with pytest.raises(ParameterError):
+            MaxMinSplitter(swap_fraction=swap_fraction)
+
 
 class TestSPXYSplitter:
     # 1-D points 0, 1, 3, 4 with record 1 the only label outlier. Scaled joint distances:

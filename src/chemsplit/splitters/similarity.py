@@ -36,6 +36,7 @@ from chemsplit.base import (
 from chemsplit.determinism import (
     argmax_tiebreak,
     argmin_tiebreak,
+    floor_round,
     row_argmin,
     seed_for,
     stable_sort,
@@ -933,6 +934,11 @@ class MaxMinSplitter(_SimilarityBase):
     The selected set may go to **train** (maximise coverage) or **test** (probe breadth) -- opposite
     experiments sharing one algorithm; never compare numbers across ``picked_goes_to`` values.
 
+    With ``swap_fraction > 0`` the selection is then perturbed: that fraction of the picked records
+    (rounded half up, capped at the number of unpicked records) is swapped for as many unpicked
+    records, both drawn from the ``"maxmin.swap"`` stream. ``init="kennard_stone"`` with
+    ``swap_fraction=0.1`` is the Morais-Lima-Martin (MLM) random-mutation Kennard-Stone method.
+
     Advantages
     ----------
     - With `picked_goes_to="train"`, builds the most informative training set for a fixed budget -- the standard answer to "which 500 compounds should I actually assay?".
@@ -948,7 +954,19 @@ class MaxMinSplitter(_SimilarityBase):
     - Strongly depends on the initial pick when `init="random"` -- report the seed, or use `"kennard_stone"` for a seed-free run.
     - Optimises coverage, not group separation -- nothing stops a near-duplicate of a picked molecule from landing in the other partition. Not a leakage-control split, and shouldn't be described as one.
     - `coverage_radius` is only meaningful in the chosen metric -- comparing it across fingerprints is meaningless.
+    - `swap_fraction` trades coverage for a less systematically optimistic test set; the swapped records make the split seed-dependent even with `init="kennard_stone"`.
 
+    References
+    ----------
+    .. [1] Kennard, R. W.; Stone, L. A. Computer Aided Design of Experiments. *Technometrics*
+       **1969**, 11 (1), 137-148. https://doi.org/10.1080/00401706.1969.10490666
+    .. [2] Saptoro, A.; Tadé, M. O.; Vuthaluru, H. A Modified Kennard-Stone Algorithm for Optimal
+       Division of Data for Developing Artificial Neural Network Models. *Chem. Prod. Process
+       Model.* **2012**, 7 (1). https://doi.org/10.1515/1934-2659.1645
+    .. [3] Morais, C. L. M.; Santos, M. C. D.; Lima, K. M. G.; Martin, F. L. Improving Data
+       Splitting for Classification Applications in Spectrochemical Analyses Employing a
+       Random-Mutation Kennard-Stone Algorithm Approach. *Bioinformatics* **2019**, 35 (24),
+       5257-5263. https://doi.org/10.1093/bioinformatics/btz421
     """
 
     splitter_id: ClassVar[str] = "max_min"
@@ -962,6 +980,7 @@ class MaxMinSplitter(_SimilarityBase):
         picked_goes_to: Literal["train", "test"] = "train",
         init: Literal["random", "kennard_stone", "most_peripheral", "index_zero"] = "random",
         n_picks: int | None = None,
+        swap_fraction: float = 0.0,
         featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
@@ -971,9 +990,12 @@ class MaxMinSplitter(_SimilarityBase):
         self.picked_goes_to = picked_goes_to
         self.init = init
         self.n_picks = n_picks
+        self.swap_fraction = swap_fraction
         self._validate_similarity_params()
         if picked_goes_to not in ("train", "test"):
             raise ParameterError(f"invalid picked_goes_to: {picked_goes_to!r}")
+        if isinstance(swap_fraction, bool) or not isinstance(swap_fraction, (int, float)) or not (0.0 <= swap_fraction <= 0.5):
+            raise ParameterError(f"swap_fraction must be in [0, 0.5], got {swap_fraction!r}")
 
     def _partition(self, ctx: _Context) -> list[SplitResult]:
         D = _dist_matrix(self, ctx)
@@ -985,6 +1007,17 @@ class MaxMinSplitter(_SimilarityBase):
             raise ParameterError(f"n_picks must satisfy 1 <= n_picks < n, got {n_picks}")
         rng = seed_for(ctx.rng_seeds, "maxmin.init", 0) if self.init == "random" else None
         picked = _clustering.maxmin_pick(D, n_picks, init=self.init, rng=rng)
+        swap_meta: dict[str, Any] = {}
+        if self.swap_fraction > 0:
+            picked_set = set(picked)
+            unpicked = [i for i in range(n) if i not in picked_set]
+            k = min(floor_round(self.swap_fraction * len(picked)), len(unpicked))
+            swap_rng = seed_for(ctx.rng_seeds, "maxmin.swap", 0)
+            swapped_out = sorted(int(i) for i in swap_rng.choice(picked, size=k, replace=False)) if k else []
+            swapped_in = sorted(int(i) for i in swap_rng.choice(unpicked, size=k, replace=False)) if k else []
+            out_set = set(swapped_out)
+            picked = [i for i in picked if i not in out_set] + swapped_in
+            swap_meta = {"swapped_out": swapped_out, "swapped_in": swapped_in}
         rem_rng = seed_for(ctx.rng_seeds, "maxmin.remainder", 0)
         buckets = _fill_remainder(picked, n, ctx.sizes, rem_rng, self.picked_goes_to)
         min_pairwise = float("inf")
@@ -1008,6 +1041,7 @@ class MaxMinSplitter(_SimilarityBase):
                 "min_pairwise_distance_in_picked": min_pairwise if picked else float("nan"),
                 "coverage_radius": coverage,
                 "realised_sizes": {k: int(v.size) for k, v in buckets.items() if k != "discard"},
+                **swap_meta,
             },
         )
         _small_partition_check(result, n)
