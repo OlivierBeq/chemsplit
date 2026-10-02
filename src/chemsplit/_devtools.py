@@ -113,6 +113,7 @@ def _build_plan(fixtures: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str
     # embedding
     plan["umap_cluster"] = smiles_case("two_clusters")
     plan["projection"] = smiles_case("two_clusters")
+    plan["self_organizing_map"] = smiles_case("two_clusters")
     plan["latent_space"] = lambda: (
         np.random.default_rng(0).standard_normal((60, 12)),
         None,
@@ -290,6 +291,7 @@ def _build_plan(fixtures: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str
             "balanced_multi_task": "multitask_sparse",
             "umap_cluster": "two_clusters",
             "projection": "two_clusters",
+            "self_organizing_map": "two_clusters",
             "latent_space": "synthetic_matrix",
             "property": "linear_series",
             "label_extrapolation": "linear_series",

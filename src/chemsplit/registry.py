@@ -50,6 +50,7 @@ def _import_all_classes() -> list[type[BaseSplitter]]:
     from chemsplit.splitters.embedding import (
         LatentSpaceSplitter,
         ProjectionSplitter,
+        SelfOrganizingMapSplitter,
         UMAPClusterSplitter,
     )
     from chemsplit.splitters.lineage import (
@@ -145,6 +146,7 @@ def _import_all_classes() -> list[type[BaseSplitter]]:
         # embedding
         UMAPClusterSplitter,
         ProjectionSplitter,
+        SelfOrganizingMapSplitter,
         LatentSpaceSplitter,
         # property
         PropertySplitter,

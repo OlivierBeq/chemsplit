@@ -38,6 +38,7 @@ Optional extras enable additional splitters and featurizers:
 | `chemsplit[ga]` | `SIMPDSplitter` (genetic-algorithm pseudo-time optimization, via `deap`) |
 | `chemsplit[bio]` | Protein-sequence splitters with accelerated alignment (`biopython`, `parasail`) |
 | `chemsplit[mmpa]` | `MatchedMolecularSeriesSplitter` matched-series extraction |
+| `chemsplit[som]` | `SelfOrganizingMapSplitter` (self-organizing maps via `ksom` and PyTorch) |
 | `chemsplit[all]` | Everything above |
 
 > **Note:** every extra has a dependency-free fallback where one makes sense (e.g. a Hamming-distance fallback for sequence identity without `bio`) -- an extra buys you a better implementation, not a hard requirement.

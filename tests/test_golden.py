@@ -14,7 +14,8 @@ _GOLDEN_DIR = Path(__file__).resolve().parent / "golden"
 _GOLDEN_FILES = sorted(_GOLDEN_DIR.glob("*__*__seed0.json")) if _GOLDEN_DIR.is_dir() else []
 
 # eigendecomposition/KMeans/UMAP outputs vary by BLAS/numba build (OS and Python-wheel dependent).
-_BLAS_UNSTABLE_SPLITTERS = {"spectral", "k_means_cluster", "umap_cluster", "complex_joint", "support_points"}
+_BLAS_UNSTABLE_SPLITTERS = {"spectral", "k_means_cluster", "umap_cluster", "complex_joint", "support_points",
+                            "self_organizing_map"}
 
 
 def _parse_golden_filename(path: Path) -> str:
@@ -83,4 +84,4 @@ def test_every_splitter_has_a_golden():
 
 
 def test_golden_dir_has_one_file_per_splitter():
-    assert len(_GOLDEN_FILES) == 58
+    assert len(_GOLDEN_FILES) == 59

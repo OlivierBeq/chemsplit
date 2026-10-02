@@ -29,6 +29,9 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Install CPU-only torch
+        if: runner.os != 'macOS'
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
       - run: pip install -e ".[all,dev]"
       - run: pytest -m "not network" -q
 

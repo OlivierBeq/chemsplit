@@ -69,6 +69,7 @@ if TYPE_CHECKING:
     from chemsplit.splitters.embedding import (
         LatentSpaceSplitter,
         ProjectionSplitter,
+        SelfOrganizingMapSplitter,
         UMAPClusterSplitter,
     )
     from chemsplit.splitters.lineage import (
@@ -130,8 +131,8 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
-    # -- 58 splitters across 9 families, in declared order: baseline (5), scaffold (6),
-    # similarity (15), embedding (3), property (5), lineage (4), task (8), biomolecular (5),
+    # -- 59 splitters across 9 families, in declared order: baseline (5), scaffold (6),
+    # similarity (15), embedding (4), property (5), lineage (4), task (8), biomolecular (5),
     # protocol (7) --
     "RandomSplitter",
     "StratifiedRandomSplitter",
@@ -161,6 +162,7 @@ __all__ = [
     "BalancedMultiTaskSplitter",
     "UMAPClusterSplitter",
     "ProjectionSplitter",
+    "SelfOrganizingMapSplitter",
     "LatentSpaceSplitter",
     "PropertySplitter",
     "LabelExtrapolationSplitter",
@@ -280,6 +282,7 @@ _LAZY_SOURCE: dict[str, str] = {
     # splitters/embedding.py
     "UMAPClusterSplitter": "chemsplit.splitters.embedding",
     "ProjectionSplitter": "chemsplit.splitters.embedding",
+    "SelfOrganizingMapSplitter": "chemsplit.splitters.embedding",
     "LatentSpaceSplitter": "chemsplit.splitters.embedding",
     # splitters/property_.py
     "PropertySplitter": "chemsplit.splitters.property_",

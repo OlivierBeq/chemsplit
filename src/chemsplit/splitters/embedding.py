@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from collections.abc import Callable
 from typing import Any, ClassVar, Literal
 
 import numpy as np
 
-from chemsplit._fp_similarity import SimilarityParamsMixin, compute_distance_matrix
+from chemsplit._fp_similarity import (
+    SimilarityParamsMixin,
+    compute_distance_matrix,
+    guard_memory,
+    resolve_featurizer,
+)
 from chemsplit._unionfind import dense_label_encode
-from chemsplit.base import GroupSplitter, Strictness, _Context
-from chemsplit.determinism import argmax_tiebreak, seed_for
+from chemsplit.base import GroupSplitter, SplitResult, Strictness, _Context
+from chemsplit.determinism import argmax_tiebreak, row_argmin, seed_for
 from chemsplit.exceptions import (
     CircularityWarning,
     DegenerateGroupingError,
@@ -22,7 +28,7 @@ from chemsplit.exceptions import (
 from chemsplit.exceptions import DeterminismWarning as _DeterminismWarning
 from chemsplit.types import IndexArray
 
-__all__ = ["LatentSpaceSplitter", "ProjectionSplitter", "UMAPClusterSplitter"]
+__all__ = ["LatentSpaceSplitter", "ProjectionSplitter", "SelfOrganizingMapSplitter", "UMAPClusterSplitter"]
 
 
 # -
@@ -512,6 +518,328 @@ class ProjectionSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitte
             "n_clusters": len(sizes),
             "nondeterministic_method": self._nondeterministic_method,
         }
+
+
+# -
+# SelfOrganizingMapSplitter
+# -
+
+
+def _som_tanimoto_distance(som_weights: Any, x: Any) -> Any:
+    """Continuous Tanimoto distance between map units (K, d) and records (N, d), shape (K, N);
+    two all-zero vectors are at distance 0."""
+    import torch
+
+    dot = som_weights @ x.T
+    denom = (som_weights * som_weights).sum(dim=1)[:, None] + (x * x).sum(dim=1)[None, :] - dot
+    sim = torch.where(denom > 0, dot / torch.where(denom > 0, denom, torch.ones_like(denom)), torch.ones_like(denom))
+    return 1.0 - sim
+
+
+class SelfOrganizingMapSplitter(SimilarityParamsMixin, GroupSplitter):
+    """Kohonen self-organizing map (``self_organizing_map``): records are mapped onto a square grid
+    of units, and the map's cells drive the split.
+
+    The map is trained online with KSOM, one record at a time, for ``n_epochs`` passes. Each pass
+    visits the records in a permutation drawn from the ``"som.order"`` stream (or in index order).
+    The learning rate and neighbourhood radius decay linearly to zero over the whole run. The
+    initial unit weights are either laid out across the first two principal components of the
+    features (``init="pca"``, deterministic) or drawn as records from the ``"som.init"`` stream.
+    Each record's cell is its best-matching unit under ``metric``; ties go to the lowest unit index.
+
+    - ``mode="cluster"`` treats every occupied cell as a group and assigns whole cells to
+      partitions: an extrapolative split over regions of the map.
+    - ``mode="stratified"`` keeps cells together only for sampling: records are ordered cell by
+      cell along a snake path over the grid (a ``"som.stratify"`` shuffle within each cell), and
+      test, then valid, are drawn by systematic sampling along that order, so every region of the
+      map contributes in proportion to its size (Guha et al. 2004). No groups are formed.
+
+    :param mode: ``"cluster"`` or ``"stratified"``. Defaults to ``"cluster"``.
+    :param grid_size: Side of the square map. ``"auto"`` gives ``ceil(sqrt(5·sqrt(n)))`` units
+        per side (about ``5·sqrt(n)`` units, Vesanto & Alhoniemi), clipped to [2, 50].
+        Defaults to ``"auto"``.
+    :param n_epochs: Training passes over the data. Defaults to 10.
+    :param batch_size: Records per KSOM update call. KSOM finds every record's best-matching unit
+        against the map as it stood at the start of the call, so 1 gives the classic online map.
+        Defaults to 1.
+    :param alpha_init: Initial learning rate. Defaults to 0.5.
+    :param neighborhood_init: Initial neighbourhood radius in grid units; ``None`` uses half the
+        grid side. Defaults to ``None``.
+    :param neighborhood: Neighbourhood function, ``"gaussian"`` or ``"linear"``. Defaults to
+        ``"gaussian"``.
+    :param metric: Distance used to find each record's best-matching unit: ``"tanimoto"``
+        (continuous Tanimoto), ``"euclidean"`` or ``"cosine"``. The weight update always moves
+        units straight towards the record, whichever metric is used. Defaults to ``"tanimoto"``.
+    :param init: Initial weights, ``"pca"`` or ``"records"``. Defaults to ``"pca"``.
+    :param order: Record order within each epoch, ``"random"`` or ``"index"``. Defaults to
+        ``"random"``.
+    :param standardize: Standardise feature columns before training. ``None`` standardises
+        non-binary features unless ``metric="tanimoto"``; ``True`` with ``"tanimoto"`` is an error.
+        Defaults to ``None``.
+    :ivar splitter_id: ``"self_organizing_map"``.
+
+    Advantages
+    ----------
+    - A nonlinear map that preserves neighbourhoods: nearby cells hold similar records, so `mode="cluster"` holds out coherent regions of chemical space.
+    - `mode="stratified"` gives a representative split that covers every region of the map, the use Guha et al. describe for QSAR set design.
+    - Memory grows with `n x units`, never `n x n`.
+    - `init="pca"` with `order="index"` is fully deterministic without a seed.
+
+    Pitfalls
+    --------
+    - Online training costs one KSOM update per record per epoch; tens of thousands of records take minutes.
+    - The grid size sets the granularity of `mode="cluster"`: a large grid leaves many singleton cells, so the split behaves more like random than extrapolative.
+    - Results depend on the seed through the record order (`order="random"`) and `init="records"`.
+    - `metric` only chooses best-matching units; on binary fingerprints the trained weights are continuous, which is why the continuous Tanimoto distance is used.
+    - Torch arithmetic follows the platform's BLAS, so splits can differ slightly across machines.
+
+    Notes
+    -----
+    Requires the ``som`` extra (``pip install 'chemsplit[som]'``). Torch's global random state is
+    saved and restored around map construction, so the split never touches it. Determinism
+    ``purpose`` strings: ``"som.init"``, ``"som.order"``, ``"som.stratify"``, ``"group.assign"``.
+
+    References
+    ----------
+    .. [1] Kohonen, T. Self-Organized Formation of Topologically Correct Feature Maps.
+       *Biol. Cybern.* **1982**, 43 (1), 59-69. https://doi.org/10.1007/BF00337288
+    .. [2] Guha, R.; Serra, J. R.; Jurs, P. C. Generation of QSAR Sets with a Self-Organizing Map.
+       *J. Mol. Graph. Model.* **2004**, 23 (1), 1-14. https://doi.org/10.1016/j.jmgm.2004.03.003
+    .. [3] Vesanto, J.; Alhoniemi, E. Clustering of the Self-Organizing Map. *IEEE Trans. Neural
+       Netw.* **2000**, 11 (3), 586-600. https://doi.org/10.1109/72.846731
+    .. [4] d'Aquin, M. KSOM: Simple, but Kind of Fast Self-Organising Maps in PyTorch.
+       https://github.com/mdaquin/KSOM
+    """
+
+    splitter_id: ClassVar[str] = "self_organizing_map"
+    family: ClassVar[str] = "embedding"
+    strictness: ClassVar[Strictness] = Strictness.STRICT
+    group_forming: ClassVar[bool] = True
+    accepts: ClassVar[tuple[str, ...]] = ("smiles", "mol", "features")
+    extras: ClassVar[tuple[str, ...]] = ("som",)
+    deterministic_without_seed: ClassVar[bool] = False
+
+    def __init__(
+        self,
+        *,
+        mode: Literal["cluster", "stratified"] = "cluster",
+        grid_size: int | Literal["auto"] = "auto",
+        n_epochs: int = 10,
+        batch_size: int = 1,
+        alpha_init: float = 0.5,
+        neighborhood_init: float | None = None,
+        neighborhood: Literal["gaussian", "linear"] = "gaussian",
+        metric: Literal["tanimoto", "euclidean", "cosine"] = "tanimoto",
+        init: Literal["pca", "records"] = "pca",
+        order: Literal["random", "index"] = "random",
+        standardize: bool | None = None,
+        featurizer: Any = "ecfp4",
+        max_memory_bytes: int = 2 * 1024**3,
+        n_jobs: int = 1,
+        size_tolerance: float = 0.05,
+        group_assignment: Literal["greedy_desc", "balanced", "random"] = "greedy_desc",
+        **base: Any,
+    ) -> None:
+        self.mode = mode
+        self.grid_size = grid_size
+        self.n_epochs = n_epochs
+        self.batch_size = batch_size
+        self.alpha_init = alpha_init
+        self.neighborhood_init = neighborhood_init
+        self.neighborhood = neighborhood
+        self.init = init
+        self.order = order
+        self.standardize = standardize
+        SimilarityParamsMixin.__init__(
+            self, featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, n_jobs=n_jobs
+        )
+        GroupSplitter.__init__(
+            self, size_tolerance=size_tolerance, group_assignment=group_assignment, n_jobs=n_jobs, **base
+        )
+        choices = {
+            "mode": ("cluster", "stratified"),
+            "neighborhood": ("gaussian", "linear"),
+            "metric": ("tanimoto", "euclidean", "cosine"),
+            "init": ("pca", "records"),
+            "order": ("random", "index"),
+        }
+        for name, allowed in choices.items():
+            if getattr(self, name) not in allowed:
+                raise ParameterError(f"invalid {name}: {getattr(self, name)!r}; expected one of {list(allowed)}")
+        if grid_size != "auto" and (
+            isinstance(grid_size, bool) or not isinstance(grid_size, (int, np.integer)) or grid_size < 2
+        ):
+            raise ParameterError(f"grid_size must be 'auto' or an int >= 2, got {grid_size!r}")
+        for name in ("n_epochs", "batch_size"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, np.integer)) or value < 1:
+                raise ParameterError(f"{name} must be an int >= 1, got {value!r}")
+        if not (isinstance(alpha_init, (int, float)) and 0.0 < alpha_init <= 1.0):
+            raise ParameterError(f"alpha_init must be in (0, 1], got {alpha_init!r}")
+        if neighborhood_init is not None and not (
+            isinstance(neighborhood_init, (int, float)) and neighborhood_init > 0
+        ):
+            raise ParameterError(f"neighborhood_init must be None or > 0, got {neighborhood_init!r}")
+        if standardize not in (None, True, False):
+            raise ParameterError(f"standardize must be None or a bool, got {standardize!r}")
+        if standardize is True and metric == "tanimoto":
+            raise ParameterError("standardize=True is incompatible with metric='tanimoto'")
+        self._validate_similarity_params()
+
+    def compute_groups(self, X: Any, y: Any = None, **kw: Any) -> IndexArray:
+        if self.mode == "stratified":
+            raise ParameterError(
+                f"{type(self).__name__}(mode='stratified') forms no groups; use mode='cluster' for compute_groups()"
+            )
+        return super().compute_groups(X, y, **kw)
+
+    def _resolve_grid_size(self, n: int) -> int:
+        if self.grid_size != "auto":
+            return int(self.grid_size)
+        side = math.ceil(math.sqrt(5.0 * math.sqrt(n)))
+        return int(min(50, max(2, side)))
+
+    def _features(self, ctx: _Context) -> np.ndarray:
+        from chemsplit.metrics import _is_binary_like
+
+        F = ctx.get_features(resolve_featurizer(self.featurizer))
+        binary = _is_binary_like(F)
+        X = np.asarray(F.toarray() if hasattr(F, "toarray") else F, dtype=np.float64)
+        if not np.all(np.isfinite(X)):
+            raise ParameterError(f"{type(self).__name__}: features contain NaN or infinite values")
+        standardize = self.standardize
+        if standardize is None:
+            standardize = not binary and self.metric != "tanimoto"
+        if standardize:
+            sd = X.std(axis=0)
+            X = (X - X.mean(axis=0)) / np.where(sd > 0, sd, 1.0)
+        return X
+
+    def _initial_weights(self, X: np.ndarray, side: int, ctx: _Context) -> np.ndarray:
+        n, d = X.shape
+        k = side * side
+        if self.init == "records":
+            rng = seed_for(ctx.rng_seeds, "som.init", 0)
+            return X[rng.choice(n, size=k, replace=n < k)].copy()
+        mean = X.mean(axis=0)
+        centred = X - mean
+        _, s, vt = np.linalg.svd(centred, full_matrices=False)
+        comps = np.zeros((2, d))
+        scales = np.zeros(2)
+        r = min(2, vt.shape[0])
+        comps[:r] = _fix_sign(vt[:r].T).T
+        scales[:r] = s[:r] / math.sqrt(max(1, n - 1))
+        ticks = np.linspace(-1.0, 1.0, side)
+        rows = np.repeat(ticks, side)
+        cols = np.tile(ticks, side)
+        return mean + rows[:, None] * scales[0] * comps[0] + cols[:, None] * scales[1] * comps[1]
+
+    def _fit_map(self, ctx: _Context) -> tuple[np.ndarray, int, np.ndarray]:
+        """Train the map; returns (unit distances (n, K), grid side, unit weights)."""
+        try:
+            import torch
+            from ksom.ksom import SOM, cosine_distance, euclidean_distance, nb_gaussian, nb_linear
+        except ImportError as exc:
+            raise MissingDependencyError(type(self).__name__, "som") from exc
+        X = self._features(ctx)
+        n = X.shape[0]
+        side = self._resolve_grid_size(n)
+        guard_memory(max(n, side * side), self.max_memory_bytes, type(self).__name__)
+        dist = {"tanimoto": _som_tanimoto_distance, "euclidean": euclidean_distance, "cosine": cosine_distance}[self.metric]
+        nb_fct = nb_gaussian if self.neighborhood == "gaussian" else nb_linear
+        nb_init = float(self.neighborhood_init) if self.neighborhood_init is not None else side / 2.0
+        total_steps = self.n_epochs * n + 1
+        init = torch.from_numpy(self._initial_weights(X, side, ctx))
+        with torch.random.fork_rng(devices=[]):
+            som = SOM(
+                side, side, int(X.shape[1]), dist=dist, sample_init=init,
+                alpha_init=float(self.alpha_init), alpha_drate=float(self.alpha_init) / total_steps,
+                neighborhood_init=nb_init, neighborhood_fct=nb_fct,
+                neighborhood_drate=nb_init / total_steps,
+            )
+        Xt = torch.from_numpy(X)
+        for epoch in range(self.n_epochs):
+            visit = (
+                seed_for(ctx.rng_seeds, "som.order", epoch).permutation(n)
+                if self.order == "random"
+                else np.arange(n)
+            )
+            for start in range(0, n, self.batch_size):
+                som.add(Xt[torch.from_numpy(visit[start:start + self.batch_size])])
+        with torch.no_grad():
+            D = dist(som.somap, Xt).numpy().T.astype(np.float64)
+        return D, side, som.somap.numpy()
+
+    def _map_cells(self, ctx: _Context) -> tuple[np.ndarray, dict[str, Any]]:
+        D, side, _ = self._fit_map(ctx)
+        n = D.shape[0]
+        bmu = row_argmin(D)
+        masked = D.copy()
+        masked[np.arange(n), bmu] = np.inf
+        second = row_argmin(masked) if D.shape[1] > 1 else bmu
+        r1, c1 = np.divmod(bmu, side)
+        r2, c2 = np.divmod(second, side)
+        adjacent = (np.abs(r1 - r2) <= 1) & (np.abs(c1 - c2) <= 1)
+        occupied, counts = np.unique(bmu, return_counts=True)
+        meta = {
+            "mode": self.mode,
+            "grid_size": side,
+            "metric": self.metric,
+            "quantization_error": float(D[np.arange(n), bmu].mean()),
+            "topographic_error": float(1.0 - adjacent.mean()),
+            "n_occupied_cells": int(occupied.size),
+            "cell_sizes": sorted(counts.tolist(), reverse=True),
+        }
+        return bmu, meta
+
+    def _group_labels(self, ctx: _Context) -> IndexArray:
+        bmu, meta = self._map_cells(ctx)
+        self._last_meta = meta
+        clusters: dict[int, list[int]] = {}
+        for i, cell in enumerate(bmu.tolist()):
+            clusters.setdefault(cell, []).append(i)
+        from chemsplit.splitters.similarity import _check_cluster_degeneracy
+
+        _check_cluster_degeneracy(
+            list(clusters.values()), ctx.n, type(self).__name__, f"grid_size={meta['grid_size']}"
+        )
+        return np.asarray(dense_label_encode(bmu.tolist()), dtype=np.int64)
+
+    def _group_metadata(self, ctx: _Context, labels: IndexArray) -> dict[str, Any]:
+        return getattr(self, "_last_meta", {})
+
+    def _partition(self, ctx: _Context) -> list[SplitResult]:
+        if self.mode == "cluster":
+            return super()._partition(ctx)
+        n = ctx.n
+        bmu, meta = self._map_cells(ctx)
+        side = meta["grid_size"]
+        rows, cols = np.divmod(bmu, side)
+        snake = rows * side + np.where(rows % 2 == 0, cols, side - 1 - cols)
+        shuffle = seed_for(ctx.rng_seeds, "som.stratify", 0).permutation(n)
+        rank_in_cell = np.empty(n, dtype=np.int64)
+        rank_in_cell[shuffle] = np.arange(n)
+        walk = np.lexsort((rank_in_cell, snake)).tolist()
+
+        def systematic(seq: list[int], k: int) -> tuple[list[int], list[int]]:
+            m = len(seq)
+            hit = [(p + 1) * k // m > p * k // m for p in range(m)] if m else []
+            return [r for r, h in zip(seq, hit, strict=True) if h], [r for r, h in zip(seq, hit, strict=True) if not h]
+
+        test, rest = systematic(walk, ctx.sizes.n_test)
+        valid, train = systematic(rest, ctx.sizes.n_valid)
+        result = SplitResult(
+            train=np.sort(np.asarray(train, dtype=np.int64)),
+            valid=np.sort(np.asarray(valid, dtype=np.int64)),
+            test=np.sort(np.asarray(test, dtype=np.int64)),
+            discard=np.array([], dtype=np.int64),
+            groups=None,
+            splitter_id=self.splitter_id,
+            params=self.get_params(),
+            n_records=n,
+            metadata={**meta, "realised_sizes": {"train": len(train), "valid": len(valid), "test": len(test)}},
+        )
+        return [result]
 
 
 # -
