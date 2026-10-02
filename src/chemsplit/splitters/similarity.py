@@ -33,7 +33,13 @@ from chemsplit.base import (
     _Context,
     _ResolvedSizes,
 )
-from chemsplit.determinism import argmax_tiebreak, argmin_tiebreak, seed_for, stable_sort
+from chemsplit.determinism import (
+    argmax_tiebreak,
+    argmin_tiebreak,
+    row_argmin,
+    seed_for,
+    stable_sort,
+)
 from chemsplit.exceptions import (
     ConfigurationError,
     ConstraintUnsatisfiableError,
@@ -42,6 +48,7 @@ from chemsplit.exceptions import (
     LabelError,
     MissingDependencyError,
     ParameterError,
+    ScalabilityError,
     SizeToleranceWarning,
     warn_with_details,
 )
@@ -59,6 +66,7 @@ __all__ = [
     "SPXYSplitter",
     "OptiSimSplitter",
     "MinimalTestSetDissimilaritySplitter",
+    "SupportPointsSplitter",
     "MaxDissimilaritySplitter",
     "PerimeterSplitter",
     "LeaveOneClusterOutSplitter",
@@ -1397,6 +1405,263 @@ class MinimalTestSetDissimilaritySplitter(_SimilarityBase):
             metadata={
                 "bin_edges": test_edges,
                 "test_total_dissimilarity": [float(totals[i]) for i in sorted(test)],
+                "realised_sizes": {"train": len(train), "valid": len(valid), "test": len(test)},
+            },
+        )
+        _small_partition_check(result, n)
+        return [result]
+
+
+# -
+# SupportPointsSplitter
+# -
+
+
+def _helmert(codes: np.ndarray, n_levels: int) -> np.ndarray:
+    """Helmert contrasts for level codes ``0..n_levels-1``: column ``c`` is ``-1`` for levels
+    ``<= c``, ``c + 1`` for level ``c + 1`` and ``0`` above, giving ``n_levels - 1`` columns."""
+    out = np.zeros((codes.size, max(0, n_levels - 1)), dtype=np.float64)
+    for c in range(n_levels - 1):
+        out[codes <= c, c] = -1.0
+        out[codes == c + 1, c] = float(c + 1)
+    return out
+
+
+def _encode_label_columns(y: Any, label_kind: str, owner: str) -> np.ndarray:
+    """Numeric design columns for ``y``: continuous columns as float, categorical columns
+    (``label_kind="categorical"``, or non-numeric/bool under ``"auto"``) as Helmert contrasts with
+    levels in order of first appearance."""
+    arr = np.asarray(y)
+    if arr.ndim == 1:
+        arr = arr.reshape(-1, 1)
+    if arr.ndim != 2:
+        raise LabelError(f"{owner} requires y of shape (n,) or (n, n_tasks)")
+    blocks: list[np.ndarray] = []
+    for c in range(arr.shape[1]):
+        col = arr[:, c]
+        categorical = label_kind == "categorical" or (
+            label_kind == "auto" and col.dtype.kind in ("O", "U", "S", "b")
+        )
+        if categorical:
+            if any(v is None or (isinstance(v, float) and np.isnan(v)) for v in col.tolist()):
+                raise LabelError(f"{owner}: y contains missing categorical labels")
+            levels: dict[Any, int] = {}
+            codes = np.asarray([levels.setdefault(v, len(levels)) for v in col.tolist()], dtype=np.int64)
+            blocks.append(_helmert(codes, len(levels)))
+        else:
+            try:
+                num = col.astype(np.float64)
+            except (TypeError, ValueError):
+                raise LabelError(
+                    f"{owner}: y column {c} is not numeric; pass label_kind='categorical'"
+                ) from None
+            if not np.all(np.isfinite(num)):
+                raise LabelError(f"{owner} requires finite y")
+            blocks.append(num.reshape(-1, 1))
+    return np.hstack(blocks) if blocks else np.zeros((arr.shape[0], 0))
+
+
+def _support_points(
+    Z: np.ndarray, n_points: int, rng: np.random.Generator, max_iter: int, tol: float
+) -> tuple[np.ndarray, int, bool, float]:
+    """Support points of the rows of ``Z`` (Mak & Joseph 2018) by the convex-concave fixed point
+    ``x_i <- [ (N/n) sum_k (x_i - x_k)/|x_i - x_k| + sum_m z_m/|x_i - z_m| ] / sum_m 1/|x_i - z_m|``,
+    updated for all points at once from distinct data rows plus a small jitter, and clipped to the
+    data's bounding box. Stops once the energy criterion ``2·mean|x - z| - mean|x - x'|`` improves
+    by less than ``tol`` (relative) in one iteration; returns ``(points, iterations, converged,
+    criterion)``."""
+    N = Z.shape[0]
+    lo, hi = Z.min(axis=0), Z.max(axis=0)
+    start = rng.choice(N, size=n_points, replace=False)
+    X = np.clip(Z[start] + rng.normal(scale=1e-3, size=(n_points, Z.shape[1])), lo, hi)
+    ratio = N / n_points
+    previous = np.inf
+    for it in range(1, max_iter + 1):
+        Dxz = cdist(X, Z)
+        Dxx = cdist(X, X)
+        criterion = float(2.0 * Dxz.mean() - Dxx.mean())
+        if np.isfinite(previous) and previous - criterion <= tol * abs(previous):
+            return X, it - 1, True, criterion
+        previous = criterion
+        W = 1.0 / np.maximum(Dxz, 1e-12)
+        np.fill_diagonal(Dxx, np.inf)
+        V = 1.0 / np.maximum(Dxx, 1e-12)
+        repulse = X * V.sum(axis=1)[:, None] - V @ X
+        X = np.clip((ratio * repulse + W @ Z) / W.sum(axis=1)[:, None], lo, hi)
+    criterion = float(2.0 * cdist(X, Z).mean() - cdist(X, X).mean())
+    return X, max_iter, False, criterion
+
+
+class SupportPointsSplitter(BaseSplitter):
+    """SPlit: the smaller subset is the set of records nearest to the data's support points.
+
+    Features (plus the labels, when given and ``use_labels=True``) form one design matrix:
+    categorical label columns become Helmert contrasts, constant columns are dropped and every
+    column is standardised. Support points -- the ``k`` points minimising the energy distance to the
+    data -- are computed for the smaller side of the cut (``k = n_test``, or ``n - n_test`` when test
+    is the larger side) by the convex-concave fixed point of Mak & Joseph, started from ``k``
+    distinct records drawn from the ``"support_points.init"`` stream. Each support point in turn
+    then takes its nearest still-unassigned record. A validation set, if requested, is selected the
+    same way from the remaining records (stream index 1). Joseph's optimal-ratio result suggests a
+    test fraction of about ``1 / (sqrt(p) + 1)`` for ``p`` model parameters; chemsplit leaves the
+    sizes to the caller.
+
+    :param featurizer: Feature representation. Defaults to ``"physchem"``: the method works in
+        standardised Euclidean space, which suits continuous descriptors.
+    :param use_labels: Append ``y`` to the design matrix when it is given, as in the original
+        method. Defaults to True.
+    :param label_kind: How to encode ``y``: ``"continuous"``, ``"categorical"`` (Helmert
+        contrasts) or ``"auto"`` (categorical for non-numeric or boolean columns). Defaults to
+        ``"auto"``.
+    :param max_iter: Maximum fixed-point iterations. Defaults to 500.
+    :param tol: Stop once the energy criterion improves by less than this fraction in one
+        iteration. Defaults to 1e-6.
+    :param max_memory_bytes: Ceiling on the support-point/record distance blocks. Defaults to 2 GiB.
+    :param base: See :class:`chemsplit.base.BaseSplitter`.
+
+    Advantages
+    ----------
+    - Both subsets follow the joint distribution of features and labels as closely as a subset of that size can -- an optimal version of what a random split only achieves on average.
+    - Far less variance between seeds than a random split, so one split is representative.
+    - Handles mixed continuous and categorical labels through Helmert coding.
+    - Never builds an `n x n` matrix: memory grows with `n x k`.
+
+    Pitfalls
+    --------
+    - **An interpolation split.** Test records sit where the training data is densest, so scores are as optimistic as a good random split -- not a test of generalisation to new chemistry.
+    - With `use_labels=True` the split depends on `y`; set it to False for a label-blind split.
+    - Each fixed-point iteration costs `O(k · n · p)`; for large `n` and `k` this is the slowest splitter in the family.
+    - Standardisation gives every column equal weight, so hundreds of noisy descriptors can drown out the labels; select descriptors first.
+    - Results depend on BLAS-level floating point, so splits can differ across platforms.
+
+    References
+    ----------
+    .. [1] Joseph, V. R.; Vakayil, A. SPlit: An Optimal Method for Data Splitting.
+       *Technometrics* **2022**, 64 (2), 166-176. https://doi.org/10.1080/00401706.2021.1921037
+    .. [2] Mak, S.; Joseph, V. R. Support Points. *Ann. Statist.* **2018**, 46 (6A), 2562-2592.
+       https://doi.org/10.1214/17-AOS1629
+    .. [3] Joseph, V. R. Optimal Ratio for Data Splitting. *Stat. Anal. Data Min.* **2022**, 15
+       (4), 531-538. https://doi.org/10.1002/sam.11583
+    """
+
+    splitter_id: ClassVar[str] = "support_points"
+    family: ClassVar[str] = "similarity"
+    strictness: ClassVar[Strictness] = Strictness.OPTIMISTIC
+    group_forming: ClassVar[bool] = False
+    accepts: ClassVar[tuple[str, ...]] = ("smiles", "mol", "features")
+    deterministic_without_seed: ClassVar[bool] = False
+
+    def __init__(
+        self,
+        *,
+        featurizer: str | Any = "physchem",
+        use_labels: bool = True,
+        label_kind: Literal["auto", "continuous", "categorical"] = "auto",
+        max_iter: int = 500,
+        tol: float = 1e-6,
+        max_memory_bytes: int = 2 * 1024**3,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.featurizer = featurizer
+        self.use_labels = use_labels
+        self.label_kind = label_kind
+        self.max_iter = max_iter
+        self.tol = tol
+        self.max_memory_bytes = max_memory_bytes
+        if not isinstance(use_labels, bool):
+            raise ParameterError(f"use_labels must be a bool, got {use_labels!r}")
+        if label_kind not in ("auto", "continuous", "categorical"):
+            raise ParameterError(f"invalid label_kind: {label_kind!r}")
+        if isinstance(max_iter, bool) or not isinstance(max_iter, (int, np.integer)) or max_iter < 1:
+            raise ParameterError(f"max_iter must be an int >= 1, got {max_iter!r}")
+        if not (isinstance(tol, (int, float)) and tol > 0):
+            raise ParameterError(f"tol must be > 0, got {tol!r}")
+        if isinstance(max_memory_bytes, bool) or not isinstance(max_memory_bytes, (int, np.integer)) or max_memory_bytes <= 0:
+            raise ParameterError(f"max_memory_bytes must be an int > 0, got {max_memory_bytes!r}")
+
+    def _design_matrix(self, ctx: _Context) -> tuple[np.ndarray, int]:
+        F = ctx.get_features(resolve_featurizer(self.featurizer))
+        X = np.asarray(F.toarray() if sp.issparse(F) else F, dtype=np.float64)
+        if not np.all(np.isfinite(X)):
+            raise ParameterError(f"{type(self).__name__}: features contain NaN or infinite values")
+        blocks = [X]
+        n_label_cols = 0
+        if self.use_labels and ctx.y is not None:
+            Y = _encode_label_columns(ctx.y, self.label_kind, type(self).__name__)
+            n_label_cols = Y.shape[1]
+            blocks.append(Y)
+        Z = np.hstack(blocks)
+        sd = Z.std(axis=0, ddof=1) if Z.shape[0] > 1 else np.zeros(Z.shape[1])
+        keep = sd > 0
+        if not keep.any():
+            raise DegenerateGroupingError(f"{type(self).__name__}: every feature and label column is constant")
+        Z = (Z[:, keep] - Z[:, keep].mean(axis=0)) / sd[keep]
+        return Z, n_label_cols
+
+    def _guard(self, k: int, m: int) -> None:
+        required = 8 * (3 * k * m + 2 * k * k)
+        if required > self.max_memory_bytes:
+            raise ScalabilityError(
+                f"{type(self).__name__}: {k} support points over {m} records need about "
+                f"{required:,} bytes, exceeding max_memory_bytes={self.max_memory_bytes:,}. "
+                "Alternatives: (a) subsample the input; (b) use a smaller test or validation set; "
+                "(c) raise max_memory_bytes."
+            )
+
+    def _select(self, Z: np.ndarray, pool: list[int], k: int, ctx: _Context, stage: int) -> tuple[list[int], dict[str, Any]]:
+        m = len(pool)
+        if k <= 0:
+            return [], {}
+        if k >= m:
+            return list(pool), {}
+        n_points = min(k, m - k)  # support points always describe the smaller side
+        self._guard(n_points, m)
+        sub = Z[np.asarray(pool, dtype=np.int64)]
+        rng = seed_for(ctx.rng_seeds, "support_points.init", stage)
+        points, n_iter, converged, criterion = _support_points(sub, n_points, rng, self.max_iter, self.tol)
+        D = cdist(points, sub)
+        taken = np.zeros(m, dtype=bool)
+        nearest: list[int] = []
+        for i in range(n_points):
+            row = np.where(taken, np.inf, D[i])
+            j = int(row_argmin(row[None, :])[0])
+            taken[j] = True
+            nearest.append(j)
+        picked_local = nearest if n_points == k else [j for j in range(m) if not taken[j]]
+        chosen = sorted(pool[j] for j in picked_local)
+        S = sub[np.asarray(nearest, dtype=np.int64)]
+        selected = float(2.0 * cdist(S, sub).mean() - cdist(S, S).mean())
+        return chosen, {
+            "n_iterations": n_iter,
+            "converged": converged,
+            "support_point_criterion": criterion,
+            "selected_criterion": selected,
+        }
+
+    def _partition(self, ctx: _Context) -> list[SplitResult]:
+        n = ctx.n
+        Z, n_label_cols = self._design_matrix(ctx)
+        test, test_meta = self._select(Z, list(range(n)), ctx.sizes.n_test, ctx, 0)
+        test_set = set(test)
+        remaining = [i for i in range(n) if i not in test_set]
+        valid, valid_meta = self._select(Z, remaining, ctx.sizes.n_valid, ctx, 1)
+        valid_set = set(valid)
+        train = [i for i in remaining if i not in valid_set]
+        result = SplitResult(
+            train=np.asarray(train, dtype=np.int64),
+            valid=np.asarray(valid, dtype=np.int64),
+            test=np.asarray(test, dtype=np.int64),
+            discard=np.array([], dtype=np.int64),
+            groups=None,
+            splitter_id=self.splitter_id,
+            params=self.get_params(),
+            n_records=n,
+            metadata={
+                "n_design_columns": int(Z.shape[1]),
+                "used_label_columns": n_label_cols,
+                "test_selection": test_meta,
+                "valid_selection": valid_meta,
                 "realised_sizes": {"train": len(train), "valid": len(valid), "test": len(test)},
             },
         )

@@ -27,6 +27,7 @@ from chemsplit.splitters.similarity import (
     SpectralSplitter,
     SphereExclusionSplitter,
     SPXYSplitter,
+    SupportPointsSplitter,
 )
 
 # Two chemically distant "families": simple alkanes/alcohols vs. aromatic amines, so clustering
@@ -422,6 +423,80 @@ class TestMinimalTestSetDissimilaritySplitter:
     def test_invalid_task_index(self, task_index):
         with pytest.raises(ParameterError):
             MinimalTestSetDissimilaritySplitter(task_index=task_index)
+
+
+class TestSupportPointsSplitter:
+    @staticmethod
+    def _blobs(n_each=50):
+        return np.r_[_rng(0).normal(0.0, 1.0, (n_each, 2)), _rng(1).normal(10.0, 1.0, (n_each, 2))]
+
+    def test_half_split_takes_half_of_each_blob(self):
+        X = self._blobs()
+        result = SupportPointsSplitter(train_size=0.5, test_size=0.5, random_state=0).split_result(X)[0]
+        assert int((result.test < 50).sum()) == 25
+        assert int((result.test >= 50).sum()) == 25
+
+    def test_proportional_to_blob_sizes(self):
+        X = np.r_[_rng(0).normal(0.0, 1.0, (80, 2)), _rng(1).normal(10.0, 1.0, (20, 2))]
+        result = SupportPointsSplitter(train_size=0.75, test_size=0.25, random_state=0).split_result(X)[0]
+        assert abs(int((result.test < 80).sum()) - 20) <= 1
+
+    def test_larger_test_side_selects_train_by_support_points(self):
+        X = self._blobs()
+        result = SupportPointsSplitter(train_size=0.2, test_size=0.8, random_state=0).split_result(X)[0]
+        assert (result.train.size, result.test.size) == (20, 80)
+        assert int((result.train < 50).sum()) == 10
+
+    def test_labels_change_the_selection(self):
+        X = self._blobs()
+        y = np.r_[np.zeros(50), np.linspace(0.0, 100.0, 50)]
+        with_y = SupportPointsSplitter(train_size=0.8, test_size=0.2, random_state=0).split_result(X, y)[0]
+        without = SupportPointsSplitter(use_labels=False, train_size=0.8, test_size=0.2, random_state=0).split_result(X, y)[0]
+        assert with_y.metadata["used_label_columns"] == 1
+        assert without.metadata["used_label_columns"] == 0
+        assert with_y.test.tolist() != without.test.tolist()
+
+    def test_converges_and_is_seeded(self):
+        X = self._blobs()
+        r1 = SupportPointsSplitter(train_size=0.7, test_size=0.3, random_state=4).split_result(X)[0]
+        r2 = SupportPointsSplitter(train_size=0.7, test_size=0.3, random_state=4).split_result(X)[0]
+        assert r1.metadata["test_selection"]["converged"]
+        assert r1.test.tolist() == r2.test.tolist()
+
+    def test_three_way_sizes_with_smiles(self):
+        splitter = SupportPointsSplitter(train_size=0.6, valid_size=0.2, test_size=0.2, random_state=0)
+        result = splitter.split_result(SMILES_20, np.arange(20.0))[0]
+        assert (result.train.size, result.valid.size, result.test.size) == (12, 4, 4)
+
+    def test_helmert_coding_of_categorical_labels(self):
+        from chemsplit.splitters.similarity import _encode_label_columns
+
+        coded = _encode_label_columns(np.array(["a", "b", "c", "a"]), "auto", "test")
+        assert coded.tolist() == [[-1.0, -1.0], [1.0, -1.0], [0.0, 2.0], [-1.0, -1.0]]
+        result = SupportPointsSplitter(train_size=0.5, test_size=0.5, random_state=0).split_result(
+            self._blobs(10), np.array(["x", "y", "z", "w"] * 5)
+        )[0]
+        assert result.metadata["used_label_columns"] == 3
+
+    def test_non_finite_labels_raise(self):
+        y = np.arange(100.0)
+        y[3] = np.inf
+        with pytest.raises(LabelError):
+            SupportPointsSplitter(random_state=0).split_result(self._blobs(), y)
+
+    def test_memory_guard(self):
+        from chemsplit.exceptions import ScalabilityError
+
+        with pytest.raises(ScalabilityError):
+            SupportPointsSplitter(max_memory_bytes=1000, random_state=0).split_result(self._blobs())
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [{"label_kind": "bogus"}, {"max_iter": 0}, {"tol": 0.0}, {"use_labels": 1}, {"max_memory_bytes": 0}],
+    )
+    def test_invalid_params_raise(self, kwargs):
+        with pytest.raises(ParameterError):
+            SupportPointsSplitter(**kwargs)
 
 
 class TestMaxDissimilaritySplitter:

@@ -116,6 +116,7 @@ if TYPE_CHECKING:
         SpectralSplitter,
         SphereExclusionSplitter,
         SPXYSplitter,
+        SupportPointsSplitter,
     )
     from chemsplit.splitters.task import (
         AVESplitter,
@@ -129,8 +130,8 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
-    # -- 57 splitters across 9 families, in declared order: baseline (5), scaffold (6),
-    # similarity (14), embedding (3), property (5), lineage (4), task (8), biomolecular (5),
+    # -- 58 splitters across 9 families, in declared order: baseline (5), scaffold (6),
+    # similarity (15), embedding (3), property (5), lineage (4), task (8), biomolecular (5),
     # protocol (7) --
     "RandomSplitter",
     "StratifiedRandomSplitter",
@@ -153,6 +154,7 @@ __all__ = [
     "SPXYSplitter",
     "OptiSimSplitter",
     "MinimalTestSetDissimilaritySplitter",
+    "SupportPointsSplitter",
     "MaxDissimilaritySplitter",
     "PerimeterSplitter",
     "LeaveOneClusterOutSplitter",
@@ -270,6 +272,7 @@ _LAZY_SOURCE: dict[str, str] = {
     "SPXYSplitter": "chemsplit.splitters.similarity",
     "OptiSimSplitter": "chemsplit.splitters.similarity",
     "MinimalTestSetDissimilaritySplitter": "chemsplit.splitters.similarity",
+    "SupportPointsSplitter": "chemsplit.splitters.similarity",
     "MaxDissimilaritySplitter": "chemsplit.splitters.similarity",
     "PerimeterSplitter": "chemsplit.splitters.similarity",
     "LeaveOneClusterOutSplitter": "chemsplit.splitters.similarity",

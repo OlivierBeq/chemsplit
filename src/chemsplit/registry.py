@@ -97,6 +97,7 @@ def _import_all_classes() -> list[type[BaseSplitter]]:
         SpectralSplitter,
         SphereExclusionSplitter,
         SPXYSplitter,
+        SupportPointsSplitter,
     )
     from chemsplit.splitters.task import (
         AVESplitter,
@@ -136,6 +137,7 @@ def _import_all_classes() -> list[type[BaseSplitter]]:
         SPXYSplitter,
         OptiSimSplitter,
         MinimalTestSetDissimilaritySplitter,
+        SupportPointsSplitter,
         MaxDissimilaritySplitter,
         PerimeterSplitter,
         LeaveOneClusterOutSplitter,
