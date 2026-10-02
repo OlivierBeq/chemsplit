@@ -217,6 +217,51 @@ class TestSpectralSplitter:
             splitter.compute_groups(SMILES_20)
 
 
+class TestSpectralLandmarkGraph:
+    @staticmethod
+    def _fixture():
+        from chemsplit.datasets import make_two_clusters
+
+        fx = make_two_clusters(n=120, seed=0)
+        return fx.smiles, np.asarray(fx.groups_true)
+
+    def test_optisim_landmarks_recover_families_without_full_matrix(self, monkeypatch):
+        import chemsplit.splitters.similarity as sim
+
+        def no_full_matrix(*args, **kwargs):
+            raise AssertionError("graph='landmark' must not build the n x n matrix")
+
+        monkeypatch.setattr(sim, "_sim_matrix", no_full_matrix)
+        monkeypatch.setattr(sim, "_dist_matrix", no_full_matrix)
+        smiles, truth = self._fixture()
+        splitter = SpectralSplitter(graph="landmark", n_clusters=2, train_size=0.5, test_size=0.5, random_state=0)
+        groups = splitter.compute_groups(smiles)
+        assert all(len(set(truth[groups == g].tolist())) == 1 for g in set(groups.tolist()))
+
+    def test_random_landmarks_run_and_report(self):
+        smiles, _ = self._fixture()
+        splitter = SpectralSplitter(
+            graph="landmark", landmark_selection="random", n_landmarks=20, n_clusters=3,
+            train_size=0.5, test_size=0.5, random_state=0,
+        )
+        result = splitter.split_result(smiles)[0]
+        assert result.metadata["graph"] == "landmark"
+        assert result.metadata["n_landmarks"] == 20
+
+    def test_landmark_count_must_cover_clusters(self):
+        smiles, _ = self._fixture()
+        with pytest.raises(ParameterError):
+            SpectralSplitter(graph="landmark", n_landmarks=2, n_clusters=3, random_state=0).split_result(smiles)
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [{"graph": "bogus"}, {"landmark_selection": "kmeans"}, {"n_landmarks": 1}, {"landmark_neighbors": 0}],
+    )
+    def test_invalid_params(self, kwargs):
+        with pytest.raises(ParameterError):
+            SpectralSplitter(**kwargs)
+
+
 class TestMaxMinSplitter:
     def test_picked_goes_to_train(self):
         splitter = MaxMinSplitter(picked_goes_to="train", n_picks=6, train_size=0.5, test_size=0.5, random_state=0)

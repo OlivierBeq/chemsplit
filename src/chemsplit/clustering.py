@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Literal
 
 import numpy as np
@@ -21,6 +21,7 @@ __all__ = [
     "leader",
     "maxmin_pick",
     "optisim_pick",
+    "optisim_pick_columns",
     "spectral_partition",
     "sphere_exclusion",
 ]
@@ -40,9 +41,13 @@ def _neighbor_lists(D: np.ndarray, cutoff: float) -> list[np.ndarray]:
 def butina(D: np.ndarray, cutoff: float, reorder: bool = False) -> list[list[int]]:
     """Taylor-Butina sphere-exclusion (leader) clustering.
 
-    ``D`` is a dense symmetric distance matrix (``D[i][i] == 0``). Returns clusters in creation
-    order; each cluster's first element is its centroid. Deterministic: ties always resolve to the
-    smallest record index.
+    Deterministic: ties always resolve to the smallest record index.
+
+    :param D: a dense symmetric distance matrix with a zero diagonal.
+    :param cutoff: the cluster radius, as a distance.
+    :param reorder: recompute neighbour counts after each cluster is taken, which is the
+        original formulation.
+    :return: clusters in creation order, each starting with its centroid.
     """
     n = D.shape[0]
     neigh = _neighbor_lists(D, cutoff)
@@ -51,7 +56,7 @@ def butina(D: np.ndarray, cutoff: float, reorder: bool = False) -> list[list[int
 
     if not reorder:
         counts = np.array([len(neigh[i]) for i in range(n)])
-        # stable_sort by count descending, ties -> ascending index: sort by (-count, index).
+        # sort by (-count, index): count descending, ties to the lower index
         order = sorted(range(n), key=lambda i: (-counts[i], i))
         for i in order:
             if assigned[i]:
@@ -74,11 +79,15 @@ def butina(D: np.ndarray, cutoff: float, reorder: bool = False) -> list[list[int
 
 
 def leader(D: np.ndarray, radius: float, order: Sequence[int] | None = None) -> list[list[int]]:
-    """Greedy leader-follower clustering: index-order-deterministic, single pass.
+    """Greedy leader-follower clustering, in one deterministic pass.
 
-    Each point either joins the nearest existing leader within ``radius``, or becomes a new
-    leader itself. ``order`` (default ascending index) fixes the scan order and hence which points
-    become leaders.
+    Each point joins the nearest existing leader within ``radius``, or becomes a leader itself.
+
+    :param D: a dense symmetric distance matrix.
+    :param radius: how far a point may sit from its leader.
+    :param order: the scan order, which decides who becomes a leader. ``None`` uses ascending
+        index.
+    :return: clusters in creation order, each starting with its leader.
     """
     n = D.shape[0]
     scan = list(range(n)) if order is None else list(order)
@@ -104,10 +113,14 @@ def sphere_exclusion(
 ) -> tuple[list[int], list[list[int]]]:
     """Greedy sphere-exclusion selection.
 
-    Repeatedly selects the next unexcluded point (by ``order``, default ascending index) as a
-    representative, then excludes every remaining point within ``radius`` of it. Returns
-    ``(representatives, groups)`` where ``groups[k]`` are the points excluded by (and including)
-    ``representatives[k]``.
+    Repeatedly takes the next unexcluded point as a representative, then excludes every
+    remaining point within ``radius`` of it.
+
+    :param D: a dense symmetric distance matrix.
+    :param radius: the exclusion radius.
+    :param order: the scan order. ``None`` uses ascending index.
+    :return: the representatives, and per representative the points it claimed, itself
+        included.
     """
     n = D.shape[0]
     scan = list(range(n)) if order is None else list(order)
@@ -132,10 +145,16 @@ def maxmin_pick(
     init: Literal["random", "kennard_stone", "most_peripheral", "index_zero"] = "random",
     rng: np.random.Generator | None = None,
 ) -> list[int]:
-    """Greedy MaxMin (Kennard-Stone family) diversity selection.
+    """Greedy MaxMin diversity selection, from the Kennard-Stone family.
 
-    Iteratively picks the unpicked point maximising its minimum distance to the already-picked
-    set, breaking ties by smallest index.
+    Each round takes the unpicked point whose minimum distance to the picked set is largest,
+    with ties going to the smallest index.
+
+    :param D: a dense symmetric distance matrix.
+    :param n_picks: how many points to select.
+    :param init: how the first point is chosen.
+    :param rng: generator for ``init="random"``.
+    :return: the picked indices, in selection order.
     """
     n = D.shape[0]
     if init == "kennard_stone":
@@ -166,9 +185,13 @@ def maxmin_pick(
 
 
 def kennard_stone(D: np.ndarray, n_picks: int) -> list[int]:
-    """Kennard-Stone selection: the first two picks are the maximally distant pair.
+    """Kennard-Stone selection, seeded with the maximally distant pair.
 
-    Ties broken by lexicographically smallest ``(i, j)``.
+    Ties go to the lexicographically smallest pair.
+
+    :param D: a dense symmetric distance matrix.
+    :param n_picks: how many points to select.
+    :return: the picked indices, in selection order.
     """
     n = D.shape[0]
     if n < 2:
@@ -176,7 +199,9 @@ def kennard_stone(D: np.ndarray, n_picks: int) -> list[int]:
     iu = np.triu_indices(n, k=1)
     dvals = D[iu]
     max_d = dvals.max()
-    candidates = [(int(iu[0][k]), int(iu[1][k])) for k in range(len(dvals)) if dvals[k] >= max_d - EPS]
+    candidates = [
+        (int(iu[0][k]), int(iu[1][k])) for k in range(len(dvals)) if dvals[k] >= max_d - EPS
+    ]
     i0, j0 = min(candidates)
     picked = [i0, j0]
     mind = np.minimum(D[:, i0], D[:, j0])
@@ -199,25 +224,55 @@ def optisim_pick(
     radius: float,
     rng: np.random.Generator,
 ) -> list[int]:
-    """OptiSim diversity selection (Clark, J. Chem. Inf. Comput. Sci. 1997, 37, 1181-1188).
+    """OptiSim diversity selection (Clark 1997).
 
-    Starts from one random record. Each round draws candidates at random (without replacement)
-    until ``subsample_size`` of them lie further than ``radius`` from every selected record, then
-    selects the one maximising its minimum distance to the selection (ties -> smallest index).
-    The other subsample members go to a recycle bin that refills the candidate pool once it runs
-    dry. A candidate within ``radius`` of the selection is dropped for good -- the selection only
-    grows, so it can never become eligible again -- which guarantees termination.
+    Starts from one random record. Each round draws candidates without replacement until
+    ``subsample_size`` of them lie further than ``radius`` from everything selected, then takes
+    the one whose minimum distance to the selection is largest, ties to the smallest index. The
+    rest of the subsample goes to a recycle bin that refills the pool when it empties. A
+    candidate inside ``radius`` is dropped for good, since the selection only ever grows, which
+    is what guarantees termination.
 
-    ``subsample_size=1`` is random selection with sphere exclusion; ``subsample_size >= n`` is
-    MaxMin with a random first pick. Returns fewer than ``n_picks`` records when no candidate
-    outside ``radius`` remains.
+    ``subsample_size=1`` is random selection with sphere exclusion; a subsample covering every
+    record is MaxMin with a random first pick.
+
+    :param D: a dense symmetric distance matrix.
+    :param n_picks: how many points to select.
+    :param subsample_size: candidates that must clear ``radius`` before one is selected.
+    :param radius: the exclusion radius.
+    :param rng: generator for the candidate draws.
+    :return: the picked indices, fewer than ``n_picks`` if no candidate outside ``radius``
+        remains.
     """
-    n = D.shape[0]
+    return optisim_pick_columns(D.shape[0], lambda j: D[:, j], n_picks, subsample_size, radius, rng)
+
+
+def optisim_pick_columns(
+    n: int,
+    column: Callable[[int], np.ndarray],
+    n_picks: int,
+    subsample_size: int,
+    radius: float,
+    rng: np.random.Generator,
+) -> list[int]:
+    """Run :func:`optisim_pick` against a distance matrix supplied column by column.
+
+    Only the selected records' columns are ever requested, so no full ``n x n`` matrix is
+    needed.
+
+    :param n: number of records.
+    :param column: maps a record index to that record's distances to every record.
+    :param n_picks: how many points to select.
+    :param subsample_size: candidates that must clear ``radius`` before one is selected.
+    :param radius: the exclusion radius.
+    :param rng: generator for the candidate draws.
+    :return: the picked indices, in selection order.
+    """
     if n == 0 or n_picks <= 0:
         return []
     first = int(rng.integers(0, n))
     picked = [first]
-    mind = D[:, first].astype(np.float64)
+    mind = np.asarray(column(first), dtype=np.float64)
     pool = rng.permutation(np.flatnonzero(mind > radius + EPS)).tolist()
     recycle: list[int] = []
     while len(picked) < n_picks:
@@ -235,7 +290,7 @@ def optisim_pick(
             break
         best = argmax_tiebreak(lambda idx: mind[idx], sorted(subsample))
         picked.append(best)
-        mind = np.minimum(mind, D[:, best])
+        mind = np.minimum(mind, np.asarray(column(best), dtype=np.float64))
         recycle.extend(i for i in subsample if i != best)
     return picked
 
@@ -254,12 +309,15 @@ def _farthest_pair(D: np.ndarray, pool: np.ndarray) -> tuple[int, int]:
 def duplex_order(D: np.ndarray, targets: Sequence[int]) -> list[list[int]]:
     """DUPLEX partitioning (Snee 1977), generalised to any number of partitions.
 
-    Each partition with a non-zero target, in the given order, is seeded with the farthest-apart
-    pair of still-unassigned records (only the pair's first record when the target is 1). The
-    partitions below target then take turns, in the same order, adding the unassigned record whose
-    minimum distance to that partition's own members is largest (ties -> smallest index); a
-    partition leaves the rotation once it reaches its target. Targets must sum to ``D.shape[0]``.
-    Returns each partition's records in the order they were added.
+    Each partition with a non-zero target is seeded, in order, with the farthest-apart pair of
+    still-unassigned records, or just the pair's first record when its target is 1. The
+    partitions below target then take turns adding the unassigned record whose minimum distance
+    to their own members is largest, ties to the smallest index, and drop out of the rotation
+    once they are full.
+
+    :param D: a dense symmetric distance matrix.
+    :param targets: the record count per partition. Must sum to ``len(D)``.
+    :return: each partition's records, in the order they were added.
     """
     n = D.shape[0]
     if sum(targets) != n:
@@ -318,10 +376,19 @@ def spectral_partition(
     rng: np.random.Generator | None = None,
     random_state: int = 0,
 ) -> np.ndarray:
-    """Laplacian-eigenmap spectral partition. Returns a dense-label-encoded int array of length n.
+    """Laplacian-eigenmap spectral partition.
 
-    Isolated vertices (zero row-sum in ``W``) are excluded from the eigenproblem and reattached
-    afterwards as their own singleton clusters, per design.
+    Isolated vertices, meaning a zero row-sum in ``W``, are kept out of the eigenproblem and
+    reattached afterwards as singleton clusters.
+
+    :param W: the affinity matrix, dense or sparse.
+    :param n_clusters: how many clusters to cut the embedding into.
+    :param laplacian: symmetric, random-walk, or unnormalized.
+    :param drop_first: drop the trivial leading eigenvector.
+    :param assign: cluster the embedding with k-means, or with the discretize rule.
+    :param rng: unused; ``random_state`` seeds k-means.
+    :param random_state: seed passed to k-means.
+    :return: a dense-label-encoded int array of length ``n``.
     """
     if sp.issparse(W):
         W = W.toarray()
@@ -354,7 +421,7 @@ def spectral_partition(
         v0 = rng.standard_normal(L.shape[0])
 
         if len(active) <= k + 1 or len(active) < 50:
-            # Small enough for a dense eigensolve (also avoids ARPACK convergence issues on tiny
+            # small enough for a dense eigensolve, which also avoids ARPACK trouble on tiny
             # matrices); still deterministic (LAPACK's symmetric eigensolver, no v0 needed).
             vals, vecs = np.linalg.eigh(L)
         else:
@@ -385,7 +452,7 @@ def spectral_partition(
         labels[i] = next_label
         next_label += 1
 
-    # dense-label-encode by first appearance to keep ids contiguous and order-stable
+    # encode by first appearance, so ids stay contiguous and order-stable
     seen: dict[int, int] = {}
     out = np.empty(n, dtype=np.int64)
     for i in range(n):

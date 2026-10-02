@@ -6,6 +6,7 @@ Every splitter here operates on a fingerprint/feature distance or similarity mat
 from __future__ import annotations
 
 import dataclasses
+import math
 from typing import Any, ClassVar, Literal
 
 import numpy as np
@@ -53,7 +54,7 @@ from chemsplit.exceptions import (
     SizeToleranceWarning,
     warn_with_details,
 )
-from chemsplit.metrics import is_bounded_metric
+from chemsplit.metrics import is_bounded_metric, pairwise_distances
 from chemsplit.types import IndexArray
 
 __all__ = [
@@ -840,6 +841,16 @@ class DensityClusterSplitter(_SimilarityGroupBase):
 class SpectralSplitter(_SimilarityGroupBase):
     """Laplacian-eigenmap spectral clustering on an affinity graph.
 
+    ``graph="landmark"`` is landmark-based spectral clustering (Chen & Cai 2011) and never builds
+    an ``n x n`` matrix. It selects ``n_landmarks`` landmark records, by default with OptiSim
+    (``"spectral.landmarks"`` stream; subsample of ``ceil(n/20)``, no exclusion radius), so the
+    landmarks are both spread out and representative. Each record is then represented by Gaussian
+    weights to its ``landmark_neighbors`` nearest landmarks (bandwidth = mean distance to those
+    landmarks), normalised to sum to one. The top ``n_clusters`` left singular vectors of that
+    ``n x p`` matrix, scaled by the inverse square root of the landmark degrees, are clustered
+    with k-means. As in Chen & Cai, the leading singular vector is kept (``drop_first`` does not
+    apply).
+
     Advantages
     ----------
     - Minimises inter-cluster similarity by construction, reliably yielding the least train/test overlap among routine structure-based splits.
@@ -853,7 +864,16 @@ class SpectralSplitter(_SimilarityGroupBase):
     - Degenerate eigenvalues (common on symmetric chemical graphs, e.g. many identical singleton components) make eigenvectors non-unique up to rotation, so cluster labels can differ between runs and platforms despite identical eigenvalues. The implementation warns but can't fix this -- its golden test uses a size/histogram tolerance, not an exact match.
     - A disconnected affinity graph silently turns spectral clustering into "one cluster per component", usually not what was wanted -- hence the hard error.
     - Being the hardest split isn't the same as being the right one -- a model evaluated only under spectral splitting looks worse than it will perform on a realistic screening library.
+    - `graph="landmark"` approximates the full graph through `p` landmarks: too few landmarks blur small families together, and the result depends on the landmark draw.
 
+    References
+    ----------
+    .. [1] Chen, X.; Cai, D. Large Scale Spectral Clustering with Landmark-Based Representation.
+       *Proc. AAAI Conf. Artif. Intell.* **2011**, 25 (1), 313-318.
+       https://doi.org/10.1609/aaai.v25i1.7900
+    .. [2] Clark, R. D. OptiSim: An Extended Dissimilarity Selection Method for Finding Diverse
+       Representative Subsets. *J. Chem. Inf. Comput. Sci.* **1997**, 37 (6), 1181-1188.
+       https://doi.org/10.1021/ci970282v
     """
 
     splitter_id: ClassVar[str] = "spectral"
@@ -864,12 +884,15 @@ class SpectralSplitter(_SimilarityGroupBase):
         self,
         *,
         n_clusters: int = 8,
-        graph: Literal["threshold", "knn", "full"] = "knn",
+        graph: Literal["threshold", "knn", "full", "landmark"] = "knn",
         knn_k: int = 20,
         threshold: float = 0.3,
         laplacian: Literal["sym", "rw", "unnormalized"] = "sym",
         assign: Literal["kmeans", "discretize"] = "kmeans",
         drop_first: bool = True,
+        n_landmarks: int | None = None,
+        landmark_selection: Literal["optisim", "random"] = "optisim",
+        landmark_neighbors: int = 5,
         featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
@@ -883,9 +906,70 @@ class SpectralSplitter(_SimilarityGroupBase):
         self.laplacian = laplacian
         self.assign = assign
         self.drop_first = drop_first
+        self.n_landmarks = n_landmarks
+        self.landmark_selection = landmark_selection
+        self.landmark_neighbors = landmark_neighbors
         self._validate_similarity_params()
+        if graph not in ("threshold", "knn", "full", "landmark"):
+            raise ParameterError(f"invalid graph: {graph!r}")
+        if landmark_selection not in ("optisim", "random"):
+            raise ParameterError(f"invalid landmark_selection: {landmark_selection!r}")
+        if n_landmarks is not None and (
+            isinstance(n_landmarks, bool) or not isinstance(n_landmarks, (int, np.integer)) or n_landmarks < 2
+        ):
+            raise ParameterError(f"n_landmarks must be None or an int >= 2, got {n_landmarks!r}")
+        if isinstance(landmark_neighbors, bool) or not isinstance(landmark_neighbors, (int, np.integer)) or landmark_neighbors < 1:
+            raise ParameterError(f"landmark_neighbors must be an int >= 1, got {landmark_neighbors!r}")
+
+    def _landmark_labels(self, ctx: _Context) -> IndexArray:
+        n = ctx.n
+        p = self.n_landmarks if self.n_landmarks is not None else min(n - 1, max(50, math.ceil(math.sqrt(n)) * 5))
+        if not (self.n_clusters <= p < n):
+            raise ParameterError(f"n_landmarks={p} must satisfy n_clusters <= n_landmarks < n={n}")
+        r = min(self.landmark_neighbors, p)
+        F = ctx.get_features(resolve_featurizer(self.featurizer))
+        guard_memory(max(1, math.isqrt(n * p) + 1), self.max_memory_bytes, type(self).__name__)
+        rng = seed_for(ctx.rng_seeds, "spectral.landmarks", 0)
+        if self.landmark_selection == "optisim":
+
+            def column(j: int) -> np.ndarray:
+                return pairwise_distances(F, F[j:j + 1], metric=self.metric)[:, 0]
+
+            landmarks = _clustering.optisim_pick_columns(n, column, p, max(1, -(-n // 20)), 0.0, rng)
+        else:
+            landmarks = sorted(int(j) for j in rng.choice(n, size=p, replace=False))
+        if len(landmarks) < self.n_clusters:
+            raise DegenerateGroupingError(
+                f"{type(self).__name__}: only {len(landmarks)} distinct landmarks for n_clusters={self.n_clusters}"
+            )
+        Dl = pairwise_distances(F, F[np.asarray(landmarks)], metric=self.metric).astype(np.float64)
+        nearest = np.argsort(Dl, axis=1, kind="stable")[:, :r]
+        rows = np.repeat(np.arange(n), r)
+        d = Dl[rows, nearest.ravel()]
+        h = float(d.mean()) or 1.0
+        w = np.exp(-(d**2) / (2.0 * h * h))
+        Z = np.zeros((n, len(landmarks)))
+        Z[rows, nearest.ravel()] = w
+        Z /= Z.sum(axis=1, keepdims=True)
+        col = Z.sum(axis=0)
+        Zhat = Z / np.sqrt(np.where(col > 0, col, 1.0))
+        U, _, _ = np.linalg.svd(Zhat, full_matrices=False)
+        k = min(self.n_clusters, U.shape[1])
+        U = _clustering._fix_eigenvector_signs(U[:, :k])
+        seed = int(seed_for(ctx.rng_seeds, "spectral.kmeans", 0).integers(0, 2**31 - 1))
+        labels = KMeans(n_clusters=k, n_init=10, random_state=seed).fit_predict(U)
+        self._last_meta = {
+            "n_clusters": int(len(set(labels.tolist()))),
+            "graph": self.graph,
+            "n_landmarks": len(landmarks),
+            "landmark_selection": self.landmark_selection,
+            "nondeterministic_method": True,
+        }
+        return np.asarray(dense_label_encode(labels.tolist()), dtype=np.int64)
 
     def _group_labels(self, ctx: _Context) -> IndexArray:
+        if self.graph == "landmark":
+            return self._landmark_labels(ctx)
         S = _sim_matrix(self, ctx)
         n = ctx.n
         np.fill_diagonal(S, 0.0)
