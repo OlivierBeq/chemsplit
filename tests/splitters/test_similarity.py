@@ -20,6 +20,7 @@ from chemsplit.splitters.similarity import (
     LeaveOneClusterOutSplitter,
     MaxDissimilaritySplitter,
     MaxMinSplitter,
+    MinimalTestSetDissimilaritySplitter,
     OptiSimSplitter,
     PerimeterSplitter,
     SimilarityThresholdSplitter,
@@ -356,6 +357,71 @@ class TestOptiSimSplitter:
     def test_invalid_params_raise(self, kwargs):
         with pytest.raises(ParameterError):
             OptiSimSplitter(**kwargs)
+
+
+class TestMinimalTestSetDissimilaritySplitter:
+    # Two 1-D blobs (x = 0..4 and 10..14), labels descending with index, so the two activity bins
+    # of a 20% test set are records 0-4 and 5-9. Distance sums: record 4 -> 10 + 40 = 50 is the
+    # smallest in bin 1, record 5 -> 10 + 40 = 50 the smallest in bin 2.
+    X = np.array([[0.0], [1.0], [2.0], [3.0], [4.0], [10.0], [11.0], [12.0], [13.0], [14.0]])
+    Y = np.arange(10.0)[::-1].copy()
+
+    def _splitter(self, **kw):
+        kw.setdefault("train_size", 8)
+        kw.setdefault("test_size", 2)
+        return MinimalTestSetDissimilaritySplitter(metric="euclidean", **kw)
+
+    def test_hand_computed_selection(self):
+        result = self._splitter().split_result(self.X, self.Y)[0]
+        assert result.test.tolist() == [4, 5]
+        assert result.metadata["bin_edges"] == [[0, 5], [5, 10]]
+        assert result.metadata["test_total_dissimilarity"] == [50.0, 50.0]
+
+    def test_one_record_per_activity_bin(self):
+        y = _rng(3).normal(size=40)
+        X = _rng(4).normal(size=(40, 3))
+        result = MinimalTestSetDissimilaritySplitter(metric="euclidean", train_size=0.8, test_size=0.2).split_result(X, y)[0]
+        ranked = sorted(range(40), key=lambda i: -y[i])
+        bins = [set(ranked[k * 5:(k + 1) * 5]) for k in range(8)]
+        assert result.test.size == 8
+        assert all(len(b & set(result.test.tolist())) == 1 for b in bins)
+
+    def test_uneven_bins_differ_by_at_most_one(self):
+        y = np.arange(23.0)
+        X = _rng(5).normal(size=(23, 2))
+        result = self._splitter(train_size=18, test_size=5).split_result(X, y)[0]
+        sizes = [stop - start for start, stop in result.metadata["bin_edges"]]
+        assert sorted(sizes) == [4, 4, 5, 5, 5]
+
+    def test_deterministic_without_seed(self):
+        r1 = MinimalTestSetDissimilaritySplitter(train_size=0.8, test_size=0.2).split_result(SMILES_20, np.arange(20.0))[0]
+        r2 = MinimalTestSetDissimilaritySplitter(train_size=0.8, test_size=0.2).split_result(SMILES_20, np.arange(20.0))[0]
+        assert r1.test.tolist() == r2.test.tolist()
+
+    def test_three_way_sizes(self):
+        splitter = MinimalTestSetDissimilaritySplitter(train_size=0.6, valid_size=0.2, test_size=0.2)
+        result = splitter.split_result(SMILES_20, np.arange(20.0))[0]
+        assert (result.train.size, result.valid.size, result.test.size) == (12, 4, 4)
+
+    def test_task_index_selects_column(self):
+        y = np.c_[np.zeros(10), self.Y]
+        result = self._splitter(task_index=1).split_result(self.X, y)[0]
+        assert result.test.tolist() == [4, 5]
+        with pytest.raises(ParameterError):
+            self._splitter(task_index=2).split_result(self.X, y)
+
+    def test_non_finite_or_missing_y_raises(self):
+        y = self.Y.copy()
+        y[0] = np.nan
+        with pytest.raises(LabelError):
+            self._splitter().split_result(self.X, y)
+        with pytest.raises(LabelError):
+            self._splitter().split_result(self.X)
+
+    @pytest.mark.parametrize("task_index", [-1, 1.5, True])
+    def test_invalid_task_index(self, task_index):
+        with pytest.raises(ParameterError):
+            MinimalTestSetDissimilaritySplitter(task_index=task_index)
 
 
 class TestMaxDissimilaritySplitter:

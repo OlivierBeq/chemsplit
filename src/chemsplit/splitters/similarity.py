@@ -58,6 +58,7 @@ __all__ = [
     "MaxMinSplitter",
     "SPXYSplitter",
     "OptiSimSplitter",
+    "MinimalTestSetDissimilaritySplitter",
     "MaxDissimilaritySplitter",
     "PerimeterSplitter",
     "LeaveOneClusterOutSplitter",
@@ -1253,6 +1254,150 @@ class OptiSimSplitter(_SimilarityGroupBase):
                 "distance_threshold": threshold,
                 "coverage_radius": coverage,
                 "realised_sizes": {name: int(v.size) for name, v in buckets.items() if name != "discard"},
+            },
+        )
+        _small_partition_check(result, n)
+        return [result]
+
+
+# -
+# MinimalTestSetDissimilaritySplitter
+# -
+
+
+def _check_task_index(task_index: Any) -> None:
+    if isinstance(task_index, bool) or not isinstance(task_index, (int, np.integer)) or task_index < 0:
+        raise ParameterError(f"task_index must be an int >= 0, got {task_index!r}")
+
+
+def _label_column(splitter: Any, ctx: _Context) -> np.ndarray:
+    """Finite float64 label column ``task_index`` of ``ctx.y``; raises :class:`LabelError`."""
+    y = np.asarray(ctx.y)
+    if y.ndim == 2:
+        if splitter.task_index >= y.shape[1]:
+            raise ParameterError(
+                f"task_index={splitter.task_index} out of range for y with {y.shape[1]} columns"
+            )
+        y = y[:, splitter.task_index]
+    elif y.ndim != 1:
+        raise LabelError(f"{type(splitter).__name__} requires y of shape (n,) or (n, n_tasks)")
+    try:
+        col = y.astype(np.float64)
+    except (TypeError, ValueError):
+        raise LabelError(f"{type(splitter).__name__} requires numeric y") from None
+    if not np.all(np.isfinite(col)):
+        raise LabelError(f"{type(splitter).__name__} requires finite numeric y")
+    return col
+
+
+class MinimalTestSetDissimilaritySplitter(_SimilarityBase):
+    """Minimal test set dissimilarity (MTSD): one typical record per activity bin goes to test.
+
+    Each record's total dissimilarity is the sum of its distances to every other record. Records
+    are sorted by label, most active first (ties by index), and cut into ``n_test`` contiguous bins
+    whose sizes differ by at most one; the record with the smallest total dissimilarity in each bin
+    (ties -> smallest index) goes to **test**. A validation set, if requested, is chosen the same way
+    from the remaining records, with total dissimilarities recomputed over that remainder; the rest
+    is train. For a 20% test set the bins hold 5 records each, as in Martin et al. (2012), who used
+    Euclidean distance on preselected descriptors (``featurizer=..., metric="euclidean"``).
+    Fully deterministic: no random draws at all.
+
+    Advantages
+    ----------
+    - The test set spans the full label range by construction -- one record per activity bin -- so no part of the response is left unevaluated.
+    - Each test record is the most typical member of its bin, so test compounds always have close analogues in train: a clean check of interpolation quality.
+    - No seed, no free parameter beyond the featurizer and metric -- easy to reproduce and describe.
+    - Follows criterion 2 of rational division (test compounds close to training compounds) directly.
+
+    Pitfalls
+    --------
+    - **Deliberately optimistic.** Test records are the least unusual compounds, so test scores overstate performance on new chemistry; Martin et al. found rational test sets beat random ones on test but not on an external set.
+    - Selection uses `y`, so the split is not label-blind and isn't comparable with label-free splits.
+    - Total dissimilarity is dominated by global position: a dense region's centre wins every bin it touches, so test can concentrate in one region of chemical space.
+    - Builds the full `n x n` distance matrix.
+    - Multi-task `y` uses one column (`task_index`); the other tasks are ignored.
+
+    References
+    ----------
+    .. [1] Martin, T. M.; Harten, P.; Young, D. M.; Muratov, E. N.; Golbraikh, A.; Zhu, H.;
+       Tropsha, A. Does Rational Selection of Training and Test Sets Improve the Outcome of QSAR
+       Modeling? *J. Chem. Inf. Model.* **2012**, 52 (10), 2570-2578.
+       https://doi.org/10.1021/ci300338w
+    .. [2] Kuz'min, V. E.; Artemenko, A. G.; Muratov, E. N.; Volineckaya, I. L.; Makarov, V. A.;
+       Riabova, O. B.; Wutzler, P.; Schmidtke, M. Quantitative Structure−Activity Relationship
+       Studies of [(Biphenyloxy)propyl]isoxazole Derivatives. Inhibitors of Human Rhinovirus 2
+       Replication. *J. Med. Chem.* **2007**, 50 (17), 4205-4213. https://doi.org/10.1021/jm0704806
+    """
+
+    splitter_id: ClassVar[str] = "minimal_test_set_dissimilarity"
+    strictness: ClassVar[Strictness] = Strictness.OPTIMISTIC
+    requires_labels: ClassVar[bool] = True
+    bounded_metric_required: ClassVar[bool] = False
+    deterministic_without_seed: ClassVar[bool] = True
+
+    def __init__(
+        self,
+        *,
+        task_index: int = 0,
+        featurizer: str | Any = "ecfp4",
+        metric: str = "tanimoto",
+        max_memory_bytes: int = 2 * 1024**3,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs)
+        self.task_index = task_index
+        self._validate_similarity_params()
+        _check_task_index(task_index)
+
+    def _check_preconditions(self, ctx: _Context) -> None:
+        _label_column(self, ctx)
+
+    @staticmethod
+    def _select(D: np.ndarray, y: np.ndarray, pool: list[int], k: int) -> tuple[list[int], list[list[int]]]:
+        """Pick ``k`` records from ``pool``: one minimal-total-dissimilarity record per activity bin."""
+        if k <= 0:
+            return [], []
+        idx = np.asarray(pool, dtype=np.int64)
+        totals = D[np.ix_(idx, idx)].sum(axis=1)
+        total_of = {int(r): float(t) for r, t in zip(idx, totals, strict=True)}
+        ranked = stable_sort(list(pool), key=lambda r: y[r], desc=True)
+        m = len(ranked)
+        base, extra = divmod(m, k)
+        picked: list[int] = []
+        edges: list[list[int]] = []
+        start = 0
+        for b in range(k):
+            stop = start + base + (1 if b < extra else 0)
+            members = sorted(ranked[start:stop])
+            picked.append(argmin_tiebreak(lambda r: total_of[r], members))
+            edges.append([start, stop])
+            start = stop
+        return picked, edges
+
+    def _partition(self, ctx: _Context) -> list[SplitResult]:
+        n = ctx.n
+        y = _label_column(self, ctx)
+        D = _dist_matrix(self, ctx).astype(np.float64)
+        test, test_edges = self._select(D, y, list(range(n)), ctx.sizes.n_test)
+        test_set = set(test)
+        remaining = [i for i in range(n) if i not in test_set]
+        valid, _ = self._select(D, y, remaining, ctx.sizes.n_valid)
+        valid_set = set(valid)
+        train = [i for i in remaining if i not in valid_set]
+        totals = D.sum(axis=1)
+        result = SplitResult(
+            train=np.asarray(train, dtype=np.int64),
+            valid=np.sort(np.asarray(valid, dtype=np.int64)),
+            test=np.sort(np.asarray(test, dtype=np.int64)),
+            discard=np.array([], dtype=np.int64),
+            groups=None,
+            splitter_id=self.splitter_id,
+            params=self.get_params(),
+            n_records=n,
+            metadata={
+                "bin_edges": test_edges,
+                "test_total_dissimilarity": [float(totals[i]) for i in sorted(test)],
+                "realised_sizes": {"train": len(train), "valid": len(valid), "test": len(test)},
             },
         )
         _small_partition_check(result, n)

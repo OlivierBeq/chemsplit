@@ -101,6 +101,7 @@ def _build_plan(fixtures: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str
                 "max_min", "opti_sim", "max_dissimilarity", "perimeter", "leave_one_cluster_out"]:
         plan[sid] = smiles_case("two_clusters")
     plan["spxy"] = lambda: (F["linear_series"].smiles, F["linear_series"].y, {}, {})
+    plan["minimal_test_set_dissimilarity"] = lambda: (F["linear_series"].smiles, F["linear_series"].y, {}, {})
     plan["balanced_multi_task"] = lambda: (
         F["multitask_sparse"].smiles,
         F["multitask_sparse"].y,
@@ -280,6 +281,7 @@ def _build_plan(fixtures: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str
             "max_min": "two_clusters",
             "spxy": "linear_series",
             "opti_sim": "two_clusters",
+            "minimal_test_set_dissimilarity": "linear_series",
             "max_dissimilarity": "two_clusters",
             "perimeter": "two_clusters",
             "leave_one_cluster_out": "two_clusters",
