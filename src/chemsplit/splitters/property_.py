@@ -22,10 +22,13 @@ from chemsplit.exceptions import (
     InputError,
     LabelError,
     ParameterError,
+    SizeToleranceWarning,
+    warn_with_details,
 )
 
 __all__ = [
     "AdversarialSplitter",
+    "DistinctLabelSplitter",
     "LabelExtrapolationSplitter",
     "MOODSplitter",
     "PropertySplitter",
@@ -464,6 +467,153 @@ class LabelExtrapolationSplitter(BaseSplitter):
             "n_ties_at_boundary": int(overshoot),
         }
         return [_build_result(self, ctx, train=train, valid=valid, test=test, discard=discard, metadata=metadata)]
+
+
+# -
+# DistinctLabelSplitter
+# -
+
+
+class DistinctLabelSplitter(BaseSplitter):
+    """One record per distinct label value trains; every repeat of a value is held out (SWNW).
+
+    Records are sorted by label. A label value that occurs once sends its record to train; a value
+    shared by several records sends one of them, drawn from the ``"distinct_label.pick"`` stream,
+    to train and the rest to the held-out set. If a validation set is requested it is drawn at
+    random (``"distinct_label.valid"`` stream) from the held-out set, up to ``n_valid``; the rest is
+    test. The sizes therefore follow the data: train holds exactly one record per distinct value,
+    as in the single-weight nationwide (SWNW) method of Li et al.
+
+    :param resolution: Width of the label bins that count as one value: values are equal when
+        ``floor(y / resolution)`` matches. ``None`` compares labels exactly, which suits assay
+        values recorded on a fixed grid; continuous labels need a resolution, or every value is
+        distinct. Defaults to ``None``.
+    :param task_index: Column of ``y`` to use, when ``y`` is 2-D. Defaults to 0.
+    :param size_tolerance: Warn with :class:`~chemsplit.exceptions.SizeToleranceWarning` when a
+        realised partition fraction misses its target by more than this. Defaults to 0.05.
+
+    Advantages
+    ----------
+    - Every distinct label value is represented in training exactly once, so the model sees the full label range without over-weighting values that happen to be measured many times.
+    - Tails of the label distribution, usually sparse, are never left out of training.
+    - Simple and explainable: the split is fully described by the label table and one seed.
+
+    Pitfalls
+    --------
+    - **Sizes are not under your control.** Train size equals the number of distinct values; requested sizes are only checked, with a warning when missed.
+    - Test holds repeats of training label values, so test labels are never new: an optimistic, interpolative evaluation.
+    - Without `resolution`, continuous labels have no repeats and the split cannot hold anything out (raises `ConstraintUnsatisfiableError`); with it, the bin width becomes a hidden experimental choice.
+    - Selection ignores chemistry: repeats of a value can be structurally unlike the record kept in train, or near-duplicates of it.
+    - The split depends on `y`, so it is not label-blind.
+
+    References
+    ----------
+    .. [1] Li, G.; Mu, L.; Zhou, M.; Zhao, J.; Wu, S.; Lin, L. New Strategy of Sample Set Division
+       in Spectroscopy Analysis -- SWNW. *Infrared Phys. Technol.* **2021**, 117, 103824.
+       https://doi.org/10.1016/j.infrared.2021.103824
+    """
+
+    splitter_id = "distinct_label"
+    family = "property"
+    strictness: ClassVar[Strictness] = Strictness.OPTIMISTIC
+    group_forming = False
+    requires_labels = True
+    accepts = ("smiles", "mol", "features", "interactions", "sequences")
+    extras: tuple[str, ...] = ()
+    deterministic_method = True
+    deterministic_without_seed = False
+    order_invariant = False
+
+    def __init__(
+        self,
+        *,
+        resolution: float | None = None,
+        task_index: int = 0,
+        size_tolerance: float = 0.05,
+        **base: Any,
+    ) -> None:
+        super().__init__(**base)
+        self.resolution = resolution
+        self.task_index = task_index
+        self.size_tolerance = size_tolerance
+        if resolution is not None and (
+            isinstance(resolution, bool) or not isinstance(resolution, (int, float)) or not resolution > 0
+        ):
+            raise ParameterError(f"resolution must be None or > 0, got {resolution!r}")
+        if isinstance(task_index, bool) or not isinstance(task_index, (int, np.integer)) or task_index < 0:
+            raise ParameterError(f"task_index must be an int >= 0, got {task_index!r}")
+        if not (isinstance(size_tolerance, (int, float)) and 0 <= size_tolerance < 1):
+            raise ParameterError(f"size_tolerance must be in [0, 1), got {size_tolerance!r}")
+
+    def _labels(self, ctx: _Context) -> np.ndarray:
+        y = np.asarray(ctx.y)
+        if y.ndim == 2:
+            if self.task_index >= y.shape[1]:
+                raise ParameterError(f"task_index={self.task_index} out of range for y with {y.shape[1]} columns")
+            y = y[:, self.task_index]
+        try:
+            v = y.astype(np.float64)
+        except (TypeError, ValueError):
+            raise LabelError("DistinctLabelSplitter requires numeric y") from None
+        if not np.all(np.isfinite(v)):
+            raise LabelError("DistinctLabelSplitter requires finite numeric y")
+        return v
+
+    def _check_preconditions(self, ctx: _Context) -> None:
+        self._labels(ctx)
+
+    def _partition(self, ctx: _Context) -> list[SplitResult]:
+        n = ctx.n
+        v = self._labels(ctx)
+        keys = v if self.resolution is None else np.floor(v / self.resolution)
+        levels: dict[float, list[int]] = {}
+        for i in stable_sort(list(range(n)), key=lambda r: v[r]):
+            levels.setdefault(float(keys[i]), []).append(i)
+        pick_rng = seed_for(ctx.rng_seeds, "distinct_label.pick", 0)
+        train: list[int] = []
+        held: list[int] = []
+        for members in levels.values():
+            members = sorted(members)
+            keep = members[int(pick_rng.integers(0, len(members)))] if len(members) > 1 else members[0]
+            train.append(keep)
+            held.extend(r for r in members if r != keep)
+        if not held:
+            raise ConstraintUnsatisfiableError(
+                f"DistinctLabelSplitter: all {n} label values are distinct, so nothing can be held "
+                "out; set `resolution` to bin continuous labels"
+            )
+        held_arr = np.asarray(sorted(held), dtype=np.int64)
+        n_valid = min(ctx.sizes.n_valid, held_arr.size - 1) if ctx.sizes.n_valid else 0
+        if n_valid > 0:
+            order = seed_for(ctx.rng_seeds, "distinct_label.valid", 0).permutation(held_arr.size)
+            valid = held_arr[order[:n_valid]]
+            test = held_arr[order[n_valid:]]
+        else:
+            valid = np.array([], dtype=np.int64)
+            test = held_arr
+        train_arr = np.asarray(train, dtype=np.int64)
+        targets = {"train": ctx.sizes.n_train, "valid": ctx.sizes.n_valid, "test": ctx.sizes.n_test}
+        realised = {"train": train_arr.size, "valid": valid.size, "test": test.size}
+        off = {k: realised[k] / n - targets[k] / n for k in targets}
+        if any(abs(d) > self.size_tolerance for d in off.values()):
+            warn_with_details(
+                SizeToleranceWarning(
+                    f"DistinctLabelSplitter: realised sizes {realised} differ from targets {targets} "
+                    f"by more than size_tolerance={self.size_tolerance} (sizes follow the label values)",
+                    details={"realised": realised, "targets": targets},
+                )
+            )
+        metadata = {
+            "n_distinct_levels": len(levels),
+            "n_repeated_levels": sum(1 for m in levels.values() if len(m) > 1),
+            "resolution": self.resolution,
+            "task_index": self.task_index,
+        }
+        return [
+            _build_result(
+                self, ctx, train=train_arr, valid=valid, test=test, discard=np.array([], dtype=np.int64), metadata=metadata
+            )
+        ]
 
 
 # -

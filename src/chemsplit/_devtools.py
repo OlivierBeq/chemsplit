@@ -125,6 +125,7 @@ def _build_plan(fixtures: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str
     # property
     plan["property"] = smiles_case("linear_series")
     plan["label_extrapolation"] = lambda: (F["linear_series"].smiles, F["linear_series"].y, {}, {})
+    plan["distinct_label"] = lambda: (F["linear_series"].smiles, np.round(F["linear_series"].y, 1), {}, {})
     plan["stratified_distribution"] = lambda: (F["linear_series"].smiles, F["linear_series"].y, {}, {})
     def _moodsplitter_case() -> tuple[list[str], None, dict[str, Any], dict[str, Any]]:
         from chemsplit.registry import get_splitter
@@ -298,6 +299,7 @@ def _build_plan(fixtures: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str
             "latent_space": "synthetic_matrix",
             "property": "linear_series",
             "label_extrapolation": "linear_series",
+            "distinct_label": "linear_series",
             "stratified_distribution": "linear_series",
             "mood": "two_clusters",
             "adversarial": "two_clusters",

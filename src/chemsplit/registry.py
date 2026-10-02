@@ -61,6 +61,7 @@ def _import_all_classes() -> list[type[BaseSplitter]]:
     )
     from chemsplit.splitters.property_ import (
         AdversarialSplitter,
+        DistinctLabelSplitter,
         LabelExtrapolationSplitter,
         MOODSplitter,
         PropertySplitter,
@@ -155,6 +156,7 @@ def _import_all_classes() -> list[type[BaseSplitter]]:
         # property
         PropertySplitter,
         LabelExtrapolationSplitter,
+        DistinctLabelSplitter,
         StratifiedDistributionSplitter,
         MOODSplitter,
         AdversarialSplitter,

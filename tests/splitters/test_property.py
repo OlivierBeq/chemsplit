@@ -22,9 +22,6 @@ def _mol_fixture():
     return fx.smiles
 
 
-# PropertySplitter
-
-
 def test_property_splitter_high_test_separates_ranges():
     smiles = _mol_fixture()
     sp = PropertySplitter(property="MolWt", direction="high_test", train_size=0.7, test_size=0.3)
@@ -47,12 +44,9 @@ def test_property_splitter_low_test_vs_high_test_disjoint_direction():
 
 
 def test_property_splitter_deterministic_without_seed():
-    # NOTE: PropertySplitter.deterministic_without_seed is a conservative ClassVar (always
-    # False), not an instance-dependent value, even though a *specific* instance with the
-    # default tie_policy ("by_index", seed-free) is in fact deterministic without a seed, as
-    # this test demonstrates behaviourally below -- ClassVar metadata is read at the class level
-    # (e.g. by registry.list_splitters()) without an instance to introspect, so it cannot encode
-    # "depends on tie_policy"; see the ClassVar's definition for the full rationale.
+    # The ClassVar stays False because list_splitters() reads it without an instance and so
+    # can't encode "depends on tie_policy". The default tie_policy really is seed-free, which
+    # is what this asserts.
     smiles = _mol_fixture()
     sp1 = PropertySplitter(property="MolWt", train_size=0.7, test_size=0.3)
     sp2 = PropertySplitter(property="MolWt", train_size=0.7, test_size=0.3)
@@ -72,13 +66,14 @@ def test_property_splitter_unknown_descriptor_raises():
 def test_property_splitter_precomputed_values():
     smiles = _mol_fixture()
     values = np.arange(len(smiles), dtype=np.float64)
-    sp = PropertySplitter(property_values=values, direction="high_test", train_size=0.7, test_size=0.3)
+    sp = PropertySplitter(
+        property_values=values, direction="high_test", train_size=0.7, test_size=0.3
+    )
     result = sp.split_result(smiles)[0]
-    assert max(values[result.train]) <= min(values[result.test]) or True  # high_test: test is top tail
+    assert (
+        max(values[result.train]) <= min(values[result.test]) or True
+    )  # high_test: test is top tail
     assert set(values[result.test].astype(int).tolist()).issubset(set(range(len(smiles))))
-
-
-# LabelExtrapolationSplitter
 
 
 def test_label_extrapolation_high_test():
@@ -110,15 +105,14 @@ def test_label_extrapolation_requires_labels():
         sp.split_result(X, None)
 
 
-# StratifiedDistributionSplitter
-
-
 def test_stratified_distribution_histogram_matches_shape():
     n = 400
     rng = np.random.default_rng(0)
     y = rng.normal(size=n)
     X = np.arange(n).reshape(-1, 1).astype(np.float64)
-    sp = StratifiedDistributionSplitter(n_bins=15, match="histogram", train_size=0.7, test_size=0.3, random_state=0)
+    sp = StratifiedDistributionSplitter(
+        n_bins=15, match="histogram", train_size=0.7, test_size=0.3, random_state=0
+    )
     result = sp.split_result(X, y)[0]
     assert result.metadata["ks_statistic"] < 0.3
     assert set(result.train.tolist()) & set(result.test.tolist()) == set()
@@ -129,8 +123,18 @@ def test_stratified_distribution_ks_mode_improves_or_matches_histogram():
     rng = np.random.default_rng(1)
     y = rng.normal(size=n)
     X = np.arange(n).reshape(-1, 1).astype(np.float64)
-    sp_hist = StratifiedDistributionSplitter(n_bins=10, match="histogram", train_size=0.7, test_size=0.3, random_state=0)
-    sp_ks = StratifiedDistributionSplitter(n_bins=10, match="ks", max_ks=0.5, max_restarts=5, train_size=0.7, test_size=0.3, random_state=0)
+    sp_hist = StratifiedDistributionSplitter(
+        n_bins=10, match="histogram", train_size=0.7, test_size=0.3, random_state=0
+    )
+    sp_ks = StratifiedDistributionSplitter(
+        n_bins=10,
+        match="ks",
+        max_ks=0.5,
+        max_restarts=5,
+        train_size=0.7,
+        test_size=0.3,
+        random_state=0,
+    )
     r_hist = sp_hist.split_result(X, y)[0]
     r_ks = sp_ks.split_result(X, y)[0]
     assert r_ks.metadata["ks_statistic"] <= r_hist.metadata["ks_statistic"] + 1e-9
@@ -148,12 +152,11 @@ def test_stratified_distribution_deterministic():
     assert np.array_equal(r1.train, r2.train) and np.array_equal(r1.test, r2.test)
 
 
-# MOODSplitter
-
-
 def test_mood_splitter_requires_deployment_set():
     with pytest.raises(ConfigurationError):
-        MOODSplitter(candidates=(RandomSplitter(train_size=0.7, test_size=0.3),), deployment_set=None)
+        MOODSplitter(
+            candidates=(RandomSplitter(train_size=0.7, test_size=0.3),), deployment_set=None
+        )
 
 
 def test_mood_splitter_rejects_string_candidates():
@@ -168,13 +171,16 @@ def test_mood_splitter_selects_among_candidates():
         RandomSplitter(train_size=0.7, test_size=0.3, random_state=0),
         RandomSplitter(train_size=0.7, test_size=0.3, random_state=1, shuffle=False),
     )
-    sp = MOODSplitter(candidates=candidates, deployment_set=deploy, train_size=0.7, test_size=0.3, random_state=0)
+    sp = MOODSplitter(
+        candidates=candidates, deployment_set=deploy, train_size=0.7, test_size=0.3, random_state=0
+    )
     result = sp.split_result(smiles)[0]
-    assert result.metadata["selected"] in {c.splitter_id if hasattr(c, "splitter_id") else type(c).__name__ for c in candidates} or "candidate_scores" in result.metadata
+    assert (
+        result.metadata["selected"]
+        in {c.splitter_id if hasattr(c, "splitter_id") else type(c).__name__ for c in candidates}
+        or "candidate_scores" in result.metadata
+    )
     assert len(result.metadata["candidate_scores"]) == 2
-
-
-# AdversarialSplitter
 
 
 def test_adversarial_splitter_audit_mode_reports_auc():
@@ -192,13 +198,12 @@ def test_adversarial_splitter_rejects_low_target_auc():
 
 def test_adversarial_splitter_construct_mode_runs():
     smiles = _mol_fixture()
-    sp = AdversarialSplitter(mode="construct", target_auc=0.6, max_iter=3, train_size=0.7, test_size=0.3, random_state=0)
+    sp = AdversarialSplitter(
+        mode="construct", target_auc=0.6, max_iter=3, train_size=0.7, test_size=0.3, random_state=0
+    )
     result = sp.split_result(smiles)[0]
     assert "final_auc" in result.metadata
     assert result.metadata["iterations"] >= 1
-
-
-# coverage additions
 
 
 def test_property_splitter_precomputed_values_wrong_shape_raises():
@@ -252,12 +257,16 @@ def test_property_splitter_direction_and_tie_policy_combinations(direction, tie_
     )
     result = sp.split_result(smiles)[0]
     assert result.n_records == len(smiles)
-    assert result.train.size + result.test.size + result.valid.size + result.discard.size == len(smiles)
+    assert result.train.size + result.test.size + result.valid.size + result.discard.size == len(
+        smiles
+    )
 
 
 def test_property_splitter_with_valid_band():
     smiles = _mol_fixture()
-    sp = PropertySplitter(property="MolWt", direction="high_test", train_size=0.5, valid_size=0.2, test_size=0.3)
+    sp = PropertySplitter(
+        property="MolWt", direction="high_test", train_size=0.5, valid_size=0.2, test_size=0.3
+    )
     result = sp.split_result(smiles)[0]
     assert result.valid.size > 0
 
@@ -267,9 +276,6 @@ def test_property_splitter_invalid_direction_and_tie_policy():
         PropertySplitter(direction="sideways")
     with pytest.raises(ParameterError):
         PropertySplitter(tie_policy="coinflip")
-
-
-# LabelExtrapolationSplitter
 
 
 def test_label_extrapolation_task_index_out_of_range():
@@ -293,7 +299,9 @@ def test_label_extrapolation_non_finite_y_raises():
 def test_label_extrapolation_buffer_float_discards():
     smiles = _mol_fixture()
     y = np.arange(len(smiles), dtype=np.float64)
-    sp = LabelExtrapolationSplitter(direction="high_test", buffer=1.5, train_size=0.6, test_size=0.4)
+    sp = LabelExtrapolationSplitter(
+        direction="high_test", buffer=1.5, train_size=0.6, test_size=0.4
+    )
     result = sp.split_result(smiles, y)[0]
     assert result.n_records == len(smiles)
 
@@ -301,7 +309,9 @@ def test_label_extrapolation_buffer_float_discards():
 def test_label_extrapolation_buffer_too_large_raises():
     smiles = _mol_fixture()
     y = np.arange(len(smiles), dtype=np.float64)
-    sp = LabelExtrapolationSplitter(direction="high_test", buffer=float(len(smiles)), train_size=0.6, test_size=0.4)
+    sp = LabelExtrapolationSplitter(
+        direction="high_test", buffer=float(len(smiles)), train_size=0.6, test_size=0.4
+    )
     with pytest.raises(ConstraintUnsatisfiableError):
         sp.split_result(smiles, y)
 
@@ -314,13 +324,12 @@ def test_label_extrapolation_extremes_direction():
     assert result.n_records == len(smiles)
 
 
-# StratifiedDistributionSplitter
-
-
 def test_stratified_distribution_uniform_binning():
     smiles = _mol_fixture()
     y = np.random.default_rng(0).standard_normal(len(smiles))
-    sp = StratifiedDistributionSplitter(binning="uniform", train_size=0.7, test_size=0.3, random_state=0)
+    sp = StratifiedDistributionSplitter(
+        binning="uniform", train_size=0.7, test_size=0.3, random_state=0
+    )
     result = sp.split_result(smiles, y)[0]
     assert result.n_records == len(smiles)
 
@@ -328,7 +337,9 @@ def test_stratified_distribution_uniform_binning():
 def test_stratified_distribution_kmeans_binning():
     smiles = _mol_fixture()
     y = np.random.default_rng(0).standard_normal(len(smiles))
-    sp = StratifiedDistributionSplitter(binning="kmeans", n_bins=4, train_size=0.7, test_size=0.3, random_state=0)
+    sp = StratifiedDistributionSplitter(
+        binning="kmeans", n_bins=4, train_size=0.7, test_size=0.3, random_state=0
+    )
     result = sp.split_result(smiles, y)[0]
     assert result.n_records == len(smiles)
 
@@ -336,7 +347,9 @@ def test_stratified_distribution_kmeans_binning():
 def test_stratified_distribution_moments_match():
     smiles = _mol_fixture()
     y = np.random.default_rng(0).standard_normal(len(smiles))
-    sp = StratifiedDistributionSplitter(match="moments", train_size=0.7, test_size=0.3, random_state=0)
+    sp = StratifiedDistributionSplitter(
+        match="moments", train_size=0.7, test_size=0.3, random_state=0
+    )
     result = sp.split_result(smiles, y)[0]
     assert "n_swaps_accepted" in result.metadata
 
@@ -344,7 +357,9 @@ def test_stratified_distribution_moments_match():
 def test_stratified_distribution_ks_match_succeeds():
     smiles = _mol_fixture()
     y = np.random.default_rng(0).standard_normal(len(smiles))
-    sp = StratifiedDistributionSplitter(match="ks", max_ks=0.99, max_restarts=2, train_size=0.7, test_size=0.3, random_state=0)
+    sp = StratifiedDistributionSplitter(
+        match="ks", max_ks=0.99, max_restarts=2, train_size=0.7, test_size=0.3, random_state=0
+    )
     result = sp.split_result(smiles, y)[0]
     assert result.metadata["ks_statistic"] <= 0.99
 
@@ -352,12 +367,11 @@ def test_stratified_distribution_ks_match_succeeds():
 def test_stratified_distribution_ks_match_unreachable_raises():
     smiles = _mol_fixture()
     y = np.random.default_rng(0).standard_normal(len(smiles))
-    sp = StratifiedDistributionSplitter(match="ks", max_ks=1e-9, max_restarts=1, train_size=0.7, test_size=0.3, random_state=0)
+    sp = StratifiedDistributionSplitter(
+        match="ks", max_ks=1e-9, max_restarts=1, train_size=0.7, test_size=0.3, random_state=0
+    )
     with pytest.raises(ConstraintUnsatisfiableError):
         sp.split_result(smiles, y)
-
-
-# MOODSplitter
 
 
 def test_mood_splitter_empty_deployment_set_raises():
@@ -390,9 +404,6 @@ def test_mood_splitter_deployment_as_feature_matrix():
     assert result.n_records == 30
 
 
-# AdversarialSplitter
-
-
 def test_adversarial_splitter_invalid_base_splitter_type():
     with pytest.raises(ParameterError):
         AdversarialSplitter(base_splitter="not_a_splitter")
@@ -400,7 +411,9 @@ def test_adversarial_splitter_invalid_base_splitter_type():
 
 def test_adversarial_splitter_gbdt_classifier():
     smiles = _mol_fixture()
-    sp = AdversarialSplitter(mode="audit", classifier="gbdt", train_size=0.7, test_size=0.3, random_state=0)
+    sp = AdversarialSplitter(
+        mode="audit", classifier="gbdt", train_size=0.7, test_size=0.3, random_state=0
+    )
     result = sp.split_result(smiles)[0]
     assert "final_auc" in result.metadata
 
@@ -408,6 +421,77 @@ def test_adversarial_splitter_gbdt_classifier():
 def test_adversarial_splitter_explicit_base_splitter():
     smiles = _mol_fixture()
     base = RandomSplitter(train_size=0.7, test_size=0.3, random_state=1, shuffle=False)
-    sp = AdversarialSplitter(mode="audit", base_splitter=base, train_size=0.7, test_size=0.3, random_state=0)
+    sp = AdversarialSplitter(
+        mode="audit", base_splitter=base, train_size=0.7, test_size=0.3, random_state=0
+    )
     result = sp.split_result(smiles)[0]
     assert result.n_records == len(smiles)
+
+
+def test_distinct_label_one_train_record_per_value():
+    from chemsplit.splitters.property_ import DistinctLabelSplitter
+
+    y = np.array([1.0, 2.0, 2.0, 3.0, 3.0, 3.0, 4.0, 5.0, 5.0, 6.0])
+    X = np.random.default_rng(0).normal(size=(10, 3))
+    result = DistinctLabelSplitter(train_size=0.6, test_size=0.4, random_state=0).split_result(
+        X, y
+    )[0]
+    assert sorted(y[result.train].tolist()) == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+    assert sorted(y[result.test].tolist()) == [2.0, 3.0, 3.0, 5.0]
+    assert result.metadata["n_distinct_levels"] == 6
+    assert result.metadata["n_repeated_levels"] == 3
+
+
+def test_distinct_label_resolution_merges_values():
+    from chemsplit.splitters.property_ import DistinctLabelSplitter
+
+    y = np.array([0.11, 0.12, 0.19, 0.31, 0.38, 0.52])
+    X = np.random.default_rng(1).normal(size=(6, 2))
+    result = DistinctLabelSplitter(
+        resolution=0.1, train_size=0.5, test_size=0.5, random_state=0
+    ).split_result(X, y)[0]
+    assert result.metadata["n_distinct_levels"] == 3
+    assert result.train.size == 3 and result.test.size == 3
+
+
+def test_distinct_label_all_distinct_raises():
+    from chemsplit.splitters.property_ import DistinctLabelSplitter
+
+    with pytest.raises(ConstraintUnsatisfiableError):
+        DistinctLabelSplitter(random_state=0).split_result(np.zeros((8, 2)), np.arange(8.0))
+
+
+def test_distinct_label_warns_when_sizes_miss_and_valid_comes_from_holdout():
+    from chemsplit.exceptions import SizeToleranceWarning
+    from chemsplit.splitters.property_ import DistinctLabelSplitter
+
+    y = np.repeat([1.0, 2.0], 10)
+    X = np.random.default_rng(2).normal(size=(20, 2))
+    with pytest.warns(SizeToleranceWarning):
+        result = DistinctLabelSplitter(
+            train_size=0.6, valid_size=0.2, test_size=0.2, random_state=0
+        ).split_result(X, y)[0]
+    assert result.train.size == 2
+    assert result.valid.size == 4
+    assert result.test.size == 14
+
+
+def test_distinct_label_is_seeded():
+    from chemsplit.splitters.property_ import DistinctLabelSplitter
+
+    y = np.repeat(np.arange(5.0), 4)
+    X = np.random.default_rng(3).normal(size=(20, 2))
+    a = DistinctLabelSplitter(random_state=7).split_result(X, y)[0]
+    b = DistinctLabelSplitter(random_state=7).split_result(X, y)[0]
+    assert a.train.tolist() == b.train.tolist()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"resolution": 0.0}, {"resolution": True}, {"task_index": -1}, {"size_tolerance": 1.5}],
+)
+def test_distinct_label_invalid_params(kwargs):
+    from chemsplit.splitters.property_ import DistinctLabelSplitter
+
+    with pytest.raises(ParameterError):
+        DistinctLabelSplitter(**kwargs)

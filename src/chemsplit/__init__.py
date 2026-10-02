@@ -80,6 +80,7 @@ if TYPE_CHECKING:
     )
     from chemsplit.splitters.property_ import (
         AdversarialSplitter,
+        DistinctLabelSplitter,
         LabelExtrapolationSplitter,
         MOODSplitter,
         PropertySplitter,
@@ -133,8 +134,8 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
-    # -- 61 splitters across 9 families, in declared order: baseline (5), scaffold (6),
-    # similarity (17), embedding (4), property (5), lineage (4), task (8), biomolecular (5),
+    # -- 62 splitters across 9 families, in declared order: baseline (5), scaffold (6),
+    # similarity (17), embedding (4), property (6), lineage (4), task (8), biomolecular (5),
     # protocol (7) --
     "RandomSplitter",
     "StratifiedRandomSplitter",
@@ -170,6 +171,7 @@ __all__ = [
     "LatentSpaceSplitter",
     "PropertySplitter",
     "LabelExtrapolationSplitter",
+    "DistinctLabelSplitter",
     "StratifiedDistributionSplitter",
     "MOODSplitter",
     "AdversarialSplitter",
@@ -293,6 +295,7 @@ _LAZY_SOURCE: dict[str, str] = {
     # splitters/property_.py
     "PropertySplitter": "chemsplit.splitters.property_",
     "LabelExtrapolationSplitter": "chemsplit.splitters.property_",
+    "DistinctLabelSplitter": "chemsplit.splitters.property_",
     "StratifiedDistributionSplitter": "chemsplit.splitters.property_",
     "MOODSplitter": "chemsplit.splitters.property_",
     "AdversarialSplitter": "chemsplit.splitters.property_",
