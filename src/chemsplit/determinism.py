@@ -1,11 +1,9 @@
-"""Deterministic seeding, tie-breaking, and rounding primitives.
+"""Deterministic seeding, tie-breaking and rounding primitives.
 
-Every other module in chemsplit MUST route every seeded random draw through :func:`seed_for`,
-every argmax/argmin through :func:`argmax_tiebreak`/:func:`argmin_tiebreak`, and every
-size-fraction rounding through :func:`floor_round`.
-
-A lint test greps the whole ``chemsplit/`` source tree for bare ``np.argmax(``/``np.argmin(``
-outside this file and fails on any hit.
+Every seeded draw elsewhere in the library goes through :func:`seed_for`, every argmax or
+argmin through :func:`argmax_tiebreak` or :func:`argmin_tiebreak`, and every size-fraction
+rounding through :func:`floor_round`. A lint test greps the source tree for bare
+``np.argmax(``/``np.argmin(`` outside this file.
 """
 
 from __future__ import annotations
@@ -27,11 +25,12 @@ __all__ = [
     "seeded_python_random",
     "argmax_tiebreak",
     "argmin_tiebreak",
+    "row_argmin",
     "stable_sort",
     "floor_round",
 ]
 
-#: fixed float-comparison tolerance.
+#: Fixed float-comparison tolerance.
 EPS = 1e-9
 
 _T = TypeVar("_T")
@@ -39,8 +38,13 @@ _T = TypeVar("_T")
 
 @dataclass(frozen=True, slots=True)
 class SeedBundle:
-    """Wraps the root :class:`numpy.random.SeedSequence` a splitter's ``_run`` derives every
-    purpose-specific generator from."""
+    """The root :class:`numpy.random.SeedSequence` a splitter derives every purpose-specific
+    generator from.
+
+    :param root: the seed sequence every derived generator spawns from.
+    :param resolved_seed: the entropy actually used, so a run seeded from OS entropy can be
+        replayed.
+    """
 
     root: np.random.SeedSequence
     resolved_seed: int | None = None
@@ -49,10 +53,15 @@ class SeedBundle:
 
 
 def seed_for(bundle: SeedBundle, purpose: str, k: int = 0) -> np.random.Generator:
-    """Derive a purpose- and fold-specific PCG64 generator from ``bundle``.
+    """Derive a purpose- and fold-specific PCG64 generator.
 
-    ``purpose`` strings are fixed per splitter and documented in each splitter's Determinism
-    block; adding, removing, or renaming a ``purpose`` is a breaking (MAJOR) change.
+    Each splitter's ``purpose`` strings are fixed and documented in its Notes section; adding,
+    removing or renaming one is a breaking change.
+
+    :param bundle: the seed bundle to derive from.
+    :param purpose: names the stream, so two different draws in one splitter stay independent.
+    :param k: fold or repeat index within that stream.
+    :return: a fresh generator, identical for identical arguments.
     """
     entropy_tag = int.from_bytes(
         hashlib.blake2b(purpose.encode("utf-8"), digest_size=8).digest(), "big"
@@ -65,14 +74,15 @@ def seed_for(bundle: SeedBundle, purpose: str, k: int = 0) -> np.random.Generato
 
 
 def make_seed_bundle(random_state: int | np.random.Generator | None) -> SeedBundle:
-    """Build a :class:`SeedBundle` from a splitter's ``random_state`` constructor argument.
+    """Build a :class:`SeedBundle` from a splitter's ``random_state``.
 
-    - ``None`` -- a fresh :class:`numpy.random.SeedSequence` drawing OS entropy; the drawn entropy
-      is recorded on the bundle (``resolved_seed``) so the run can be replayed.
-    - ``int`` -- ``SeedSequence(entropy=random_state)``.
-    - ``Generator`` -- the generator's current state is **not** consumed. Instead the bundle's root
-      is derived from the generator's internal PCG64 state word, so results stay reproducible even
-      when a shared generator has been advanced elsewhere by other code.
+    ``None`` draws OS entropy and records it, so the run can be replayed. An int is used
+    directly. A generator's state is *not* consumed: the root is derived from its PCG64 state
+    word, so results survive that generator being advanced elsewhere.
+
+    :param random_state: an int, a :class:`numpy.random.Generator`, or ``None``.
+    :raises TypeError: if ``random_state`` is any other type.
+    :return: the bundle, with ``resolved_seed`` always populated.
     """
     if random_state is None:
         root = np.random.SeedSequence()
@@ -93,23 +103,29 @@ def make_seed_bundle(random_state: int | np.random.Generator | None) -> SeedBund
 
 
 def seeded_python_random(bundle: SeedBundle, purpose: str, k: int = 0) -> random.Random:
-    """A seeded, isolated :class:`random.Random` instance for third-party libraries (``deap``)
-    that need Python's stdlib ``random`` API rather than a numpy Generator ("seeded via
-    ``random.Random(int(...))``; the module-level ``random`` MUST NOT be touched").
+    """A seeded, isolated :class:`random.Random` for libraries that want the stdlib API.
 
-    Never call ``random.seed(...)`` at module scope anywhere in chemsplit -- always go through this
-    function so global state is never touched.
+    ``deap`` is the case in point. Going through this function keeps the module-level
+    ``random`` state untouched.
+
+    :param bundle: the seed bundle to derive from.
+    :param purpose: names the stream.
+    :param k: fold or repeat index within that stream.
+    :return: a freshly seeded generator.
     """
     seed_int = int(seed_for(bundle, purpose, k).integers(0, 2**31 - 1))
     return random.Random(seed_int)
 
 
 def argmax_tiebreak(func: Callable[[_T], float], items: Iterable[_T]) -> _T:
-    """Return the element of ``items`` maximising ``func``, breaking ties by first occurrence.
+    """Return the element maximising ``func``, breaking ties by first occurrence.
 
-    ``items`` MUST be supplied in the tie-breaking priority order (typically ascending record or
-    group index -- "the winner is the one with the smallest record index"). Comparison is
-    strict (``>``), so the first-seen element achieving the best score wins any tie.
+    Comparison is strict, so the first element reaching the best score wins.
+
+    :param func: the score to maximise.
+    :param items: candidates, in tie-breaking priority order, usually ascending index.
+    :raises ValueError: if ``items`` is empty.
+    :return: the winning element.
     """
     best_item: _T | None = None
     best_score: float | None = None
@@ -124,8 +140,13 @@ def argmax_tiebreak(func: Callable[[_T], float], items: Iterable[_T]) -> _T:
 
 
 def argmin_tiebreak(func: Callable[[_T], float], items: Iterable[_T]) -> _T:
-    """Mirror of :func:`argmax_tiebreak`: returns the element minimising ``func``, ties broken by
-    first occurrence (strict ``<`` comparison)."""
+    """Return the element minimising ``func``, breaking ties by first occurrence.
+
+    :param func: the score to minimise.
+    :param items: candidates, in tie-breaking priority order.
+    :raises ValueError: if ``items`` is empty.
+    :return: the winning element.
+    """
     best_item: _T | None = None
     best_score: float | None = None
     for item in items:
@@ -138,23 +159,47 @@ def argmin_tiebreak(func: Callable[[_T], float], items: Iterable[_T]) -> _T:
     return best_item
 
 
+def row_argmin(M: np.ndarray) -> np.ndarray:
+    """Vectorised row-wise :func:`argmin_tiebreak`, for nearest-neighbour lookups.
+
+    A Python-level call per row is too slow on large matrices.
+
+    :param M: a 2-D array with at least one column, and no NaN.
+    :raises ValueError: if ``M`` is not 2-D, or has no columns.
+    :return: per row, the column index of the minimum, ties to the smallest index.
+    """
+    M = np.asarray(M)
+    if M.ndim != 2 or M.shape[1] == 0:
+        raise ValueError(
+            f"row_argmin() needs a 2-D array with at least one column, got shape {M.shape}"
+        )
+    # numpy's argmin returns the first occurrence of the minimum
+    return np.argmin(M, axis=1).astype(np.int64)
+
+
 def stable_sort(
     seq: Sequence[_T], key: Callable[[_T], object], desc: bool = False
 ) -> list[_T]:
-    """A stable sort where equal keys retain ascending-index (original relative) order, even when
-    ``desc=True``.
+    """Sort so that equal keys keep their original relative order, including when descending.
 
-    Python's ``sorted(..., reverse=True)`` is documented to be stable in this sense (it doesn't
-    reverse the relative order of equal elements), so this is a thin wrapper -- used everywhere in
-    chemsplit instead of ad hoc ``sorted(..., reverse=...)`` calls.
+    ``sorted(..., reverse=True)`` is documented to be stable in this sense, so this is a thin
+    wrapper, used in place of ad hoc ``sorted`` calls.
+
+    :param seq: the sequence to sort.
+    :param key: the sort key.
+    :param desc: sort descending.
+    :return: a new sorted list.
     """
     return sorted(seq, key=key, reverse=desc)
 
 
 def floor_round(x: float) -> int:
-    """Round-half-up on non-negative reals: ``math.floor(x + 0.5)``.
+    """Round half up on non-negative reals.
 
-    This is deliberately NOT Python's built-in ``round()`` (banker's rounding) nor
-    ``numpy.round``; neither may be used anywhere in chemsplit for size computation.
+    Not Python's ``round()``, which rounds half to even, and not ``numpy.round``. Neither is
+    used for size computation anywhere in the library.
+
+    :param x: a non-negative real.
+    :return: ``math.floor(x + 0.5)``.
     """
     return math.floor(x + 0.5)

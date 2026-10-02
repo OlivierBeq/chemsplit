@@ -24,16 +24,17 @@ def test_seed_for_different_purpose_or_k_differ():
 
 def test_make_seed_bundle_int_vs_none_vs_generator():
     b_int = det.make_seed_bundle(7)
-    assert b_int.resolved_seed == 7  # resolved_seed is always populated, not just for random_state=None
+    assert (
+        b_int.resolved_seed == 7
+    )  # resolved_seed is always populated, not just for random_state=None
     b_none = det.make_seed_bundle(None)
     assert isinstance(b_none.resolved_seed, int)
 
     gen = np.random.default_rng(123)
     gen.integers(0, 10**6, size=3)  # advance the generator
     b_gen = det.make_seed_bundle(gen)
-    # a second bundle from a *fresh* generator with the same seed as the original (before being
-    # advanced) must reproduce the same root, proving we derive from the generator's current
-    # internal state rather than consuming further draws from it
+    # a fresh generator on the same seed must give the same root, proving the bundle derives
+    # from the generator's current state rather than consuming draws from it
     b_gen_again = det.make_seed_bundle(gen)
     g1 = det.seed_for(b_gen, "x", 0).integers(0, 100, size=5)
     g2 = det.seed_for(b_gen_again, "x", 0).integers(0, 100, size=5)
@@ -65,6 +66,28 @@ def test_argmin_tiebreak_smallest_index_wins():
     items = [0, 1, 2, 3]
     scores = {0: 1.0, 1: 1.0, 2: 3.0, 3: 1.0}
     assert det.argmin_tiebreak(lambda i: scores[i], items) == 0
+
+
+def test_row_argmin_smallest_column_wins_ties():
+    M = np.array([[3.0, 1.0, 1.0], [2.0, 2.0, 2.0], [0.5, 4.0, 0.1]])
+    out = det.row_argmin(M)
+    assert out.tolist() == [1, 0, 2]
+    assert out.dtype == np.int64
+
+
+def test_row_argmin_matches_argmin_tiebreak():
+    rng = np.random.default_rng(0)
+    M = rng.integers(0, 3, size=(20, 6)).astype(float)  # many ties
+    expected = [
+        det.argmin_tiebreak(lambda j, r=r: M[r, j], range(M.shape[1])) for r in range(M.shape[0])
+    ]
+    assert det.row_argmin(M).tolist() == expected
+
+
+@pytest.mark.parametrize("bad", [np.zeros(3), np.zeros((2, 0))])
+def test_row_argmin_rejects_bad_shapes(bad):
+    with pytest.raises(ValueError):
+        det.row_argmin(bad)
 
 
 def test_stable_sort_ascending_ties_preserved():
