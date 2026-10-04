@@ -74,6 +74,15 @@ class RandomSplitter(BaseSplitter):
     - Exact duplicates (salts, tautomers, unspecified stereocentres) straddle the boundary unless removed first -- see `chemsplit.preprocess.find_duplicates` and `aggregate_replicates`.
     - Reporting only a random-split number is the most common cause of irreproducible QSAR results.
 
+
+    References
+    ----------
+    .. [1] Hastie, T.; Tibshirani, R.; Friedman, J. *The Elements of Statistical Learning*, 2nd ed.;
+       Springer: New York, **2009**; Chapter 7. https://doi.org/10.1007/978-0-387-84858-7
+    .. [2] Sheridan, R. P. Time-Split Cross-Validation as a Method for Estimating the Goodness of
+       Prospective Prediction. *J. Chem. Inf. Model.* **2013**, 53 (4), 783-790.
+       https://doi.org/10.1021/ci400084k
+       (documents how far a random split overstates prospective performance)
     """
 
     splitter_id: ClassVar[str] = "random"
@@ -636,6 +645,13 @@ class MonteCarloSplitter(BaseSplitter):
     - Some records may never land in any test set (probability `(1-p)^n_splits`); the last fold's `metadata` reports coverage, and callers needing full coverage should use `k_fold`.
     - Inherits every chemical-leakage weakness of `random`.
 
+
+    References
+    ----------
+    .. [1] Picard, R. R.; Cook, R. D. Cross-Validation of Regression Models. *J. Am. Stat. Assoc.*
+       **1984**, 79 (387), 575-583. https://doi.org/10.1080/01621459.1984.10478083
+    .. [2] Xu, Q.-S.; Liang, Y.-Z. Monte Carlo Cross Validation. *Chemom. Intell. Lab. Syst.* **2001**,
+       56 (1), 1-11. https://doi.org/10.1016/S0169-7439(00)00122-2
     """
 
     splitter_id: ClassVar[str] = "monte_carlo"
@@ -762,6 +778,13 @@ class PredefinedSplitter(BaseSplitter):
     - A published split is tied to a specific row order; filtering, deduplicating, or re-standardising the dataset silently shifts what the indices point to. Always re-key on InChIKey and verify with `chemsplit.audit.audit_split`.
     - Encourages leaderboard over-fitting, since the community tunes against one fixed test set for years.
 
+
+    References
+    ----------
+    .. [1] No method of its own: this splitter reproduces a partition decided elsewhere. Reporting the
+       exact partition alongside a model is part of standard QSAR practice -- see Tropsha, A. Best
+       Practices for QSAR Model Development, Validation, and Exploitation. *Mol. Inf.* **2010**,
+       29 (6-7), 476-488. https://doi.org/10.1002/minf.201000061
     """
 
     splitter_id: ClassVar[str] = "predefined"

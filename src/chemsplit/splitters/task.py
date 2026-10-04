@@ -64,36 +64,70 @@ __all__ = [
 _EPS = 1e-6
 
 
-# -
-# HiSplitter
-# -
-
-
 class HiSplitter(GroupSplitter):
     """Hit-identification split: no test molecule may exceed ``threshold`` similarity to any
     training molecule; sizes are optimised under that hard constraint.
 
+    :param threshold: the similarity ceiling between any test and any training molecule.
+    :param coarse_cutoff: similarity at which records are pre-grouped into conflict components,
+        which sets the optimisation's granularity without changing the guarantee.
+    :param solver: greedy assignment, an exact ILP, or simulated annealing.
+    :param max_discard_frac: largest fraction of records that may be discarded to meet the
+        constraint.
+    :param time_limit_s: wall-clock limit on the ILP solve.
+    :param annealing_steps: steps taken by ``solver="annealing"``.
+    :param annealing_t0: starting temperature for annealing.
+    :param annealing_t1: final temperature for annealing.
+    :param verify: recheck the realised maximum cross-similarity against ``threshold`` after
+        solving, which is the only proof the split is correct.
+    :param featurizer: featurizer alias or instance used to build the similarity matrix.
+    :param metric: similarity metric; see :mod:`chemsplit.metrics`.
+    :param max_memory_bytes: ceiling on the pairwise matrix. Exceeding it raises rather than
+        allocating.
+    :param kwargs: forwarded to :class:`chemsplit.base.GroupSplitter`.
+    :raises ParameterError: if ``threshold`` or ``coarse_cutoff`` is outside ``(0, 1)``,
+        ``max_discard_frac`` is outside ``[0, 1)``, or ``solver`` is unknown.
+    :raises ConstraintUnsatisfiableError: at split time, if the threshold cannot be met within
+        ``max_discard_frac``.
+    :raises ScalabilityError: at split time, if the pairwise matrix would exceed
+        ``max_memory_bytes``.
+
     Advantages
     ----------
-    - Provides a **verified guarantee** -- `metadata["max_cross_similarity"]` is checked against the threshold, so the central claim of a hit-identification benchmark is evidence, not assertion.
-    - Formulating the assignment over conflict components, rather than pruning greedily, means the guarantee usually costs no data -- unlike `similarity_threshold`'s `greedy_prune`.
-    - Reveals a genuine, widely reported result: models that look strong under scaffold splitting often fall toward random here. That gap is the finding.
+    - Gives a **verified guarantee**: `metadata["max_cross_similarity"]` is checked against
+      the threshold, so a hit-identification benchmark's central claim is evidence.
+    - Formulating the assignment over conflict components, instead of pruning greedily, usually
+      costs no data, unlike `similarity_threshold`'s `greedy_prune`.
+    - Reproduces a widely reported result: models that look strong under scaffold splitting
+      often fall toward random here.
     - Three solvers trade optimality for speed, and all three are deterministic.
 
     Pitfalls
     --------
-    - On congeneric or focused datasets the conflict graph collapses into one component and the requested split is simply impossible. Raises rather than silently returning a leaky split -- that error is information, not an obstacle to route around.
-    - The threshold, fingerprint, and its radius jointly define difficulty -- "Tanimoto 0.4" alone isn't a full design.
-    - `coarse_cutoff` changes the optimisation granularity and therefore the achievable balance, without changing the guarantee.
-    - The guarantee is one-sided (test-to-train), so the *train* set may still hold near-duplicates of each other -- this controls generalisation, not training redundancy.
-    - Near-zero cross-similarity doesn't mean the test molecules are drug-like or interesting -- an extreme split can be dominated by fragments and outliers. Inspect the test set.
-    - `verify=False` removes the only proof the split is correct -- don't use it for published results.
+    - On congeneric or focused datasets the conflict graph collapses into one component and the
+      requested split is impossible. It raises rather than returning a leaky split.
+    - The threshold, the fingerprint and its radius jointly define difficulty, so "Tanimoto
+      0.4" alone is not a full design.
+    - `coarse_cutoff` changes the optimisation granularity, and therefore the achievable
+      balance, without changing the guarantee.
+    - The guarantee is one-sided, test to train, so the *train* set may still hold
+      near-duplicates of itself. This controls generalisation, not training redundancy.
+    - Near-zero cross-similarity does not make the test molecules drug-like or interesting: an
+      extreme split can be dominated by fragments and outliers.
+    - `verify=False` removes the only proof the split is correct.
 
     Notes
     -----
     Independent, from-scratch optimisation engine (:mod:`chemsplit._optimize`). ``solver`` values
     ``"greedy"``/``"ilp"``/``"annealing"`` select among chemsplit's own benchmarked architectures
     (``greedy``, ``milp`` via ``scipy.optimize.milp``, ``anneal``).
+
+    References
+    ----------
+    .. [1] Steshin, S. Lo-Hi: Practical ML Drug Discovery Benchmark. In *Advances in Neural
+       Information Processing Systems 36* (Datasets and Benchmarks Track), **2023**;
+       pp 64526-64554. https://doi.org/10.52202/075280-2816 (preprint:
+       https://arxiv.org/abs/2310.06399)
     """
 
     splitter_id: ClassVar[str] = "hi"
@@ -148,9 +182,13 @@ class HiSplitter(GroupSplitter):
         if solver not in ("greedy", "ilp", "annealing"):
             raise ParameterError(f"invalid solver: {solver!r}")
         if not (0.0 <= max_discard_frac < 1.0):
-            raise ParameterError(f"max_discard_frac must satisfy 0 <= f < 1, got {max_discard_frac!r}")
+            raise ParameterError(
+                f"max_discard_frac must satisfy 0 <= f < 1, got {max_discard_frac!r}"
+            )
 
-    def _conflict_components(self, ctx: _Context) -> tuple[list[int], dict[int, list[int]], int, np.ndarray]:
+    def _conflict_components(
+        self, ctx: _Context
+    ) -> tuple[list[int], dict[int, list[int]], int, np.ndarray]:
         guard_memory(ctx.n, self.max_memory_bytes, type(self).__name__)
         feat = get_featurizer(self.featurizer)
         D = compute_distance_matrix(
@@ -272,7 +310,7 @@ class HiSplitter(GroupSplitter):
         cross_violates = False
         if train_arr.size and test_arr.size:
             cross_sub = S[np.ix_(test_arr, train_arr)]
-            # Same dtype/EPS as Stage 2's conflict check, so verification can't spuriously fail.
+            # same dtype and EPS as the stage-2 conflict check, so verification can't misfire
             cross_violates = bool(np.any(cross_sub > self.threshold + _EPS))
             max_cross_similarity = float(cross_sub.max())
 
@@ -314,31 +352,64 @@ class HiSplitter(GroupSplitter):
         return [result]
 
 
-# -
-# LoSplitter
-# -
-
-
 class LoSplitter(GroupSplitter):
     """Lead-optimisation split: build clusters of mutually similar molecules that nevertheless
     span a range of activity, hold each cluster out whole, and evaluate within-cluster ranking.
 
+    :param threshold: how similar molecules must be to join one cluster.
+    :param min_cluster_size: smallest cluster that may be held out.
+    :param max_clusters: cap on the number of held-out clusters.
+    :param std_threshold: minimum label standard deviation within a cluster, in the label's own
+        units, so that the cluster spans a real activity range.
+    :param train_similarity_ceiling: prune training molecules above this similarity to any test
+        molecule, or ``None`` to reuse ``threshold``.
+    :param task_index: column of a multi-task ``y`` to use.
+    :param evaluation: recorded in metadata to say whether scores are meant per cluster or
+        pooled. It does not change the partition.
+    :param featurizer: featurizer alias or instance used to build the similarity matrix.
+    :param metric: similarity metric; see :mod:`chemsplit.metrics`.
+    :param max_memory_bytes: ceiling on the pairwise matrix. Exceeding it raises rather than
+        allocating.
+    :param kwargs: forwarded to :class:`chemsplit.base.GroupSplitter`.
+    :raises ParameterError: if a similarity is outside ``(0, 1)``, a size parameter is below
+        1, ``std_threshold`` is negative, or ``evaluation`` is unknown.
+    :raises LabelError: at split time, if ``y`` is missing or ``task_index`` is out of range.
+    :raises ConstraintUnsatisfiableError: at split time, if no cluster meets the size and
+        spread criteria.
+    :raises ScalabilityError: at split time, if the pairwise matrix would exceed
+        ``max_memory_bytes``.
+
     Advantages
     ----------
-    - Answers the question a medicinal chemist actually asks -- "which analogue should I make next?" -- rather than the question most benchmarks answer.
-    - Each held-out cluster is internally similar but has real activity spread, so a model that only separates coarse chemotypes scores at chance -- invisible to any scaffold or cluster split.
-    - `cluster_members` enables the right metric: Spearman correlation **within** each cluster, averaged across clusters, with pooled metrics only as a secondary figure.
-    - Train pruning removes the near-neighbour leak that would otherwise make within-cluster ranking trivial.
+    - Answers the question a medicinal chemist actually asks -- which analogue should I make
+      next? -- rather than the question most benchmarks answer.
+    - Each held-out cluster is internally similar yet spans real activity, so a model that
+      only separates coarse chemotypes scores at chance -- invisible to any cluster split.
+    - `cluster_members` supports the metric this split calls for: Spearman correlation
+      **within** each cluster, averaged across clusters, with pooled metrics secondary.
+    - Train pruning removes the near-neighbour leak that would otherwise make within-cluster
+      ranking trivial.
 
     Pitfalls
     --------
-    - **The evaluation metric is part of the split.** Reporting pooled R² or ROC-AUC on a Lo split throws away the whole point -- the per-cluster ranking is the result. Use `metadata["cluster_members"]`.
-    - `std_threshold` is expressed in the label's own units and silently assumes a log scale -- nonsense on a linear IC50 column.
-    - Test-set size is set by the cluster criteria, not `test_size` -- treat `test_size` as a cap.
-    - Train pruning can remove a large fraction of data, and exactly the most informative near-analogues -- the training set is systematically depleted of chemistry relevant to the test clusters. Intentional, but it makes absolute scores incomparable with other splits.
-    - Clusters are built greedily around high-degree centres, so early clusters absorb the densest regions and later clusters are progressively weaker.
-    - Activity spread within a cluster can be assay noise rather than SAR -- aggregate replicates and prefer single-assay data.
+    - **The evaluation metric is part of the split.** Pooled R² or ROC-AUC discards the point
+      of it; the per-cluster ranking over `metadata["cluster_members"]` is the result.
+    - `std_threshold` is in the label's own units and assumes a log scale, so it is meaningless
+      on a linear IC50 column.
+    - Test-set size follows the cluster criteria rather than `test_size`, which acts as a cap.
+    - Train pruning removes a large fraction of the data, and the most informative
+      near-analogues. Intentional, and it makes absolute scores incomparable elsewhere.
+    - Clusters are built greedily around high-degree centres, so early clusters absorb the
+      densest regions and later ones are progressively weaker.
+    - Activity spread within a cluster can be assay noise rather than SAR, so replicates are
+      worth aggregating and single-assay data worth preferring.
 
+    References
+    ----------
+    .. [1] Steshin, S. Lo-Hi: Practical ML Drug Discovery Benchmark. In *Advances in Neural
+       Information Processing Systems 36* (Datasets and Benchmarks Track), **2023**;
+       pp 64526-64554. https://doi.org/10.52202/075280-2816 (preprint:
+       https://arxiv.org/abs/2310.06399)
     """
 
     splitter_id: ClassVar[str] = "lo"
@@ -393,8 +464,8 @@ class LoSplitter(GroupSplitter):
             )
 
     def _group_labels(self, ctx: _Context) -> IndexArray:
-        # Not used by _partition (which is overridden below), but must exist: return each of the
-        # threshold-neighbourhood clusters as a group and every other record as a singleton.
+        # _partition is overridden below, so this exists only for compute_groups: one group
+        # per threshold-neighbourhood cluster, singletons for the rest
         return self._build(ctx)[0]
 
     def _build(
@@ -407,7 +478,10 @@ class LoSplitter(GroupSplitter):
         S = compute_similarity_matrix(
             ctx, feat, self.metric, self.max_memory_bytes, type(self).__name__, self.n_jobs
         )
-        neigh = [set(np.nonzero(S[i] >= self.threshold - _EPS)[0].tolist()) - {i} for i in range(ctx.n)]
+        neigh = [
+            set(np.nonzero(S[i] >= self.threshold - _EPS)[0].tolist()) - {i}
+            for i in range(ctx.n)
+        ]
 
         available = set(range(ctx.n))
         clusters: list[list[int]] = []
@@ -446,7 +520,10 @@ class LoSplitter(GroupSplitter):
             )
 
         test_set = {i for members in clusters for i in members}
-        ceiling = self.train_similarity_ceiling if self.train_similarity_ceiling is not None else self.threshold
+        if self.train_similarity_ceiling is not None:
+            ceiling = self.train_similarity_ceiling
+        else:
+            ceiling = self.threshold
         test_list = sorted(test_set)
         leak: set[int] = set()
         for r in sorted(available):
@@ -505,29 +582,60 @@ class LoSplitter(GroupSplitter):
         return [result]
 
 
-# -
-# ScaffoldHopSplitter
-# -
-
-
 class ScaffoldHopSplitter(GroupSplitter):
     """Test set restricted to actives whose scaffolds are absent from train, while pharmacophoric
     features are retained.
 
+    :param scaffold_kind: which scaffold must differ: the Murcko framework, its generic form,
+        or the ring systems.
+    :param active_definition: read ``y`` as a binary active flag, or threshold it.
+    :param active_threshold: the potency cut for ``active_definition="threshold"``.
+    :param pharmacophore_similarity: how pharmacophoric similarity is measured: not at all,
+        with FCFP fingerprints, or with RDKit 2-D pharmacophore fingerprints.
+    :param min_pharm_similarity: how similar a test active must stay to some training active.
+    :param inactives_policy: put every inactive in train, split them along with the scaffold
+        grouping, or discard them.
+    :param kwargs: forwarded to :class:`chemsplit.base.GroupSplitter`.
+    :raises ParameterError: if ``min_pharm_similarity`` is outside ``[0, 1]``, or a mode
+        parameter is unknown.
+    :raises ConfigurationError: if ``active_definition="threshold"`` without
+        ``active_threshold``.
+    :raises LabelError: at split time, if ``y`` is missing.
+    :raises ConstraintUnsatisfiableError: at split time, if too few actives or distinct
+        scaffolds survive the criteria.
+
     Advantages
     ----------
-    - The correct evaluation for a virtual-screening novelty claim -- it demands a new framework while requiring the recognition features stay findable, exactly what "scaffold hop" means in medicinal chemistry.
-    - The scaffold-disjointness constraint is asserted, not assumed.
-    - Separating the scaffold criterion from the pharmacophore criterion makes both reportable and tunable.
+    - The right evaluation for a virtual-screening novelty claim: a new framework with the
+      recognition features still findable, which is what "scaffold hop" means.
+    - The scaffold-disjointness constraint is asserted rather than assumed.
+    - Keeping the scaffold criterion separate from the pharmacophore criterion makes both
+      reportable and tunable.
 
     Pitfalls
     --------
-    - Two coupled thresholds (`scaffold_kind`, `min_pharm_similarity`) define the difficulty, neither with a principled default, and the result moves a lot with both.
-    - 2-D pharmacophore similarity is a weak proxy for 3-D recognition -- a pair satisfying `min_pharm_similarity` may bind completely differently, and a real hop may fail the criterion.
-    - Needs enough actives spread over enough distinct scaffolds; most single-target datasets don't have them, so the splitter raises rather than producing a two-scaffold "benchmark".
-    - Inactives dominate screening data's record count, so `inactives_policy` quietly controls the class balance of both partitions and thus the headline metric.
-    - Success here is evidence about ranking novel chemotypes, not about absolute potency prediction.
+    - Two coupled thresholds, `scaffold_kind` and `min_pharm_similarity`, define the
+      difficulty, neither has a principled default, and the result moves a lot with both.
+    - 2-D pharmacophore similarity is a weak proxy for 3-D recognition: a pair passing
+      `min_pharm_similarity` may bind differently, and a real hop may fail it.
+    - Needs enough actives spread over enough distinct scaffolds. Most single-target datasets
+      lack them, so the splitter raises instead of producing a two-scaffold benchmark.
+    - Inactives dominate screening data by record count, so `inactives_policy` controls the
+      class balance of both partitions, and with it the headline metric.
+    - Success here is evidence about ranking novel chemotypes, not about absolute potency
+      prediction.
 
+    References
+    ----------
+    .. [1] This composes a scaffold-disjointness constraint with a pharmacophore-similarity
+       floor, rather than implementing a published splitting method. The concept and its
+       topological-pharmacophore similarity: Schneider, G.; Neidhart, W.; Giller, T.;
+       Schmid, G. "Scaffold-Hopping" by Topological Pharmacophore Search: A Contribution to
+       Virtual Screening. *Angew. Chem. Int. Ed.* **1999**, 38 (19), 2894-2896.
+       https://doi.org/10.1002/(SICI)1521-3773(19991004)38:19<2894::AID-ANIE2894>3.0.CO;2-F
+    .. [2] Hu, Y.; Stumpfe, D.; Bajorath, J. Recent Advances in Scaffold Hopping.
+       *J. Med. Chem.* **2017**, 60 (4), 1238-1246.
+       https://doi.org/10.1021/acs.jmedchem.6b01437
     """
 
     splitter_id: ClassVar[str] = "scaffold_hop"
@@ -549,7 +657,9 @@ class ScaffoldHopSplitter(GroupSplitter):
         active_threshold: float | None = None,
         pharmacophore_similarity: Literal["none", "fcfp", "pharm2d"] = "fcfp",
         min_pharm_similarity: float = 0.5,
-        inactives_policy: Literal["train", "split_with_scaffolds", "discard"] = "split_with_scaffolds",
+        inactives_policy: Literal[
+            "train", "split_with_scaffolds", "discard"
+        ] = "split_with_scaffolds",
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -642,7 +752,9 @@ class ScaffoldHopSplitter(GroupSplitter):
                 break
             trial_test = by_scaffold[s]
             already_held = {i for ts in test_scaffolds for i in by_scaffold[ts]}
-            trial_train_actives = [i for i in A.tolist() if i not in already_held and i not in trial_test]
+            trial_train_actives = [
+                i for i in A.tolist() if i not in already_held and i not in trial_test
+            ]
             if P is not None and trial_train_actives:
                 train_pos = [a_index[i] for i in trial_train_actives]
                 ok = True
@@ -655,7 +767,7 @@ class ScaffoldHopSplitter(GroupSplitter):
                 if not ok:
                     continue
             elif not trial_train_actives:
-                # don't strip train of every active scaffold.
+                # keep at least one active scaffold in train
                 continue
             test_scaffolds.append(s)
             held_actives += len(trial_test)
@@ -724,20 +836,15 @@ class ScaffoldHopSplitter(GroupSplitter):
         return [result]
 
 
-# -
-# cold_drug / cold_target / cold_pair: cold-start splitters over interaction data
-# -
 
 
 class _ColdStartBase(GroupSplitter):
     """Shared implementation for the three cold-start interaction splitters: holds out whole
     compound groups, whole target groups, or both (``axis``, fixed per concrete subclass).
 
-    ``X`` must be ``Sequence[tuple[compound_key, target_key]]``. ``compound_grouper``/
-    ``target_grouper``, when given, must already be constructed :class:`~chemsplit.base.
-    GroupSplitter` instances (string registry lookup is not available: ``chemsplit.registry``
-    does not exist yet at the point this family is implemented; ``None`` means "each
-    compound/target is its own group").
+    ``X`` must be a ``Sequence[tuple[compound_key, target_key]]``. A grouper may be a
+    :class:`~chemsplit.base.GroupSplitter` instance or a registry id; ``None`` makes each
+    compound or target its own group.
     """
 
     _axis: ClassVar[str] = "compound"
@@ -808,9 +915,8 @@ class _ColdStartBase(GroupSplitter):
             return dense_label_encode(cg[compound_idx].tolist())
         if self._axis == "target":
             return dense_label_encode(tg[target_idx].tolist())
-        # "pair": no single group-label array captures a two-axis intersection; report the
-        # compound-axis grouping as the primary label (used only for introspection/compute_groups,
-        # _partition below implements the real two-axis logic directly).
+        # pair: no single label array captures a two-axis intersection, so report the
+        # compound axis for introspection and let _partition do the real work
         return dense_label_encode(cg[compound_idx].tolist())
 
     def _partition(self, ctx: _Context) -> list[SplitResult]:
@@ -945,19 +1051,53 @@ class ColdDrugSplitter(_ColdStartBase):
     """Cold-start on the compound axis: held-out compounds are unseen (and, with
     ``compound_grouper``, structurally novel) against a fixed, familiar panel of targets.
 
+    :param compound_grouper: a group-forming :class:`~chemsplit.base.GroupSplitter`, or a
+        registry id, grouping the compound axis so held-out compounds are structurally novel
+        and not merely unseen keys. ``None`` makes each compound its own group.
+    :param target_grouper: the same for the target axis, e.g. a sequence-identity grouping.
+    :param compound_structures: SMILES per compound key, needed when ``compound_grouper``
+        works on structures.
+    :param target_sequences: sequence per target key, needed when ``target_grouper`` works on
+        sequences.
+    :param min_interactions_per_entity: drop compounds or targets with fewer interactions than
+        this before splitting.
+    :param drop_unlabelled: discard interaction records whose label is missing.
+    :param kwargs: forwarded to :class:`chemsplit.base.GroupSplitter`.
+    :raises ParameterError: if a grouper is neither ``None``, a string nor a
+        :class:`GroupSplitter`, or ``min_interactions_per_entity`` is below 1.
+    :raises InputKindError: at split time, if ``X`` is not a sequence of
+        ``(compound_key, target_key)`` tuples.
+    :raises InputError: at split time, if ``compound_structures`` or ``target_sequences`` is
+        needed but missing or incomplete.
+
     Advantages
     ----------
-    - Matches the most common deployment question for a DTI model: "here is a new compound, which of my known targets does it hit?".
-    - Combining with `compound_grouper="butina"` upgrades it from "unseen compound" to "unseen chemotype" -- a far stronger claim that's just as easy to run.
-    - Usually keeps every target represented in training, so per-target metrics stay computable.
+    - Matches the most common deployment question for a DTI model: here is a new compound,
+      which of my known targets does it hit?
+    - `compound_grouper="butina"` upgrades it from unseen compound to unseen chemotype, a much
+      stronger claim for no extra effort.
+    - Usually keeps every target represented in training, so per-target metrics stay
+      computable.
 
     Pitfalls
     --------
-    - The weakest of the three cold-start settings, but routinely reported as if it were the strongest -- a model can score well by memorising target-level marginals ("kinase X is promiscuous") without learning any interaction.
-    - Without `compound_grouper`, held-out compounds are merely *unseen*, not *novel* -- an analogue of a training compound is a different key but the same chemistry.
-    - Interaction matrices are extremely unbalanced, so record-count sizing and entity-count sizing disagree sharply -- the splitter sizes by records and reports both.
-    - Targets can vanish from training entirely, turning their test interactions into a cold-target evaluation hiding inside a cold-drug split. Read `targets_lost_from_train`.
+    - The weakest of the three cold-start settings, routinely reported as the strongest: a
+      model can score well on target-level marginals alone -- "kinase X is promiscuous".
+    - Without `compound_grouper`, held-out compounds are merely *unseen*, not *novel*: an
+      analogue of a training compound is a different key and the same chemistry.
+    - Interaction matrices are very unbalanced, so record-count and entity-count sizing
+      disagree sharply. The splitter sizes by records and reports both.
+    - Targets can vanish from training entirely, hiding a cold-target evaluation inside a
+      cold-drug split. `targets_lost_from_train` counts them.
 
+    References
+    ----------
+    .. [1] Park, Y.; Marcotte, E. M. Flaws in Evaluation Schemes for Pair-Input Computational
+       Predictions. *Nat. Methods* **2012**, 9 (12), 1134-1136.
+       https://doi.org/10.1038/nmeth.2259
+    .. [2] Pahikkala, T.; Airola, A.; Pietilä, S. et al. Toward More Realistic Drug-Target
+       Interaction Predictions. *Brief. Bioinform.* **2015**, 16 (2), 325-337.
+       https://doi.org/10.1093/bib/bbu010
     """
 
     splitter_id: ClassVar[str] = "cold_drug"
@@ -976,18 +1116,52 @@ class ColdTargetSplitter(_ColdStartBase):
     """Cold-start on the target axis: held-out targets are unseen against a fixed, familiar panel
     of compounds.
 
+    :param compound_grouper: a group-forming :class:`~chemsplit.base.GroupSplitter`, or a
+        registry id, grouping the compound axis so held-out compounds are structurally novel
+        and not merely unseen keys. ``None`` makes each compound its own group.
+    :param target_grouper: the same for the target axis, e.g. a sequence-identity grouping.
+    :param compound_structures: SMILES per compound key, needed when ``compound_grouper``
+        works on structures.
+    :param target_sequences: sequence per target key, needed when ``target_grouper`` works on
+        sequences.
+    :param min_interactions_per_entity: drop compounds or targets with fewer interactions than
+        this before splitting.
+    :param drop_unlabelled: discard interaction records whose label is missing.
+    :param kwargs: forwarded to :class:`chemsplit.base.GroupSplitter`.
+    :raises ParameterError: if a grouper is neither ``None``, a string nor a
+        :class:`GroupSplitter`, or ``min_interactions_per_entity`` is below 1.
+    :raises InputKindError: at split time, if ``X`` is not a sequence of
+        ``(compound_key, target_key)`` tuples.
+    :raises InputError: at split time, if ``compound_structures`` or ``target_sequences`` is
+        needed but missing or incomplete.
+
     Advantages
     ----------
-    - The zero-shot-target setting -- the only evaluation supporting a claim of predicting activity at a target with no training data, the main promise of proteochemometrics.
-    - With `target_grouper="sequence_identity"`, the identity ceiling between train and test targets is measured and reported.
+    - The zero-shot-target setting, and the only evaluation supporting a claim of predicting
+      activity at a target with no training data.
+    - With `target_grouper="sequence_identity"`, the identity ceiling between train and test
+      targets is measured and reported.
 
     Pitfalls
     --------
-    - **Homologues leak by default.** Holding out a kinase while training on its 95%-identical paralogue isn't a cold-target experiment -- always pair with a sequence-identity grouping; the splitter warns every time you don't.
-    - Compounds are seen, so the model can exploit compound-level marginals ("this compound is promiscuous") just as `cold_drug` exploits target marginals.
-    - Target counts are usually small (tens to hundreds), so holding out 20% of targets leaves very few test targets and enormous variance -- prefer leave-one-target-out via `leave_one_cluster_out`.
-    - Assay protocols differ per target, so a held-out target brings a protocol shift along with the biological one.
+    - **Homologues leak by default.** Holding out a kinase while training on its 95%-identical
+      paralogue is no cold-target experiment, hence the warning when no sequence-identity
+      grouping is given.
+    - Compounds are seen, so compound-level marginals -- "this compound is promiscuous" -- are
+      exploitable in the same way `cold_drug` exploits target marginals.
+    - Target counts run in the tens to hundreds, so holding out 20% leaves few test targets
+      and enormous variance; `leave_one_cluster_out` gives leave-one-target-out.
+    - Assay protocols differ per target, so a held-out target brings a protocol shift along
+      with the biological one.
 
+    References
+    ----------
+    .. [1] Park, Y.; Marcotte, E. M. Flaws in Evaluation Schemes for Pair-Input Computational
+       Predictions. *Nat. Methods* **2012**, 9 (12), 1134-1136.
+       https://doi.org/10.1038/nmeth.2259
+    .. [2] Pahikkala, T.; Airola, A.; Pietilä, S. et al. Toward More Realistic Drug-Target
+       Interaction Predictions. *Brief. Bioinform.* **2015**, 16 (2), 325-337.
+       https://doi.org/10.1093/bib/bbu010
     """
 
     splitter_id: ClassVar[str] = "cold_target"
@@ -1005,20 +1179,56 @@ class ColdTargetSplitter(_ColdStartBase):
 class ColdPairSplitter(_ColdStartBase):
     """Cold-start on both axes at once: neither the compound nor the target of a test interaction
     was seen in training. Test size is a product of both axes' held-
-    out fractions, sized via :func:`chemsplit._pair_assign.assign_pair_groups`'s ``sqrt(f)`` rule.
+    out fractions, sized via :func:`chemsplit._pair_assign.assign_pair_groups`'s ``sqrt(f)``
+    rule.
+
+    :param compound_grouper: a group-forming :class:`~chemsplit.base.GroupSplitter`, or a
+        registry id, grouping the compound axis so held-out compounds are structurally novel
+        and not merely unseen keys. ``None`` makes each compound its own group.
+    :param target_grouper: the same for the target axis, e.g. a sequence-identity grouping.
+    :param compound_structures: SMILES per compound key, needed when ``compound_grouper``
+        works on structures.
+    :param target_sequences: sequence per target key, needed when ``target_grouper`` works on
+        sequences.
+    :param min_interactions_per_entity: drop compounds or targets with fewer interactions than
+        this before splitting.
+    :param drop_unlabelled: discard interaction records whose label is missing.
+    :param kwargs: forwarded to :class:`chemsplit.base.GroupSplitter`.
+    :raises ParameterError: if a grouper is neither ``None``, a string nor a
+        :class:`GroupSplitter`, or ``min_interactions_per_entity`` is below 1.
+    :raises InputKindError: at split time, if ``X`` is not a sequence of
+        ``(compound_key, target_key)`` tuples.
+    :raises InputError: at split time, if ``compound_structures`` or ``target_sequences`` is
+        needed but missing or incomplete.
 
     Advantages
     ----------
-    - The only setting measuring genuine interaction learning rather than memorised row/column marginals -- neither the compound nor the target has been seen.
-    - Makes explicit, through `records_discarded`, how much of an interaction matrix is actually usable for a double-blind evaluation -- usually a surprising number.
+    - The only setting that measures genuine interaction learning rather than memorised row and
+      column marginals, since neither the compound nor the target has been seen.
+    - `records_discarded` states how much of an interaction matrix is usable for a double-blind
+      evaluation, which is usually a surprising number.
 
     Pitfalls
     --------
-    - Discards the two off-diagonal blocks, typically 50-90% of the data -- the surviving test block is small and noisy.
-    - Both axes must be split simultaneously, so the realised test fraction is a product that rarely matches the request; the `sqrt(f)` rule approximates it and reports the deviation.
-    - Performance here runs much lower than in `cold_drug`/`cold_target` and isn't comparable to them -- a common, serious error in DTI papers.
-    - Small target counts can leave a handful of interactions in the test block, for which no metric is stable.
+    - Discards the two off-diagonal blocks, typically 50-90% of the data, so the surviving test
+      block is small and noisy.
+    - Both axes are split at once, so the realised test fraction is a product that rarely
+      matches the request. The `sqrt(f)` rule approximates it and reports the deviation.
+    - Performance here runs much lower than in `cold_drug` or `cold_target` and is not
+      comparable to either, which is a common and serious error in DTI papers.
+    - Small target counts can leave a handful of interactions in the test block, for which no
+      metric is stable.
 
+    References
+    ----------
+    .. [1] Park, Y.; Marcotte, E. M. Flaws in Evaluation Schemes for Pair-Input Computational
+       Predictions. *Nat. Methods* **2012**, 9 (12), 1134-1136.
+       https://doi.org/10.1038/nmeth.2259
+       (regime C4: neither member of the test pair was seen in training)
+    .. [2] Pahikkala, T.; Airola, A.; Pietilä, S. et al. Toward More Realistic Drug-Target
+       Interaction Predictions. *Brief. Bioinform.* **2015**, 16 (2), 325-337.
+       https://doi.org/10.1093/bib/bbu010
+       (setting S4; also the source of the steep performance drop this splitter produces)
     """
 
     splitter_id: ClassVar[str] = "cold_pair"
@@ -1033,9 +1243,6 @@ class ColdPairSplitter(_ColdStartBase):
     _axis: ClassVar[str] = "pair"
 
 
-# -
-# AVESplitter
-# -
 
 
 def _trapezoid_auc(values: list[float]) -> float:
@@ -1049,28 +1256,65 @@ class AVESplitter(BaseSplitter):
     """Asymmetric Validation Embedding: minimise the analogue bias that lets a nearest-neighbour
     baseline "win" a virtual screen.
 
+    :param target_bias: the AVE bias value to optimise towards.
+    :param tolerance: how close to ``target_bias`` counts as done. A large value effectively
+        disables the GA and reports the initial bias only.
+    :param n_bins: bins used in the nearest-neighbour distance histograms behind the bias.
+    :param population_size: GA population size.
+    :param n_generations: how many generations to run.
+    :param crossover_prob: probability of crossing a selected pair.
+    :param mutation_prob: probability of mutating an individual.
+    :param mutation_indpb: per-gene flip probability within a mutated individual.
+    :param init_splitter: splitter, by registry id or instance, producing the starting
+        population.
+    :param featurizer: featurizer alias or instance used to build the similarity matrix.
+    :param metric: similarity metric; see :mod:`chemsplit.metrics`.
+    :param max_memory_bytes: ceiling on the pairwise matrix.
+    :param kwargs: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ParameterError: if ``target_bias``, ``tolerance`` or a GA parameter is out of
+        range.
+    :raises LabelError: at split time, if ``y`` is missing or not binary.
+    :raises ScalabilityError: at split time, if the pairwise matrix would exceed
+        ``max_memory_bytes``.
+
     Advantages
     ----------
-    - Removes the specific artefact -- actives clustered near actives -- that made many published virtual-screening benchmarks trivially solvable by a 1-nearest-neighbour baseline.
-    - The bias is one reportable number, computed identically before and after, making the debiasing auditable.
-    - Reporting `ave_initial` alone (disabling the GA with a large `tolerance`) is a cheap, valuable audit of any existing benchmark.
+    - Removes the specific artefact -- actives clustered near actives -- that made many
+      published virtual-screening benchmarks solvable by a 1-nearest-neighbour baseline.
+    - The bias is one reportable number, computed identically before and after, which makes the
+      debiasing auditable.
+    - `ave_initial` on its own, with the GA disabled by a large `tolerance`, is a cheap audit of
+      any existing benchmark.
 
     Pitfalls
     --------
-    - **Aggressive debiasing over-corrects.** Driving AVE to exactly 0 can remove genuine signal along with the artefact and understate real performance -- report both the debiased and raw split; `ave_initial` is always in `metadata` for exactly this comparison.
-    - AVE depends on the fingerprint and metric, so a "debiased" split is debiased only with respect to that representation -- a model on different features may still see the bias.
-    - By far the most expensive splitter here -- hundreds of generations, each needing nearest-neighbour statistics.
-    - Defined only for binary actives/inactives -- no accepted continuous analogue exists.
-    - Small active counts make AVE unstable, and the GA will happily optimise noise.
-    - A near-zero AVE removes one known bias, not all of them -- it isn't a guarantee of a good benchmark.
+    - **Aggressive debiasing over-corrects.** Driving AVE to 0 strips genuine signal with the
+      artefact; `ave_initial` is always in `metadata` so debiased and raw sit side by side.
+    - AVE depends on the fingerprint and metric, so a debiased split is debiased only with
+      respect to that representation, and a model on different features may still see the bias.
+    - By far the most expensive splitter here: hundreds of generations, each needing
+      nearest-neighbour statistics.
+    - Defined only for binary actives and inactives. No accepted continuous analogue exists.
+    - Small active counts make AVE unstable, and the GA will optimise noise just as happily.
+    - A near-zero AVE removes one known bias, not all of them.
 
     Notes
     -----
-    ``target_bias``/GA machinery follows this project's published AVE definition directly. Uses
-    hand-rolled, seeded-``random.Random`` GA operators (mutation shared with ``simpd`` via
-    :mod:`chemsplit._ga`; crossover/repair/selection differ and stay separate) rather than DEAP's,
-    which read Python's global ``random`` module and would violate this project's
-    never-touch-global-state determinism rule.
+    The GA operators are hand-rolled on a seeded ``random.Random`` rather than taken from DEAP,
+    which reads Python's global ``random`` module. Mutation is shared with ``simpd`` through
+    :mod:`chemsplit._ga`; crossover, repair and selection differ and stay separate.
+
+    References
+    ----------
+    .. [1] Wallach, I.; Heifets, A. Most Ligand-Based Classification Benchmarks Reward
+       Memorization Rather than Generalization. *J. Chem. Inf. Model.* **2018**, 58 (5),
+       916-932. https://doi.org/10.1021/acs.jcim.7b00403
+    .. [2] Sieg, J.; Flachsenberg, F.; Rarey, M. In Need of Bias Control: Evaluating Chemical
+       Data for Machine Learning in Structure-Based Virtual Screening. *J. Chem. Inf. Model.*
+       **2019**, 59 (3), 947-961. https://doi.org/10.1021/acs.jcim.8b00712
+    .. [3] Rohrer, S. G.; Baumann, K. Maximum Unbiased Validation (MUV) Data Sets for Virtual
+       Screening Based on PubChem Bioactivity Data. *J. Chem. Inf. Model.* **2009**, 49 (2),
+       169-184. https://doi.org/10.1021/ci8002649
     """
 
     splitter_id: ClassVar[str] = "ave"
@@ -1121,12 +1365,15 @@ class AVESplitter(BaseSplitter):
         if isinstance(init_splitter, str) and init_splitter != "stratified_random":
             raise ParameterError(
                 f"init_splitter string values are only recognised for the default "
-                f"('stratified_random'); pass a constructed BaseSplitter instance for anything else "
+                f"('stratified_random'); pass a constructed BaseSplitter instance for "
+                "anything else "
                 f"(chemsplit.registry-based string lookup is not available yet), got "
                 f"{init_splitter!r}"
             )
 
-    def _ave(self, S: np.ndarray, y: np.ndarray, test_mask: np.ndarray) -> tuple[float, dict[str, float]]:
+    def _ave(
+        self, S: np.ndarray, y: np.ndarray, test_mask: np.ndarray
+    ) -> tuple[float, dict[str, float]]:
         train_mask = ~test_mask
         active = y == 1
         test_active = np.nonzero(test_mask & active)[0]
@@ -1162,7 +1409,9 @@ class AVESplitter(BaseSplitter):
         y = np.asarray(ctx.y)
         uniq = set(np.unique(y).tolist())
         if not uniq <= {0, 1}:
-            raise LabelError(f"{type(self).__name__} requires binary {{0,1}} labels, got {sorted(uniq)}")
+            raise LabelError(
+                f"{type(self).__name__} requires binary {{0,1}} labels, got {sorted(uniq)}"
+            )
         y = y.astype(np.int64)
 
         guard_memory(ctx.n, self.max_memory_bytes, type(self).__name__)
@@ -1182,10 +1431,9 @@ class AVESplitter(BaseSplitter):
                 )
             )
 
-        # Initial split: a seeded permutation stratified by y (documented simplification of
-        # calling init_splitter="stratified_random" directly, which needs raw X/y rather than ctx; the
-        # active-fraction-preserving repair used throughout this method makes any reasonable
-        # stratified initial split equivalent in practice).
+        # A seeded permutation stratified by y, rather than calling init_splitter directly,
+        # which would need raw X/y instead of ctx. The repair step preserves the active
+        # fraction anyway, so any stratified start behaves the same.
         rng0 = seed_for(ctx.rng_seeds, "ave.init", 0)
         active_idx = np.nonzero(y == 1)[0]
         inactive_idx = np.nonzero(y == 0)[0]
@@ -1216,7 +1464,8 @@ class AVESplitter(BaseSplitter):
 
             def repair(mask: np.ndarray) -> np.ndarray:
                 mask = mask.copy()
-                for idx, target_n in ((active_perm, n_test_active), (inactive_perm, n_test_inactive)):
+                targets = ((active_perm, n_test_active), (inactive_perm, n_test_inactive))
+                for idx, target_n in targets:
                     current = mask[idx]
                     n_on = int(current.sum())
                     if n_on > target_n:
@@ -1306,29 +1555,61 @@ class AVESplitter(BaseSplitter):
         ]
 
 
-# -
-# DecoyBenchmarkSplitter
-# -
-
-
 class DecoyBenchmarkSplitter(GroupSplitter):
     """Builds property-matched decoy sets (or consumes a curated benchmark's own partition), and
     groups each active with its decoys so they never straddle the train/test boundary.
 
+    :param scheme: match decoys on 2-D properties, draw them by spatial binning, or consume a
+        curated benchmark's own assignment.
+    :param decoy_ratio: how many decoys to pair with each active.
+    :param match_properties: which descriptors ``scheme="property_matched"`` matches on.
+    :param match_tolerance: per-property tolerance for that matching.
+    :param topology_dissimilarity: minimum topological distance a decoy must keep from its
+        active, so a matched decoy is not an analogue.
+    :param decoy_pool: candidate decoys as SMILES, or ``None`` to draw them from ``X``.
+    :param predefined_assignment: the active/decoy assignment for
+        ``scheme="predefined"``.
+    :param spatial_bins: bins per axis for ``scheme="spatial_random"``.
+    :param kwargs: forwarded to :class:`chemsplit.base.GroupSplitter`.
+    :raises ParameterError: if ``decoy_ratio`` or ``spatial_bins`` is below 1,
+        ``topology_dissimilarity`` is outside ``[0, 1]``, the property and tolerance lists
+        differ in length, or ``scheme`` is unknown.
+    :raises ConfigurationError: if ``scheme="predefined"`` without ``predefined_assignment``.
+    :raises LabelError: at split time, if ``y`` is missing or not binary.
+
     Advantages
     ----------
-    - Property matching removes the trivial signal -- actives being heavier, greasier, or more charged than random library molecules -- that would otherwise let a model "screen" on molecular weight alone.
-    - Grouping each active with its own decoys prevents the subtle leak of an active in train and its property twin in test.
-    - `mean_active_decoy_similarity` and the shortfall table make the benchmark's construction auditable -- exactly what was missing from benchmarks that later turned out biased.
+    - Property matching removes the trivial signal -- actives being heavier, greasier or more
+      charged than library molecules -- that lets a model screen on weight alone.
+    - Grouping each active with its own decoys prevents the subtler leak of an active in train
+      and its property twin in test.
+    - `mean_active_decoy_similarity` and the shortfall table make the construction auditable,
+      which is what was missing from benchmarks later found to be biased.
 
     Pitfalls
     --------
-    - **Property-matched decoys carry their own hidden bias.** Matching 2-D properties while requiring topological dissimilarity creates a systematic latent difference deep models can learn directly -- how several widely used decoy benchmarks turned out solvable without any binding signal. Run `AVESplitter` to measure that residual bias.
-    - Decoys are *presumed* inactive, not measured inactive -- a few percent are usually real binders, capping achievable precision.
-    - The choice of decoy pool defines the benchmark; there's no default, and there can't be one.
-    - `decoy_ratio` fixes the class imbalance and therefore the headline metric -- enrichment factors at 1% aren't comparable across different ratios.
-    - Shortfalls concentrate on the most unusual actives, so the effective ratio varies systematically across the active set.
+    - **Property-matched decoys carry a bias of their own.** Matching 2-D properties while
+      enforcing topological dissimilarity leaves a latent signature a deep model can learn,
+      which is how several decoy benchmarks turned out solvable without binding signal.
+      `AVESplitter` measures it.
+    - Decoys are *presumed* inactive rather than measured inactive, and a few percent are
+      usually real binders, which caps achievable precision.
+    - The choice of decoy pool defines the benchmark, and there is no default to fall back on.
+    - `decoy_ratio` fixes the class imbalance and with it the headline metric, so enrichment
+      factors at 1% do not compare across ratios.
+    - Shortfalls concentrate on the most unusual actives, so the effective ratio varies
+      systematically across the active set.
 
+    References
+    ----------
+    .. [1] Mysinger, M. M.; Carchia, M.; Irwin, J. J.; Shoichet, B. K. Directory of Useful
+       Decoys, Enhanced (DUD-E): Better Ligands and Decoys for Better Benchmarking.
+       *J. Med. Chem.* **2012**, 55 (14), 6582-6594. https://doi.org/10.1021/jm300687e
+    .. [2] Huang, N.; Shoichet, B. K.; Irwin, J. J. Benchmarking Sets for Molecular Docking.
+       *J. Med. Chem.* **2006**, 49 (23), 6789-6801. https://doi.org/10.1021/jm0608356
+    .. [3] Chen, L.; Cruz, A.; Ramsey, S. et al. Hidden Bias in the DUD-E Dataset Leads to
+       Misleading Performance of Deep Learning in Structure-Based Virtual Screening.
+       *PLoS ONE* **2019**, 14 (8), e0220113. https://doi.org/10.1371/journal.pone.0220113
     """
 
     splitter_id: ClassVar[str] = "decoy_benchmark"
@@ -1342,7 +1623,14 @@ class DecoyBenchmarkSplitter(GroupSplitter):
     deterministic_method: ClassVar[bool] = True
     order_invariant: ClassVar[bool] = False
 
-    _DEFAULT_PROPS = ("MolWt", "MolLogP", "NumRotatableBonds", "NumHDonors", "NumHAcceptors", "FormalCharge")
+    _DEFAULT_PROPS = (
+        "MolWt",
+        "MolLogP",
+        "NumRotatableBonds",
+        "NumHDonors",
+        "NumHAcceptors",
+        "FormalCharge",
+    )
     _DEFAULT_TOL = (25.0, 1.0, 1, 1, 1, 0)
 
     def __init__(
@@ -1393,8 +1681,8 @@ class DecoyBenchmarkSplitter(GroupSplitter):
         return np.asarray([table[p](mol) for p in self.match_properties], dtype=np.float64)
 
     def _group_labels(self, ctx: _Context) -> IndexArray:
-        # _partition is overridden entirely for property_matched/spatial_random; for predefined
-        # (a plain assignment, no grouping concept), each record is its own singleton group.
+        # _partition is overridden for property_matched and spatial_random; predefined is a
+        # plain assignment, so every record is its own singleton
         return np.arange(ctx.n, dtype=np.int64)
 
     def _partition(self, ctx: _Context) -> list[SplitResult]:
@@ -1404,7 +1692,10 @@ class DecoyBenchmarkSplitter(GroupSplitter):
         if mols is None:
             raise ParameterError(f"{type(self).__name__} requires molecule input")
         y = np.asarray(ctx.y)
-        active_idx = np.nonzero(y == 1)[0] if set(np.unique(y).tolist()) <= {0, 1} else np.arange(ctx.n)
+        if set(np.unique(y).tolist()) <= {0, 1}:
+            active_idx = np.nonzero(y == 1)[0]
+        else:
+            active_idx = np.arange(ctx.n)
 
         if self.scheme == "spatial_random":
             return self._partition_spatial(ctx, mols, active_idx)
@@ -1416,14 +1707,19 @@ class DecoyBenchmarkSplitter(GroupSplitter):
         guard_memory(len(active_idx) + len(decoy_mols), 2 * 1024**3, type(self).__name__)
 
         active_props = np.asarray([self._props(mols[i]) for i in active_idx])
-        decoy_props = np.asarray([self._props(m) if m is not None else np.full(len(self.match_properties), np.inf) for m in decoy_mols])
+        missing = np.full(len(self.match_properties), np.inf)
+        decoy_props = np.asarray(
+            [self._props(m) if m is not None else missing for m in decoy_mols]
+        )
         mu = active_props.mean(axis=0)
         sigma = active_props.std(axis=0)
         sigma[sigma == 0] = 1.0
 
         feat = get_featurizer("ecfp4")
         active_fp = feat.transform([mols[i] for i in active_idx])
-        decoy_fp = feat.transform([m if m is not None else Chem.MolFromSmiles("C") for m in decoy_mols])
+        decoy_fp = feat.transform(
+            [m if m is not None else Chem.MolFromSmiles("C") for m in decoy_mols]
+        )
         from chemsplit.metrics import pairwise_distances
 
         S_ad = 1.0 - pairwise_distances(active_fp, decoy_fp, metric="tanimoto")
@@ -1459,14 +1755,9 @@ class DecoyBenchmarkSplitter(GroupSplitter):
         n_pool_used = int(used.sum())
         n_actives_kept = int(len(active_idx))
         raw_keys = ["__decoy_unassigned__"] * ctx.n
-        # Build a synthetic index space: actives keep their original record index; each active's
-        # decoys are new synthetic indices appended after the real records is NOT possible here
-        # (SplitResult indexes must stay within [0, n_records) of the ORIGINAL X, and decoys were
-        # never part of X). Documented simplification: DecoyBenchmarkSplitter groups and splits
-        # only the active set from the original X; decoy bookkeeping (which decoys accompany which
-        # active, and their similarity/shortfall stats) is reported in metadata for the caller to
-        # append to their own dataset, rather than chemsplit inventing new record indices for a
-        # pool the caller supplied as raw SMILES rather than as part of X.
+        # SplitResult indices must stay inside the original X, which the decoys never were,
+        # so only the actives are split here; the decoy bookkeeping goes into metadata for the
+        # caller to join on.
         for a in active_idx.tolist():
             raw_keys[a] = f"__decoy_group_{a}__"
         for i in range(ctx.n):
@@ -1508,12 +1799,9 @@ class DecoyBenchmarkSplitter(GroupSplitter):
     def _partition_spatial(
         self, ctx: _Context, mols: list[Chem.rdchem.Mol], active_idx: np.ndarray
     ) -> list[SplitResult]:
-        # Simplified, documented "spatial_random" implementation: bins actives in a normalised
-        # 2-property space (MolWt, MolLogP) and assigns whole bins to buckets via assign_groups,
-        # so each partition covers comparable spatial cells. A full maximum-unbiased-validation
-        # decoy-generation step (matching spatial distributions with an external decoy pool) is
-        # out of scope without a supplied decoy_pool; here every record in X participates as its
-        # own bin-grouped unit.
+        # spatial_random bins actives in normalised (MolWt, MolLogP) space and hands whole
+        # bins to buckets, so partitions cover comparable cells. Without a decoy_pool there is
+        # nothing external to match against, so every record takes part as its own unit.
         from rdkit.Chem import Descriptors
 
         props = np.asarray([[Descriptors.MolWt(m), Descriptors.MolLogP(m)] for m in mols])

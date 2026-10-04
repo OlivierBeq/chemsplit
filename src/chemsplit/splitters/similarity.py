@@ -262,6 +262,18 @@ class SimilarityThresholdSplitter(_SimilarityGroupBase):
     - Tanimoto on sparse fingerprints saturates -- for large diverse libraries most pairs sit below 0.2, so a 0.4 cutoff removes almost nothing and the split silently becomes random. Check `metadata["component_sizes"]`.
     - All-zero fingerprints (parse failures under `on_parse_error="ignore"`, or tiny fragments) register similarity 1.0 to each other by convention and cluster together spuriously.
 
+
+    References
+    ----------
+    .. [1] The three strategies are engineering compositions with no single published origin; the leakage
+       rationale for a hard cross-similarity ceiling is well established:
+    .. [2] Golbraikh, A.; Tropsha, A. Beware of q2! *J. Mol. Graph. Model.* **2002**, 20 (4), 269-276.
+       https://doi.org/10.1016/S1093-3263(01)00123-1
+    .. [3] Wallach, I.; Heifets, A. Most Ligand-Based Classification Benchmarks Reward Memorization Rather
+       than Generalization. *J. Chem. Inf. Model.* **2018**, 58 (5), 916-932.
+       https://doi.org/10.1021/acs.jcim.7b00403
+    .. [4] Kapoor, S.; Narayanan, A. Leakage and the Reproducibility Crisis in Machine-Learning-Based
+       Science. *Patterns* **2023**, 4 (9), 100804. https://doi.org/10.1016/j.patter.2023.100804
     """
 
     splitter_id: ClassVar[str] = "similarity_threshold"
@@ -428,6 +440,15 @@ class ButinaSplitter(_SimilarityGroupBase):
     - `reorder=True` gives different clusters than `reorder=False`, and both get called "Butina" in the literature -- report which.
     - `O(n²)` in time regardless of `algorithm` -- beyond roughly 10⁵ molecules use `k_means_cluster` with mini-batch k-means, or subsample.
 
+
+    References
+    ----------
+    .. [1] Taylor, R. Simulation Analysis of Experimental Design Strategies for Screening Random Compounds
+       as Potential New Drugs and Agrochemicals. *J. Chem. Inf. Comput. Sci.* **1995**, 35 (1), 59-67.
+       https://doi.org/10.1021/ci00023a009
+    .. [2] Butina, D. Unsupervised Data Base Clustering Based on Daylight's Fingerprint and Tanimoto
+       Similarity: A Fast and Automated Way To Cluster Small and Large Data Sets.
+       *J. Chem. Inf. Comput. Sci.* **1999**, 39 (4), 747-750. https://doi.org/10.1021/ci9803381
     """
 
     splitter_id: ClassVar[str] = "butina"
@@ -625,6 +646,27 @@ class KMeansClusterSplitter(_SimilarityGroupBase):
     - SVD sign ambiguity makes naive implementations non-reproducible across BLAS builds; a sign fix is mandatory here, but residual cluster-assignment drift from Lloyd's-iteration floating-point noise can still survive it -- its golden test uses a size/histogram tolerance, not an exact match.
     - `agglomerative` with `single` linkage chains badly on chemical data, typically producing one giant cluster plus dust.
 
+
+    References
+    ----------
+    .. [1] MacQueen, J. Some Methods for Classification and Analysis of Multivariate Observations. In
+       *Proceedings of the Fifth Berkeley Symposium on Mathematical Statistics and Probability*,
+       Vol. 1; University of California Press, **1967**; pp 281-297. No DOI;
+       https://projecteuclid.org/euclid.bsmsp/1200512992
+    .. [2] Lloyd, S. P. Least Squares Quantization in PCM. *IEEE Trans. Inf. Theory* **1982**, 28 (2),
+       129-137. https://doi.org/10.1109/TIT.1982.1056489
+    .. [3] ``algorithm="minibatch_kmeans"``: Sculley, D. Web-Scale k-Means Clustering. In *Proceedings of
+       the 19th International Conference on World Wide Web (WWW '10)*, **2010**; pp 1177-1178.
+       https://doi.org/10.1145/1772690.1772862
+    .. [4] ``algorithm="agglomerative"``, Ward linkage: Ward, J. H. Hierarchical Grouping to Optimize an
+       Objective Function. *J. Am. Stat. Assoc.* **1963**, 58 (301), 236-244.
+       https://doi.org/10.1080/01621459.1963.10500845
+    .. [5] ``algorithm="birch"``: Zhang, T.; Ramakrishnan, R.; Livny, M. BIRCH: An Efficient Data
+       Clustering Method for Very Large Databases. *ACM SIGMOD Rec.* **1996**, 25 (2), 103-114.
+       https://doi.org/10.1145/235968.233324
+    .. [6] Clustering as a QSAR dataset-division strategy: Golbraikh, A.; Shen, M.; Xiao, Z. et al. Rational
+       Selection of Training and Test Sets for the Development of Validated QSAR Models.
+       *J. Comput.-Aided Mol. Des.* **2003**, 17 (2-4), 241-253. https://doi.org/10.1023/A:1025386326946
     """
 
     splitter_id: ClassVar[str] = "k_means_cluster"
@@ -731,6 +773,20 @@ class DensityClusterSplitter(_SimilarityGroupBase):
     - HDBSCAN's `min_cluster_size` and `min_samples` interact non-obviously -- changing one changes the cluster count non-monotonically.
     - Density clustering on binary fingerprints suffers from the concentration of Tanimoto distances in high dimensions -- most pairs sit in a narrow band, so density contrast is weak.
 
+
+    References
+    ----------
+    .. [1] Ester, M.; Kriegel, H.-P.; Sander, J.; Xu, X. A Density-Based Algorithm for Discovering Clusters
+       in Large Spatial Databases with Noise. In *Proceedings of the 2nd International Conference on
+       Knowledge Discovery and Data Mining (KDD-96)*; AAAI Press, **1996**; pp 226-231. No DOI;
+       https://cdn.aaai.org/KDD/1996/KDD96-037.pdf
+    .. [2] Campello, R. J. G. B.; Moulavi, D.; Sander, J. Density-Based Clustering Based on Hierarchical
+       Density Estimates. In *Advances in Knowledge Discovery and Data Mining (PAKDD 2013)*; Lecture
+       Notes in Computer Science 7819; Springer, **2013**; pp 160-172.
+       https://doi.org/10.1007/978-3-642-37456-2_14
+    .. [3] Campello, R. J. G. B.; Moulavi, D.; Zimek, A.; Sander, J. Hierarchical Density Estimates for Data
+       Clustering, Visualization, and Outlier Detection. *ACM Trans. Knowl. Discov. Data* **2015**,
+       10 (1), 1-51. https://doi.org/10.1145/2733381
     """
 
     splitter_id: ClassVar[str] = "density_cluster"
@@ -2116,6 +2172,19 @@ class MaxDissimilaritySplitter(_SimilarityBase):
     - Not a leakage constraint -- nothing bounds the minimum train-to-test distance except whatever geometry results. Read `min_cross_distance` before claiming novelty.
     - `grow="nearest_to_set"` can chain and walk the test set back toward the train seed; `"nearest_to_seed"` keeps it compact -- the two give materially different splits.
 
+
+    References
+    ----------
+    .. [1] The two-seed grow-apart construction is a composition with no single published origin; the
+       diverse-selection root and the comparative evidence are:
+    .. [2] Kennard, R. W.; Stone, L. A. Computer Aided Design of Experiments. *Technometrics* **1969**,
+       11 (1), 137-148. https://doi.org/10.1080/00401706.1969.10490666
+    .. [3] Martin, T. M.; Harten, P.; Young, D. M. et al. Does Rational Selection of Training and Test Sets
+       Improve the Outcome of QSAR Modeling? *J. Chem. Inf. Model.* **2012**, 52 (10), 2570-2578.
+       https://doi.org/10.1021/ci300338w
+    .. [4] Tossou, P.; Wognum, C.; Craig, M.; Mary, H.; Noutahi, E. Real-World Molecular
+       Out-Of-Distribution: Specification and Investigation. *J. Chem. Inf. Model.* **2024**, 64 (3),
+       697-711. https://doi.org/10.1021/acs.jcim.3c01774
     """
 
     splitter_id: ClassVar[str] = "max_dissimilarity"
@@ -2218,6 +2287,15 @@ class PerimeterSplitter(_SimilarityBase):
     - Not a chemical-novelty guarantee -- an outlier can still sit near a training molecule if that's its only near neighbour. Check with `audit.nn_similarity_profile`.
     - Because peripherality is defined by mean distance, the split partly encodes molecular size and fingerprint density.
 
+
+    References
+    ----------
+    .. [1] Szántai-Kis, C.; Kövesdi, I.; Kéri, G.; Örfi, L. Validation Subset Selections for Extrapolation
+       Oriented QSPAR Models. *Mol. Divers.* **2003**, 7 (1), 37-43.
+       https://doi.org/10.1023/B:MODI.0000006538.99122.00
+    .. [2] Tossou, P.; Wognum, C.; Craig, M.; Mary, H.; Noutahi, E. Real-World Molecular
+       Out-Of-Distribution: Specification and Investigation. *J. Chem. Inf. Model.* **2024**, 64 (3),
+       697-711. https://doi.org/10.1021/acs.jcim.3c01774
     """
 
     splitter_id: ClassVar[str] = "perimeter"
@@ -2324,6 +2402,12 @@ class LeaveOneClusterOutSplitter(GroupSplitter):
     - Training-set size varies across folds, so fold-to-fold differences partly measure training-set size rather than chemical difficulty.
     - A single-cluster test fold with 3 records can't support ROC-AUC or a meaningful R² -- the splitter warns but can't stop the caller from computing them anyway.
 
+
+    References
+    ----------
+    .. [1] Kramer, C.; Gedeck, P. Leave-Cluster-Out Cross-Validation Is Appropriate for Scoring Functions
+       Derived from Diverse Protein Data Sets. *J. Chem. Inf. Model.* **2010**, 50 (11), 1961-1969.
+       https://doi.org/10.1021/ci100264e
     """
 
     splitter_id: ClassVar[str] = "leave_one_cluster_out"
@@ -2490,6 +2574,15 @@ class BalancedMultiTaskSplitter(GroupSplitter):
     - Multi-threaded MIP solving is non-deterministic -- raising `threads` above 1 for speed silently breaks reproducibility.
     - Balancing on label statistics chooses the split partly using the labels, a mild form of information leakage into the experimental design -- usually the lesser evil versus undefined metrics, but it should be disclosed.
 
+
+    References
+    ----------
+    .. [1] Tricarico, G. A.; Hofmans, J.; Lenselink, E. B.; López-Ramos, M.; Dréanic, M.-P.; Stouten, P. F. W.
+       Construction of Balanced, Chemically Dissimilar Training, Validation and Test Sets for Machine
+       Learning on Molecular Datasets. *ChemRxiv* preprint, **2024** (not peer reviewed).
+       https://doi.org/10.26434/chemrxiv-2022-m8l33-v3
+    .. [2] The cluster-to-fold assignment here is solved by chemsplit's own optimizer
+       (:mod:`chemsplit._optimize`), not by the formulation used in that work.
     """
 
     splitter_id: ClassVar[str] = "balanced_multi_task"

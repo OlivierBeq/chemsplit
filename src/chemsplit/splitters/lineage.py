@@ -30,17 +30,19 @@ from chemsplit.exceptions import (
 )
 from chemsplit.types import IndexArray
 
-__all__ = ["FidelitySplitter", "PartySplitter", "SIMPDSplitter", "SourceSplitter", "TemporalSplitter"]
+__all__ = [
+    "FidelitySplitter",
+    "PartySplitter",
+    "SIMPDSplitter",
+    "SourceSplitter",
+    "TemporalSplitter",
+]
 
-#: Folded into chemsplit.registry / chemsplit.__init__'s __all__ at integration time.
 _EXPORTED = __all__
 
 _EPS = 1e-9
 
 
-# -
-# TemporalSplitter
-# -
 
 
 def _coerce_dates(dates: Any, n: int) -> np.ndarray:
@@ -81,7 +83,9 @@ def _parse_offset_days(spec: str | int) -> int:
         raise ParameterError(f"expected a pandas-offset-like string or int, got {spec!r}")
     m = re.fullmatch(r"\s*(\d+)\s*([DWMY])\s*", spec.upper())
     if not m:
-        raise ParameterError(f"could not parse offset string {spec!r} (expected e.g. '90D', '6M', '1Y')")
+        raise ParameterError(
+            f"could not parse offset string {spec!r} (expected e.g. '90D', '6M', '1Y')"
+        )
     count, unit = int(m.group(1)), m.group(2)
     days_per_unit = {"D": 1, "W": 7, "M": 30, "Y": 365}[unit]
     return count * days_per_unit
@@ -90,21 +94,56 @@ def _parse_offset_days(spec: str | int) -> int:
 class TemporalSplitter(BaseSplitter):
     """Date-cut split: train on the past, test on the future.
 
+    :param cut_date: the train/test boundary, as an ISO string or ``numpy.datetime64``.
+        ``None`` places the cut at the quantile implied by the resolved sizes.
+    :param valid_cut_date: an earlier boundary carving a validation band out of train.
+    :param embargo: a gap after the cut, as a pandas-like offset string or days. Records
+        inside it are discarded, closing the leak from assays that report months late.
+    :param mode: one cut, a rolling fixed-width window, or an expanding window.
+    :param n_windows: how many windows the rolling and expanding modes produce.
+    :param window: window width for those modes, as an offset string or days.
+    :param tie_policy: where records dated exactly on the cut go.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ParameterError: if an offset string cannot be parsed, ``n_windows`` is below 1, or
+        ``mode`` or ``tie_policy`` is unknown.
+    :raises ConfigurationError: if ``cut_date`` is combined with a windowed mode, or
+        ``valid_cut_date`` is not earlier than ``cut_date``.
+    :raises InputError: at split time, if ``dates`` is missing or the wrong length.
+
     Advantages
     ----------
-    - The closest available proxy for prospective performance, since it reproduces the real, entangled correlations between chemistry, assay protocol, project goals, and era that a deployed model actually meets.
-    - Needs no featurization and no parameters beyond the cut date, so there's nothing to tune or argue about.
-    - `embargo` closes the look-ahead leak from assays reporting months after registration -- invisible in a naive date cut.
-    - `mode="rolling"`/`"expanding"` produces a performance-over-time curve, which is what a maintenance decision actually needs.
+    - The closest available proxy for prospective performance: it reproduces the entangled
+      correlations between chemistry, assay protocol, project goals and era.
+    - Needs no featurization and no parameters beyond the cut date.
+    - `embargo` closes the look-ahead leak from assays reporting months after registration,
+      which a naive date cut cannot see.
+    - `mode="rolling"` and `"expanding"` produce a performance-over-time curve, which is what a
+      maintenance decision needs.
 
     Pitfalls
     --------
-    - Confounds several shifts at once -- chemistry, assay protocol, target selection, data volume -- so a drop shows the model degrades, not *why*. Good for realism, bad for attribution.
-    - Dates are frequently wrong: registration, first-test, publication, and deposition dates differ, and datasets often mix them; the splitter can't detect this.
-    - Public datasets rarely carry usable timestamps -- ChEMBL document years are coarse and often unrepresentative of when the work happened. Use `simpd` when dates are absent rather than fabricating them.
-    - The test set is one contiguous era, so it's chemically homogeneous with correlated errors; a single time split carries wide implicit uncertainty. Prefer `mode="rolling"`.
+    - Confounds chemistry, assay protocol, target selection and data volume, so a drop shows
+      that the model degrades, not *why*. Good for realism, bad for attribution.
+    - Dates are frequently wrong: registration, first-test, publication and deposition dates
+      differ, and datasets mix them. The splitter cannot detect that.
+    - Public datasets rarely carry usable timestamps, and ChEMBL document years are coarse and
+      often unrepresentative of when the work happened. `simpd` covers the no-dates case.
+    - One contiguous era makes the test set chemically homogeneous with correlated errors, so
+      a single cut carries wide implicit uncertainty. `mode="rolling"` averages over several.
     - Without `embargo`, slow-reporting assays leak the future into training.
-    - In `"expanding"` mode the training set grows with time, so later windows aren't comparable to earlier ones without normalising for `n_train`.
+    - In `"expanding"` mode the training set grows with time, so later windows are not
+      comparable to earlier ones without normalising for `n_train`.
+
+    References
+    ----------
+    .. [1] Sheridan, R. P. Time-Split Cross-Validation as a Method for Estimating the Goodness of
+       Prospective Prediction. *J. Chem. Inf. Model.* **2013**, 53 (4), 783-790.
+       https://doi.org/10.1021/ci400084k
+    .. [2] Mayr, A.; Klambauer, G.; Unterthiner, T. et al. Large-Scale Comparison of Machine
+       Learning Methods for Drug Target Prediction on ChEMBL. *Chem. Sci.* **2018**, 9 (24),
+       5441-5451. https://doi.org/10.1039/C8SC00148K
+    .. [3] ``embargo`` and the rolling and expanding window modes are standard time-series
+       cross-validation practice rather than a cheminformatics method.
     """
 
     splitter_id: ClassVar[str] = "temporal"
@@ -144,10 +183,19 @@ class TemporalSplitter(BaseSplitter):
             raise ParameterError(f"invalid mode: {mode!r}")
         if tie_policy not in ("train", "test", "discard"):
             raise ParameterError(f"invalid tie_policy: {tie_policy!r}")
-        if isinstance(n_windows, bool) or not isinstance(n_windows, (int, np.integer)) or n_windows < 1:
+        if (
+            isinstance(n_windows, bool)
+            or not isinstance(n_windows, (int, np.integer))
+            or n_windows < 1
+        ):
             raise ParameterError(f"n_windows must be a positive int, got {n_windows!r}")
 
     def get_n_splits(self, X: Any = None, y: Any = None, groups: Any = None) -> int:
+        """Report how many splits will be yielded.
+
+        :param X: ignored, as are ``y`` and ``groups``; the signature is sklearn\'s.
+        :return: ``n_windows`` in a windowed mode, else ``1``.
+        """
         return int(self.n_windows) if self.mode in ("rolling", "expanding") else 1
 
     def _check_preconditions(self, ctx: _Context) -> None:
@@ -228,12 +276,20 @@ class TemporalSplitter(BaseSplitter):
             "cut_date": str(cut),
             "valid_cut_date": str(self.valid_cut_date) if self.valid_cut_date is not None else None,
             "embargo": str(self.embargo),
-            "train_date_range": [str(dates[train].min()), str(dates[train].max())] if len(train) else None,
-            "test_date_range": [str(dates[test].min()), str(dates[test].max())] if len(test) else None,
+            "train_date_range": (
+                [str(dates[train].min()), str(dates[train].max())] if len(train) else None
+            ),
+            "test_date_range": (
+                [str(dates[test].min()), str(dates[test].max())] if len(test) else None
+            ),
             "n_ties_at_cut": n_ties,
             "n_embargoed": int(np.sum(after_cut & (dates < embargo_end))),
             "window_index": None,
-            "realised_sizes": {"train": int(len(train)), "valid": int(len(valid)), "test": int(len(test))},
+            "realised_sizes": {
+                "train": int(len(train)),
+                "valid": int(len(valid)),
+                "test": int(len(test)),
+            },
         }
         result = SplitResult(
             train=np.sort(train.astype(np.int64)),
@@ -246,7 +302,8 @@ class TemporalSplitter(BaseSplitter):
             n_records=ctx.n,
             metadata=metadata,
         )
-        if n_ties > 0 and abs(len(train) - (ctx.sizes.n_train + ctx.sizes.n_valid)) > max(10, 0.01 * ctx.n):
+        target_train = ctx.sizes.n_train + ctx.sizes.n_valid
+        if n_ties > 0 and abs(len(train) - target_train) > max(10, 0.01 * ctx.n):
             from chemsplit.exceptions import SizeToleranceWarning
 
             warn_with_details(
@@ -267,7 +324,8 @@ class TemporalSplitter(BaseSplitter):
             test_start = date_max - np.timedelta64(offset_start, "D")
             test_end = date_max - np.timedelta64(offset_end, "D")
             is_last = i == int(self.n_windows) - 1
-            test_mask = (dates >= test_start) & ((dates < test_end) if not is_last else (dates <= test_end))
+            upper = (dates <= test_end) if is_last else (dates < test_end)
+            test_mask = (dates >= test_start) & upper
             if self.mode == "rolling":
                 train_start = test_start - np.timedelta64(window_days, "D")
                 train_mask = (dates >= train_start) & (dates < test_start)
@@ -277,9 +335,9 @@ class TemporalSplitter(BaseSplitter):
             test = np.nonzero(test_mask)[0]
             if len(train) == 0 or len(test) == 0:
                 continue
-            # Records outside this fold's (train_start, test_end] window are not part of this
-            # temporal fold at all -- I2 requires every record land in train/valid/test/discard,
-            # so the rest of the timeline is `discard` *for this fold specifically* (# discard = "records deliberately dropped by the splitter").
+            # Records outside this fold's (train_start, test_end] window play no part in it,
+            # and every record has to land somewhere, so the rest of the timeline is discarded
+            # for this fold only.
             used_mask = train_mask | test_mask
             discard = np.nonzero(~used_mask)[0]
             metadata = {
@@ -314,42 +372,67 @@ class TemporalSplitter(BaseSplitter):
         return results
 
 
-# -
-# SIMPDSplitter
-# -
-
-
 class SIMPDSplitter(BaseSplitter):
     """Simulated time split: a multi-objective GA rearranges an undated dataset until the
     train/test pair reproduces the descriptor/property shifts measured in real time splits.
 
-    Requires the ``ga`` extra (``deap``).
+    DEAP's variation operators read Python's global ``random`` module, which this library
+    never touches, so only its RNG-free parts are used: ``creator``/``base.Fitness``
+    bookkeeping and ``tools.selNSGA2``, a deterministic rank and crowding-distance sort.
+    Crossover, mutation and tournament selection run off a dedicated ``random.Random`` from
+    :func:`chemsplit.determinism.seeded_python_random`. Mutation is shared with
+    :class:`~chemsplit.splitters.task.AVESplitter` through :mod:`chemsplit._ga`; repair,
+    crossover and selection stay separate.
 
-    **Implementation note:** DEAP's built-in variation operators (``tools.cxTwoPoint``,
-    ``tools.mutFlipBit``, ``tools.selTournament``) read Python's *global* ``random`` module
-    internally, which conflicts with chemsplit's rule that the global ``random`` module must
-    never be touched (see ``chemsplit/determinism.py``). This implementation uses DEAP only for
-    the RNG-free parts (``creator``/``base.Fitness`` bookkeeping and ``tools.selNSGA2``, which is
-    a deterministic rank/crowding-distance sort) and hand-rolls crossover/mutation/tournament
-    selection using a dedicated ``random.Random`` instance from
-    :func:`chemsplit.determinism.seeded_python_random`. Mutation is shared with ``ave``
-    (:class:`~chemsplit.splitters.task.AVESplitter`) via :mod:`chemsplit._ga`; repair/crossover/
-    selection differ (cardinality scope, elitism) and stay separate.
+    :param targets: the descriptor and property shifts to aim for, or ``None`` for the
+        published medians.
+    :param descriptors: which RDKit descriptors the objectives are computed over.
+    :param population_size: GA population size.
+    :param n_generations: how many generations to run.
+    :param crossover_prob: probability of crossing a selected pair.
+    :param mutation_prob: probability of mutating an individual.
+    :param mutation_indpb: per-gene flip probability within a mutated individual.
+    :param tournament_size: tournament size for parent selection.
+    :param cluster_for_g_sim: clusterer, by registry id or instance, behind the group-similarity
+        objective.
+    :param early_stop_patience: generations without improvement before stopping early.
+    :param max_memory_bytes: ceiling on the pairwise matrix.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises MissingDependencyError: if the ``ga`` extra is not installed.
+    :raises ParameterError: if a GA parameter is out of range, ``targets`` names an unknown
+        objective, or ``descriptors`` names an unknown descriptor.
+    :raises ScalabilityError: at split time, if the pairwise matrix would exceed
+        ``max_memory_bytes``.
 
     Advantages
     ----------
-    - Makes a time-like evaluation possible on the (most) public datasets that lack usable dates.
-    - Objectives are explicit and measurable, so "this split resembles a real time split" is checkable via `metadata["achieved"]` vs. `targets`, not just asserted.
-    - Multi-objective optimisation surfaces trade-offs instead of collapsing them into one hand-weighted score.
+    - Makes a time-like evaluation possible on the many public datasets that lack usable
+      dates.
+    - The objectives are explicit and measurable, so the resemblance to a real time split can
+      be checked by comparing `metadata["achieved"]` against `targets`.
+    - Multi-objective optimisation surfaces trade-offs instead of collapsing them into one
+      hand-weighted score.
 
     Pitfalls
     --------
-    - **Simulates the statistics of a time split, not time itself.** Assay-protocol drift, changing project goals, and genuine unforeseeability aren't reproduced -- a model can score well here and still fail prospectively.
-    - Default targets are medians from one published study of specific internal datasets -- not universal constants, so applying them to a different therapeutic area is an assumption, not a measurement.
-    - Expensive: hundreds of generations over hundreds of individuals, each needing nearest-neighbour statistics.
-    - The GA is stochastic with conflicting objectives, so different seeds give different splits with similar objective values. Report the seed and `metadata["achieved"]`.
-    - Optimising against label-derived objectives (`delta_active_frac`) uses the labels to design the experiment -- disclose it.
+    - **Simulates the statistics of a time split, not time itself.** Protocol drift, changing
+      project goals and real unforeseeability are not reproduced, so a model can score well
+      here and still fail prospectively.
+    - The default targets are medians from one study of specific internal datasets, not
+      universal constants, so carrying them to another therapeutic area is an assumption.
+    - Expensive: hundreds of generations over hundreds of individuals, each needing
+      nearest-neighbour statistics.
+    - Conflicting objectives make the GA stochastic: different seeds give different splits at
+      similar objective values, pinned down by the seed and `metadata["achieved"]`.
+    - Optimising against label-derived objectives such as `delta_active_frac` uses the labels
+      to design the experiment.
 
+    References
+    ----------
+    .. [1] Landrum, G. A.; Beckers, M.; Lanini, J.; Schneider, N.; Stiefl, N.; Riniker, S.
+       SIMPD: An Algorithm for Generating Simulated Time Splits for Validating Machine Learning
+       Approaches. *J. Cheminform.* **2023**, 15, 119.
+       https://doi.org/10.1186/s13321-023-00787-9
     """
 
     splitter_id: ClassVar[str] = "simpd"
@@ -459,12 +542,9 @@ class SIMPDSplitter(BaseSplitter):
                 [fn(m) if m is not None else 0.0 for m in mols], dtype=float
             )
 
-        # Butina clusters for `frac_test_in_train_cluster`, per `cluster_for_g_sim`. The default
-        # "butina" (renamed ButinaSplitter) is not resolved via the registry here (the
-        # `similarity` family may not exist yet at any given point in this package's build) --
-        # calling the underlying `chemsplit.clustering.butina` primitive directly with its default
-        # cutoff (0.35 distance) reproduces the same clustering ButinaSplitter would use.
-        # Documented simplification.
+        # Clusters for frac_test_in_train_cluster. The default "butina" calls the
+        # chemsplit.clustering.butina primitive directly, at ButinaSplitter's own default
+        # cutoff, rather than going through the registry.
         if isinstance(self.cluster_for_g_sim, str):
             clusters = butina(D, cutoff=0.35)
             cluster_of = np.empty(n, dtype=np.int64)
@@ -495,7 +575,10 @@ class SIMPDSplitter(BaseSplitter):
                     key = f"delta_{name}"
                     if key in self.targets:
                         a, b = desc_values[name][test_idx], desc_values[name][train_idx]
-                        pooled_std = np.sqrt((a.var(ddof=1) + b.var(ddof=1)) / 2.0) if len(a) > 1 and len(b) > 1 else 1.0
+                        if len(a) > 1 and len(b) > 1:
+                            pooled_std = np.sqrt((a.var(ddof=1) + b.var(ddof=1)) / 2.0)
+                        else:
+                            pooled_std = 1.0
                         obs[key] = float((a.mean() - b.mean()) / max(pooled_std, 1e-9))
                 sub = S[np.ix_(test_idx, train_idx)]
                 obs["g_sim"] = float(np.mean(sub.max(axis=1))) if sub.size else 0.0
@@ -508,7 +591,9 @@ class SIMPDSplitter(BaseSplitter):
             return tuple((-((observed - target_vals) ** 2)).tolist())
 
         if not hasattr(deap_creator, "FitnessSIMPD"):
-            deap_creator.create("FitnessSIMPD", deap_base.Fitness, weights=(1.0,) * len(target_keys))
+            deap_creator.create(
+                "FitnessSIMPD", deap_base.Fitness, weights=(1.0,) * len(target_keys)
+            )
         if not hasattr(deap_creator, "IndividualSIMPD"):
             deap_creator.create("IndividualSIMPD", np.ndarray, fitness=deap_creator.FitnessSIMPD)
 
@@ -559,7 +644,8 @@ class SIMPDSplitter(BaseSplitter):
         def sq_err(ind: Any) -> float:
             return float(sum(v * v for v in ind.fitness.values))
 
-        for gen in range(int(self.n_generations)):  # noqa: B007 -- read after the loop as generations_run
+        # gen is read after the loop, as generations_run
+        for gen in range(int(self.n_generations)):  # noqa: B007
             offspring = []
             while len(offspring) < self.population_size:
                 p1, p2 = tournament(population), tournament(population)
@@ -623,7 +709,11 @@ class SIMPDSplitter(BaseSplitter):
             "converged": stall >= self.early_stop_patience,
             "pareto_front_size": len(population),
             "hypervolume_trace": hypervolume_trace,
-            "realised_sizes": {"train": int(len(train)), "valid": int(len(valid)), "test": int(len(test))},
+            "realised_sizes": {
+                "train": int(len(train)),
+                "valid": int(len(valid)),
+                "test": int(len(test)),
+            },
         }
         return [
             SplitResult(
@@ -640,26 +730,56 @@ class SIMPDSplitter(BaseSplitter):
         ]
 
 
-# -
-# SourceSplitter
-# -
-
-
 class SourceSplitter(GroupSplitter):
     """Groups by provenance: document, assay, lab, vendor, plate, or any caller-supplied key.
 
+    :param source: per-record source labels, or ``None`` to read them from ``source_col``.
+    :param source_col: column name to take the labels from when ``X`` is a frame.
+    :param hierarchy: column names from coarsest to finest, so that the grouping key is the
+        tuple of levels present.
+    :param min_source_size: sources smaller than this are handled by
+        ``small_source_policy``.
+    :param small_source_policy: keep each tiny source as its own group, pool them into one, or
+        discard them.
+    :param base: forwarded to :class:`chemsplit.base.GroupSplitter`.
+    :raises ParameterError: if ``min_source_size`` is below 1, or ``small_source_policy`` is
+        unknown.
+    :raises ConfigurationError: if neither or both of ``source`` and ``source_col`` are given.
+    :raises InputError: at split time, if the labels are the wrong length or the column is
+        absent.
+
     Advantages
     ----------
-    - Catches a leak scaffold and cluster splits both miss: one publication contributing a congeneric series measured under one protocol with one systematic offset -- any of which is learnable.
-    - Needs no chemistry, featurization, or seed -- it's a metadata join.
-    - Composes naturally with `leave_one_cluster_out` (leave-one-source-out) for a per-laboratory error profile, often the most actionable diagnostic available.
+    - Catches a leak scaffold and cluster splits both miss: one publication contributing a
+      congeneric series under one protocol with one systematic offset, each learnable.
+    - Needs no chemistry, featurization or seed. It is a metadata join.
+    - Composes with `leave_one_cluster_out` for a per-laboratory error profile, often the most
+      actionable diagnostic available.
 
     Pitfalls
     --------
-    - Source metadata is frequently wrong, missing, or inconsistently populated; a `NaN`-heavy source column silently degenerates toward a random split -- read `metadata["n_missing_source"]`.
-    - Source sizes are extremely skewed -- a handful of large screening campaigns plus a long tail of two-compound papers -- so the realised ratio drifts and `SizeToleranceWarning` should be expected.
-    - Grouping by source does **not** guarantee chemical separation -- two labs can publish the same series -- so it complements rather than replaces a structural split. Combine with `group_k_fold` on a merged grouping.
-    - The chosen hierarchy level changes the experiment -- assay-level grouping is much weaker than document-level, which is weaker than lab-level.
+    - Source metadata is often wrong or missing, and a `NaN`-heavy column degenerates toward
+      a random split; `metadata["n_missing_source"]` counts the gaps.
+    - Source sizes are very skewed -- a few large campaigns, a long tail of two-compound
+      papers -- so the ratio drifts and `SizeToleranceWarning` is expected.
+    - Grouping by source does **not** guarantee chemical separation, since two labs can
+      publish the same series. `group_k_fold` over a merged grouping covers both axes.
+    - The chosen hierarchy level changes the experiment: assay-level grouping is much weaker
+      than document-level, which is weaker than lab-level.
+
+    References
+    ----------
+    .. [1] Grouping by provenance is generic. The inter-source noise and leakage it targets
+       are measured in [2]-[4].
+    .. [2] Landrum, G. A.; Riniker, S. Combining IC50 or Ki Values from Different Sources Is a
+       Source of Significant Noise. *J. Chem. Inf. Model.* **2024**, 64 (5), 1560-1567.
+       https://doi.org/10.1021/acs.jcim.4c00049
+    .. [3] Kramer, C.; Kalliokoski, T.; Gedeck, P.; Vulpetti, A. The Experimental Uncertainty
+       of Heterogeneous Public Ki Data. *J. Med. Chem.* **2012**, 55 (11), 5165-5173.
+       https://doi.org/10.1021/jm300131x
+    .. [4] Kalliokoski, T.; Kramer, C.; Vulpetti, A.; Gedeck, P. Comparability of Mixed IC50
+       Data -- A Statistical Analysis. *PLoS ONE* **2013**, 8 (4), e61007.
+       https://doi.org/10.1371/journal.pone.0061007
     """
 
     splitter_id: ClassVar[str] = "source"
@@ -692,16 +812,19 @@ class SourceSplitter(GroupSplitter):
         self.small_source_policy = small_source_policy
         if small_source_policy not in ("own_group", "pool", "discard"):
             raise ParameterError(f"invalid small_source_policy: {small_source_policy!r}")
-        if isinstance(min_source_size, bool) or not isinstance(min_source_size, (int, np.integer)) or min_source_size < 1:
+        if (
+            isinstance(min_source_size, bool)
+            or not isinstance(min_source_size, (int, np.integer))
+            or min_source_size < 1
+        ):
             raise ParameterError(f"min_source_size must be >= 1, got {min_source_size!r}")
 
     def _resolve_source(self, ctx: _Context) -> list[Any]:
         if self.source is not None:
             source = list(self.source)
         elif self.source_col is not None:
-            # DataFrame column resolution is not yet wired through `_Context` (core infra only
-            # threads smiles/mol/y/dates/targets/sequences today) -- documented gap, not silently
-            # ignored.
+            # _Context doesn't thread DataFrame columns, only
+            # smiles/mol/y/dates/targets/sequences, so source_col can't be resolved here
             raise ParameterError(
                 "SourceSplitter(source_col=...) requires DataFrame column resolution, which is "
                 "not yet implemented in this build; pass `source=<sequence>` directly instead."
@@ -756,7 +879,9 @@ class SourceSplitter(GroupSplitter):
             )
         if largest_frac > 0.60:
             warn_with_details(
-                DegenerateClusterWarning(f"SourceSplitter: largest source holds {largest_frac:.1%} of records")
+                DegenerateClusterWarning(
+                    f"SourceSplitter: largest source holds {largest_frac:.1%} of records"
+                )
             )
         return {
             "n_sources": int(n_sources),
@@ -766,51 +891,61 @@ class SourceSplitter(GroupSplitter):
         }
 
 
-# -
-# FidelitySplitter
-# -
-
-
 class FidelitySplitter(BaseSplitter):
     """Train on low-fidelity measurements, test on the highest fidelity (``fidelity``).
 
-    Records carry a fidelity level (e.g. ``"HTS"`` < ``"confirmatory"`` < ``"dose-response"``,
-    or a numeric tier). Whole levels are assigned from the highest down: test takes levels until
-    it reaches its size, then valid, and the remaining, lowest levels form train. A level is never
-    split across partitions, so realised sizes follow level boundaries. With
-    ``structure_leakage="discard"``, a molecule measured at several fidelities keeps only its
-    highest-fidelity record in play: its records in a lower partition are moved to ``discard``
-    (matched by canonical SMILES), so the model never trains on a cheap label of a test molecule.
-    Fully deterministic.
+    Records carry a fidelity level, e.g. ``"HTS"`` < ``"confirmatory"`` < ``"dose-response"``,
+    or a numeric tier. Whole levels are assigned from the highest down -- test first, then
+    valid, with the lowest left for train -- so realised sizes follow level boundaries.
+    Discarding structure leakage matches molecules by canonical SMILES and keeps only each
+    one's highest-fidelity record, so the model never trains on a cheap label of a test
+    molecule. Fully deterministic.
 
-    :param fidelity: Per-record fidelity levels. Required.
-    :param levels: The levels ordered from lowest to highest fidelity; ``None`` sorts the observed
-        values. Every record's level must be listed. Defaults to ``None``.
-    :param structure_leakage: ``"discard"`` or ``"allow"``; see above. ``"discard"`` needs
-        molecular input (SMILES or molecules). Defaults to ``"discard"``.
-    :param size_tolerance: Warn with :class:`~chemsplit.exceptions.SizeToleranceWarning` when a
-        realised partition fraction misses its target by more than this. Defaults to 0.05.
+    :param fidelity: per-record fidelity levels. Required.
+    :param levels: the levels ordered from lowest to highest fidelity, or ``None`` to sort the
+        observed values. Every record's level must appear.
+    :param structure_leakage: discard a molecule's lower-fidelity records, or allow them.
+        Discarding needs molecular input.
+    :param size_tolerance: how far a realised partition fraction may miss its target before a
+        :class:`SizeToleranceWarning` is issued.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`.
     :ivar splitter_id: ``"fidelity"``.
+    :raises ParameterError: if ``structure_leakage`` is unknown, or ``size_tolerance`` is
+        outside ``[0, 1)``.
+    :raises ConfigurationError: if ``fidelity`` is missing, or ``structure_leakage="discard"``
+        is combined with non-molecular input.
+    :raises InputError: at split time, if the fidelity labels are the wrong length or name a
+        level outside ``levels``.
+    :raises EmptyPartitionError: at split time, if fewer than two levels survive.
 
     Advantages
     ----------
-    - Measures the realistic multi-fidelity use case: learn from abundant cheap data, predict the scarce expensive measurement.
-    - Whole levels stay together, so assay-protocol artefacts specific to one level cannot leak across the split.
-    - `structure_leakage="discard"` removes the most common multi-fidelity leak -- the same compound's low-fidelity label sitting in train.
-    - No seed, no free parameter beyond the level order.
+    - Measures the realistic multi-fidelity case: learn from abundant cheap data, predict the
+      scarce expensive measurement.
+    - Whole levels stay together, so assay-protocol artefacts specific to one level cannot leak
+      across the split.
+    - `structure_leakage="discard"` removes the most common multi-fidelity leak, a compound's
+      own low-fidelity label sitting in train.
+    - No seed, and no free parameter beyond the level order.
 
     Pitfalls
     --------
-    - **Sizes are coarse.** With few levels, realised sizes can be far from the targets; read `metadata["level_partition"]`.
-    - Confounds two shifts: the label's fidelity and the chemistry measured at each level (high-fidelity assays usually run on optimised compounds). A drop shows degradation, not its cause.
-    - Low- and high-fidelity labels may be on different scales or even different quantities; the split doesn't harmonise them.
-    - Needs at least two levels, and `structure_leakage="discard"` can empty train when most molecules are measured at every level.
+    - **Sizes are coarse.** With few levels the realised sizes can sit far from the targets;
+      `metadata["level_partition"]` shows where they landed.
+    - Confounds the label's fidelity with the chemistry measured at each level, since
+      high-fidelity assays run on already-optimised compounds. The drop is real, its cause
+      is not isolated.
+    - Low- and high-fidelity labels may be on different scales, or be different quantities
+      altogether. The split does not harmonise them.
+    - Needs at least two levels, and `structure_leakage="discard"` can empty train when most
+      molecules are measured at every level.
 
     References
     ----------
-    .. [1] Buterez, D.; Janet, J. P.; Kiddle, S. J.; Oglic, D.; Liò, P. Transfer Learning with Graph
-       Neural Networks for Improved Molecular Property Prediction in the Multi-Fidelity Setting.
-       *Nat. Commun.* **2024**, 15, 1517. https://doi.org/10.1038/s41467-024-45566-8
+    .. [1] Buterez, D.; Janet, J. P.; Kiddle, S. J.; Oglic, D.; Liò, P. Transfer Learning with
+       Graph Neural Networks for Improved Molecular Property Prediction in the Multi-Fidelity
+       Setting. *Nat. Commun.* **2024**, 15, 1517.
+       https://doi.org/10.1038/s41467-024-45566-8
     """
 
     splitter_id: ClassVar[str] = "fidelity"
@@ -849,7 +984,9 @@ class FidelitySplitter(BaseSplitter):
 
     def _level_ranks(self, ctx: _Context) -> tuple[list[Any], np.ndarray]:
         if self.fidelity is None:
-            raise InputError("FidelitySplitter requires `fidelity` (a per-record fidelity level sequence)")
+            raise InputError(
+                "FidelitySplitter requires `fidelity` (a per-record fidelity level sequence)"
+            )
         fidelity = list(self.fidelity)
         if len(fidelity) != ctx.n:
             raise InputError(f"len(fidelity)={len(fidelity)} does not match n={ctx.n}")
@@ -862,7 +999,9 @@ class FidelitySplitter(BaseSplitter):
             try:
                 levels = sorted(set(fidelity))
             except TypeError:
-                raise ParameterError("fidelity values are not mutually orderable; pass `levels`") from None
+                raise ParameterError(
+                    "fidelity values are not mutually orderable; pass `levels`"
+                ) from None
         rank = {str(level): r for r, level in enumerate(levels)}
         return levels, np.asarray([rank[str(v)] for v in fidelity], dtype=np.int64)
 
@@ -870,7 +1009,10 @@ class FidelitySplitter(BaseSplitter):
         if ctx.mols is not None:
             from rdkit import Chem
 
-            return [Chem.MolToSmiles(m) if m is not None else f"<unparsed:{i}>" for i, m in enumerate(ctx.mols)]
+            return [
+                Chem.MolToSmiles(m) if m is not None else f"<unparsed:{i}>"
+                for i, m in enumerate(ctx.mols)
+            ]
         if ctx.smiles is not None:
             return list(ctx.smiles)
         raise ParameterError(
@@ -883,7 +1025,9 @@ class FidelitySplitter(BaseSplitter):
         levels, ranks = self._level_ranks(ctx)
         present = sorted(set(ranks.tolist()))
         if len(present) < 2:
-            raise ConstraintUnsatisfiableError(f"FidelitySplitter: all {n} records share one fidelity level")
+            raise ConstraintUnsatisfiableError(
+                f"FidelitySplitter: all {n} records share one fidelity level"
+            )
         counts = {r: int(np.sum(ranks == r)) for r in present}
         level_partition: dict[int, str] = {}
         filled = {"test": 0, "valid": 0}
@@ -907,9 +1051,14 @@ class FidelitySplitter(BaseSplitter):
             for lower, uppers in later.items():
                 held = {keys[i] for i in range(n) if part[i] in uppers}
                 discard |= (part == lower) & np.asarray([k in held for k in keys], dtype=bool)
-        buckets = {name: np.flatnonzero((part == name) & ~discard).astype(np.int64) for name in ("train", "valid", "test")}
+        buckets = {
+            name: np.flatnonzero((part == name) & ~discard).astype(np.int64)
+            for name in ("train", "valid", "test")
+        }
         if buckets["train"].size == 0:
-            raise EmptyPartitionError("FidelitySplitter: train is empty after removing shared structures")
+            raise EmptyPartitionError(
+                "FidelitySplitter: train is empty after removing shared structures"
+            )
         realised = {k: int(v.size) for k, v in buckets.items()}
         wanted = {"train": ctx.sizes.n_train, "valid": ctx.sizes.n_valid, "test": ctx.sizes.n_test}
         if any(abs(realised[k] - wanted[k]) / n > self.size_tolerance for k in wanted):
@@ -917,8 +1066,9 @@ class FidelitySplitter(BaseSplitter):
 
             warn_with_details(
                 SizeToleranceWarning(
-                    f"FidelitySplitter: realised sizes {realised} differ from targets {wanted} by more "
-                    f"than size_tolerance={self.size_tolerance} (whole fidelity levels are kept together)",
+                    f"FidelitySplitter: realised sizes {realised} differ from targets "
+                    f"{wanted} by more than size_tolerance={self.size_tolerance} (whole "
+                    "fidelity levels are kept together)",
                     details={"realised": realised, "targets": wanted},
                 )
             )
@@ -940,31 +1090,58 @@ class FidelitySplitter(BaseSplitter):
         return [result]
 
 
-# -
-# PartySplitter
-# -
-
-
 class PartySplitter(GroupSplitter):
     """Partitions across data owners for federated evaluation, with deliberately non-IID parties.
 
-    Overrides :meth:`_partition` entirely (leave-one-party-out is
-    not the standard ``assign_groups`` train/valid/test bucketing every other ``GroupSplitter``
-    uses).
-        Advantages
+    Leave-one-party-out is not the usual ``assign_groups`` bucketing, so :meth:`_partition` is
+    overridden entirely.
+
+    :param party: per-record owner labels, required by ``synthesis="given"``.
+    :param n_parties: how many parties to synthesise.
+    :param synthesis: use the supplied labels, or synthesise parties by a Dirichlet draw over
+        clusters, by whole clusters, or by label skew.
+    :param dirichlet_alpha: concentration of the Dirichlet draw. Lower is more non-IID.
+    :param clusterer: clusterer, by registry id or instance, behind the cluster-based synthesis
+        modes.
+    :param held_out_party: which party to hold out, or ``"each"`` for one fold per party.
+    :param base: forwarded to :class:`chemsplit.base.GroupSplitter`.
+    :raises ParameterError: if ``n_parties`` is below 2, ``dirichlet_alpha`` is not positive,
+        ``held_out_party`` is out of range, or ``synthesis`` is unknown.
+    :raises ConfigurationError: if ``synthesis="given"`` without ``party``, or ``party`` is
+        supplied alongside another mode.
+    :raises LabelError: at split time, if ``synthesis="label_skew"`` and ``y`` is missing.
+
+    Advantages
     ----------
-    - The only way to check whether a federated or consortium model actually helps *each* participant, not just the largest contributor.
-    - Synthesis modes let a public dataset stand in for a consortium with an explicit, tunable non-IID severity.
-    - `chemical_overlap_matrix` quantifies how different the parties really are -- the precondition for interpreting any federated result.
+    - The only way to check whether a federated or consortium model helps *each* participant
+      rather than only the largest contributor.
+    - The synthesis modes let a public dataset stand in for a consortium at an explicit,
+      tunable non-IID severity.
+    - `chemical_overlap_matrix` quantifies how different the parties really are, which is the
+      precondition for interpreting any federated result.
 
     Pitfalls
     --------
-    - **Never report a pooled average across parties.** It's dominated by the largest party and hides that the model may be useless for everyone else. Report per-party scores; `party_sizes` lets readers weight them.
-    - Synthesised parties model heterogeneity, not real heterogeneity -- real pharma datasets differ in assay protocol and target selection, not just chemistry.
-    - `dirichlet_alpha` has no natural value; it must be reported, and results at `alpha=0.1` and `alpha=1.0` aren't comparable.
-    - Party sizes are usually very unequal, so held-out fold sizes vary enormously across folds.
-    - Says nothing about the privacy properties of the training scheme -- this is a data split, not a privacy guarantee.
+    - A pooled average across parties is dominated by the largest one and hides a model that is
+      useless to everyone else. Per-party scores, weighted by `party_sizes`, are the result.
+    - Synthesised parties model heterogeneity rather than reproducing it. Real pharma datasets
+      differ in assay protocol and target selection, not just chemistry.
+    - `dirichlet_alpha` has no natural value, and results at `alpha=0.1` and `alpha=1.0` are
+      not comparable.
+    - Party sizes are usually very unequal, so held-out fold sizes vary enormously.
+    - Says nothing about the privacy properties of the training scheme. This is a data split,
+      not a privacy guarantee.
 
+    References
+    ----------
+    .. [1] Hsu, T.-M. H.; Qi, H.; Brown, M. Measuring the Effects of Non-Identical Data
+       Distribution for Federated Visual Classification. arXiv preprint, **2019**. No DOI;
+       https://arxiv.org/abs/1909.06335 (origin of the Dirichlet(alpha) non-IID partition
+       convention that ``synthesis="dirichlet"`` and ``dirichlet_alpha`` follow)
+    .. [2] Heyndrickx, W.; Mervin, L.; Morawietz, T. et al. MELLODDY: Cross-Pharma Federated
+       Learning at Unprecedented Scale Unlocks Benefits in QSAR without Compromising
+       Proprietary Information. *J. Chem. Inf. Model.* **2024**, 64 (7), 2331-2344.
+       https://doi.org/10.1021/acs.jcim.3c00799
     """
 
     splitter_id: ClassVar[str] = "party"
@@ -999,10 +1176,19 @@ class PartySplitter(GroupSplitter):
         self.held_out_party = held_out_party
         if synthesis not in ("given", "dirichlet", "cluster", "label_skew"):
             raise ParameterError(f"invalid synthesis: {synthesis!r}")
-        if isinstance(n_parties, bool) or not isinstance(n_parties, (int, np.integer)) or n_parties < 1:
+        if (
+            isinstance(n_parties, bool)
+            or not isinstance(n_parties, (int, np.integer))
+            or n_parties < 1
+        ):
             raise ParameterError(f"n_parties must be a positive int, got {n_parties!r}")
 
     def get_n_splits(self, X: Any = None, y: Any = None, groups: Any = None) -> int:
+        """Report how many splits will be yielded.
+
+        :param X: ignored, as are ``y`` and ``groups``; the signature is sklearn\'s.
+        :return: the party count when ``held_out_party="each"``, else ``1``.
+        """
         return int(self.n_parties) if self.held_out_party == "each" else 1
 
     def _group_labels(self, ctx: _Context) -> IndexArray:
@@ -1086,7 +1272,7 @@ class PartySplitter(GroupSplitter):
             )
             valid = np.array([], dtype=np.int64)
             if ctx.sizes.n_valid > 0 and train_parties:
-                # parties are atomic; pick the one closest in size to the requested valid_size.
+                # parties are atomic, so take the one closest in size to valid_size
                 target_valid = ctx.sizes.n_valid
                 valid_party = min(
                     train_parties,
@@ -1102,12 +1288,19 @@ class PartySplitter(GroupSplitter):
                 "synthesis": self.synthesis,
                 "dirichlet_alpha": self.dirichlet_alpha if self.synthesis == "dirichlet" else None,
                 "per_party_label_mean": (
-                    [float(np.mean(np.asarray(ctx.y, dtype=float)[labels == q])) for q in range(n_parties_actual)]
+                    [
+                        float(np.mean(np.asarray(ctx.y, dtype=float)[labels == q]))
+                        for q in range(n_parties_actual)
+                    ]
                     if ctx.y is not None
                     else None
                 ),
                 "chemical_overlap_matrix": overlap,
-                "realised_sizes": {"train": int(len(train)), "valid": int(len(valid)), "test": int(len(test))},
+                "realised_sizes": {
+                "train": int(len(train)),
+                "valid": int(len(valid)),
+                "test": int(len(test)),
+            },
             }
             results.append(
                 SplitResult(

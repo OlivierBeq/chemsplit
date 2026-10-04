@@ -42,9 +42,6 @@ __all__ = [
 _EPS = 1e-6
 
 
-# -
-# Shared helpers
-# -
 
 
 def _check_degenerate(n_groups: int, n_records: int, class_name: str) -> None:
@@ -128,10 +125,8 @@ def _require_mols(ctx: _Context, class_name: str) -> list:
 
 
 class _ScaffoldFamilyBase(GroupSplitter):
-    """Shared validation for the family's ``include_chirality``/``on_empty_scaffold`` block.
-
-    A private implementation convenience so the six leaf classes below don't repeat the same two
-    ``if`` checks.
+    """Shared validation of the family's ``include_chirality``/``on_empty_scaffold`` block, so
+    the six leaf classes below don't repeat the same two checks.
     """
 
     family: ClassVar[str] = "scaffold"
@@ -141,39 +136,65 @@ class _ScaffoldFamilyBase(GroupSplitter):
     order_invariant: ClassVar[bool] = False
 
     def _validate_shared(self) -> None:
+        """Check the two parameters every scaffold splitter accepts.
+
+        :raises ParameterError: if ``include_chirality`` is not a bool or
+            ``on_empty_scaffold`` is unknown.
+        """
         if not isinstance(self.include_chirality, bool):
             raise ParameterError(f"include_chirality must be bool, got {self.include_chirality!r}")
         if self.on_empty_scaffold not in ("own_group", "shared_group", "discard", "raise"):
             raise ParameterError(f"invalid on_empty_scaffold: {self.on_empty_scaffold!r}")
 
 
-# -
-# MurckoScaffoldSplitter
-# -
-
-
 class MurckoScaffoldSplitter(_ScaffoldFamilyBase):
     """Group records by Murcko scaffold.
 
-    Deterministic without a seed (unless ``group_assignment="random"``), O(n), and requires no
-    distance matrix -- the default comparability baseline in the scaffold-split literature.
+    Deterministic without a seed (unless ``group_assignment="random"``), ``O(n)``, and requires
+    no distance matrix. The default comparability baseline in the scaffold-split literature.
+
+    :param include_chirality: keep stereochemistry in the scaffold SMILES, so that enantiomers
+        and diastereomers form separate groups.
+    :param on_empty_scaffold: where acyclic molecules go, since they have no Murcko scaffold:
+        each into its own group, all into one shared group, discarded, or raise.
+    :param kwargs: forwarded to :class:`chemsplit.base.GroupSplitter`.
+    :raises ParameterError: if ``include_chirality`` is not a bool or ``on_empty_scaffold`` is
+        unknown.
 
     Advantages
     ----------
     - Seed-free, `O(n)`, needs no distance matrix, and scales to millions of molecules.
-    - The group key is a chemist-readable SMILES, so a disputed assignment can be inspected by eye -- no clustering split offers that.
-    - Harder than random and far cheaper than any similarity split, making it the default comparability baseline in the literature.
-    - Directly targets the "new chemotype" question when a dataset genuinely spans many distinct frameworks.
+    - The group key is a chemist-readable SMILES, so a disputed assignment can be inspected by
+      eye. No clustering split offers that.
+    - Harder than random and far cheaper than any similarity split, which is what makes it the
+      default comparability baseline in the literature.
+    - Directly targets the "new chemotype" question when a dataset genuinely spans many
+      distinct frameworks.
 
     Pitfalls
     --------
-    - **Systematically weaker than it looks.** Two molecules differing by one atom can land in different Murcko scaffolds (a benzene-to-pyridine swap in a fused system), so cross-boundary Tanimoto similarity routinely stays above 0.6. Always confirm with `audit.nn_similarity_profile`.
-    - On large diverse sets, singletons dominate the scaffold distribution -- often over 50% of records -- so the split degenerates toward random for most of the data. Read `metadata["singleton_frac"]`.
-    - On a focused project set, one scaffold can hold most of the data, making the requested ratio unreachable; the splitter warns rather than fails, so read the warning.
-    - The default `greedy_desc` ordering puts the largest scaffold groups in train, systematically enriching the test set in rare chemotypes. `group_assignment="random"` removes this bias at the cost of more variance.
-    - Side chains are discarded entirely, so two molecules with the same core but very different substituents land in the same group -- this can put genuinely dissimilar compounds on the same side of the boundary.
-    - `on_empty_scaffold="shared_group"` silently lumps all acyclic molecules into one huge group -- a common source of surprise, and the historical default in some libraries.
+    - **Systematically weaker than it looks.** A one-atom change can switch Murcko scaffold --
+      benzene to pyridine in a fused system -- so cross-boundary Tanimoto routinely stays
+      above 0.6.
+    - On diverse sets singletons dominate, often over 50% of records, so the split degenerates
+      toward random for most of the data; `metadata["singleton_frac"]` reports how much.
+    - On a focused project set, one scaffold can hold most of the data, making the requested
+      ratio unreachable. The splitter warns rather than fails.
+    - The default `greedy_desc` puts the largest groups in train, enriching test in rare
+      chemotypes; `group_assignment="random"` trades that bias for variance.
+    - Side chains are discarded, so one core with very different substituents is one group,
+      leaving genuinely dissimilar compounds on the same side.
+    - `on_empty_scaffold="shared_group"` lumps every acyclic molecule into one huge group. It
+      is the historical default in some libraries, and a common surprise.
 
+    References
+    ----------
+    .. [1] Bemis, G. W.; Murcko, M. A. The Properties of Known Drugs. 1. Molecular Frameworks.
+       *J. Med. Chem.* **1996**, 39 (15), 2887-2893. https://doi.org/10.1021/jm9602928
+    .. [2] Guo, Q.; Hernandez-Hernandez, S.; Ballester, P. J. Scaffold Splits Overestimate Virtual
+       Screening Performance. In *Artificial Neural Networks and Machine Learning (ICANN 2024)*;
+       Lecture Notes in Computer Science; Springer, **2024**; pp 58-72.
+       https://doi.org/10.1007/978-3-031-72359-9_5
     """
 
     splitter_id: ClassVar[str] = "murcko_scaffold"
@@ -217,7 +238,7 @@ class MurckoScaffoldSplitter(_ScaffoldFamilyBase):
         meta = _group_size_metadata(labels, keep_mask)
         keys = getattr(self, "_last_keys", None)
         if keys is not None:
-            # Report the scaffold SMILES of each group's first-seen member.
+            # scaffold SMILES of each group's first-seen member
             seen: dict[int, str] = {}
             for i, lab in enumerate(labels.tolist()):
                 if lab not in seen:
@@ -226,27 +247,40 @@ class MurckoScaffoldSplitter(_ScaffoldFamilyBase):
         return meta
 
 
-# -
-# GenericScaffoldSplitter
-# -
-
-
 class GenericScaffoldSplitter(_ScaffoldFamilyBase):
     """Group records by generic (heteroatoms->carbon) scaffold framework.
 
+    :param include_chirality: must be ``False``: a generic scaffold carries no stereochemistry.
+        Present only so the parameter block matches the rest of the family.
+    :param on_empty_scaffold: where acyclic molecules go: each into its own group, all into one
+        shared group, discarded, or raise.
+    :param kwargs: forwarded to :class:`chemsplit.base.GroupSplitter`.
+    :raises ParameterError: if ``include_chirality`` is true or ``on_empty_scaffold`` is
+        unknown.
+
     Advantages
     ----------
-    - Collapses heteroatom variants onto one topology, so benzene/pyridine/pyrimidine analogues can't straddle the boundary -- closing the biggest leak in `murcko_scaffold`.
+    - Collapses heteroatom variants onto one topology, so benzene/pyridine/pyrimidine analogues
+      cannot straddle the boundary, which closes the biggest leak in `murcko_scaffold`.
     - Produces fewer, larger groups, making the test set genuinely novel in ring topology.
     - Still seed-free and `O(n)`.
 
     Pitfalls
     --------
-    - Groups get coarse enough that on small datasets the achievable train/test ratio drifts badly -- expect `SizeToleranceWarning`.
+    - Groups get coarse enough that on small datasets the achievable train/test ratio drifts
+      badly; expect `SizeToleranceWarning`.
     - Higher metric variance, since a single large group landing in test can dominate the score.
-    - Topological identity isn't chemical identity -- a generic scaffold can merge compounds with unrelated electronics and binding modes, making it too strict in a way with no medicinal-chemistry meaning.
-    - Sanitisation fallbacks silently mix two key types -- check `metadata["generic_fallbacks"]` before reporting.
+    - Topological identity is not chemical identity: merging compounds with unrelated
+      electronics and binding modes is strict in a way with no medicinal-chemistry meaning.
+    - Sanitisation fallbacks mix two key types; `metadata["generic_fallbacks"]` counts them.
 
+    References
+    ----------
+    .. [1] Bemis, G. W.; Murcko, M. A. The Properties of Known Drugs. 1. Molecular Frameworks.
+       *J. Med. Chem.* **1996**, 39 (15), 2887-2893. https://doi.org/10.1021/jm9602928
+    .. [2] Xu, Y.-J.; Johnson, M. Using Molecular Equivalence Numbers To Visually Explore Structural
+       Features that Distinguish Chemical Libraries. *J. Chem. Inf. Comput. Sci.* **2002**, 42 (4),
+       912-926. https://doi.org/10.1021/ci025535l
     """
 
     splitter_id: ClassVar[str] = "generic_scaffold"
@@ -291,32 +325,52 @@ class GenericScaffoldSplitter(_ScaffoldFamilyBase):
         return _group_size_metadata(labels, keep_mask)
 
 
-# -
-# ScaffoldTreeSplitter
-# -
-
-
 class ScaffoldTreeSplitter(_ScaffoldFamilyBase):
     """Group records by scaffold-tree node at a chosen pruning ``level``.
 
     ``level=0`` is exactly :class:`MurckoScaffoldSplitter`. Higher levels remove peripheral rings
-    one at a time (see :func:`chemsplit.scaffolds.scaffold_tree_levels` -- its ``"scaffold_tree"``
-    prune rule is a documented best-effort reconstruction, not verified against the original
-    Scaffold Tree publication's exact rule text).
+    one at a time. The ``"scaffold_tree"`` rule in
+    :func:`chemsplit.scaffolds.scaffold_tree_levels` is a best-effort reconstruction, not
+    verified against the original publication's exact rule text.
+
+    :param level: how many peripheral rings to prune. ``0`` reproduces
+        :class:`MurckoScaffoldSplitter`.
+    :param prune_rule: which ring to remove at each step: the chemistry-based scaffold-tree
+        priorities, the ring leaving the fewest rings behind, or peripheral rings first.
+    :param max_rings: molecules with more rings than this are left unpruned and counted in
+        ``metadata["too_complex"]``.
+    :param include_chirality: keep stereochemistry in the scaffold SMILES.
+    :param on_empty_scaffold: where acyclic molecules go: each into its own group, all into one
+        shared group, discarded, or raise.
+    :param kwargs: forwarded to :class:`chemsplit.base.GroupSplitter`.
+    :raises ParameterError: if ``level`` is outside ``[0, max_rings]``, ``prune_rule`` is
+        unknown, or ``max_rings`` is below 1.
 
     Advantages
     ----------
-    - Keeps a whole scaffold lineage together, so a test compound can't be a ring-truncated relative of a training compound -- a leak plain Murcko splitting misses entirely.
-    - The `level` knob gives a tunable strictness dial with actual chemical meaning, unlike an abstract distance cutoff.
+    - Keeps a whole scaffold lineage together, so a test compound cannot be a ring-truncated
+      relative of a training compound, a leak plain Murcko splitting misses entirely.
+    - The `level` knob is a strictness dial with chemical meaning, unlike an abstract distance
+      cutoff.
     - Deterministic and seed-free.
 
     Pitfalls
     --------
-    - `level` is a free parameter that silently controls difficulty -- a paper reporting "scaffold tree split" without the level and prune rule isn't reproducible, so the value is always written into `metadata` and `SplitResult.params`.
-    - Ring pruning isn't canonical across toolkits -- the underlying chemistry-based priorities differ, making cross-library comparison unsafe.
-    - High `level` collapses everything into a handful of one-ring keys, giving huge groups and unreachable size targets.
-    - Bridged, spiro, and macrocyclic systems frequently trigger `prune_failures`, ending up grouped at a different effective level than the rest.
+    - `level` controls difficulty, so a "scaffold tree split" quoted without the level and
+      prune rule is not reproducible. Both go into `metadata` and `SplitResult.params`.
+    - Ring pruning is not canonical across toolkits, since the underlying chemistry-based
+      priorities differ, which makes cross-library comparison unsafe.
+    - High `level` collapses everything into a handful of one-ring keys, giving huge groups and
+      unreachable size targets.
+    - Bridged, spiro and macrocyclic systems frequently trigger `prune_failures` and end up
+      grouped at a different effective level than the rest.
 
+    References
+    ----------
+    .. [1] Schuffenhauer, A.; Ertl, P.; Roggo, S.; Wetzel, S.; Koch, M. A.; Waldmann, H.
+       The Scaffold Tree -- Visualization of the Scaffold Universe by Hierarchical Scaffold
+       Classification.
+       *J. Chem. Inf. Model.* **2007**, 47 (1), 47-58. https://doi.org/10.1021/ci600338x
     """
 
     splitter_id: ClassVar[str] = "scaffold_tree"
@@ -402,32 +456,59 @@ class ScaffoldTreeSplitter(_ScaffoldFamilyBase):
         return meta
 
 
-# -
-# RingSystemSplitter
-# -
-
-
 class RingSystemSplitter(_ScaffoldFamilyBase):
     """Group records by shared individual ring system(s), transitively.
 
     ``linkage="any_shared"`` unions any two molecules sharing >= 1 ring-system key via Union-Find
     (a molecule can belong to a component through a chain of shared rings, not just a direct
     pairwise match). ``linkage="all_shared"`` instead hashes the full sorted multiset of a
-    molecule's ring-system keys -- molecules join only if their ring-system content is identical.
+    molecule's ring-system keys, so molecules join only if their ring content is identical.
+
+    :param key: what a ring system is keyed on: its own canonical SMILES, its cyclic skeleton
+        with every atom made carbon, or just the sorted profile of its ring sizes.
+    :param linkage: ``"any_shared"`` unions molecules sharing at least one ring system,
+        transitively; ``"all_shared"`` requires the whole multiset of keys to match.
+    :param min_ring_size: ring systems smaller than this are ignored when keying.
+    :param max_ring_size: ring systems larger than this are ignored when keying.
+    :param include_chirality: keep stereochemistry in the ring-system keys.
+    :param on_empty_scaffold: where acyclic molecules go: each into its own group, all into one
+        shared group, discarded, or raise.
+    :param kwargs: forwarded to :class:`chemsplit.base.GroupSplitter`.
+    :raises ParameterError: if ``key`` or ``linkage`` is unknown, or the ring-size bounds are
+        not ``3 <= min_ring_size <= max_ring_size``.
 
     Advantages
     ----------
-    - Targets novel ring chemistry directly -- the exact claim behind most "scaffold hopping" results.
-    - `any_shared` linkage catches a leak framework-level splits can't see: two molecules with different overall scaffolds sharing one highly characteristic ring system.
-    - `csk` and `ring_size_profile` give progressively coarser, stricter variants without changing the algorithm.
+    - Targets novel ring chemistry directly, which is the claim behind most "scaffold hopping"
+      results.
+    - `any_shared` linkage catches a leak framework-level splits cannot see: two molecules with
+      different overall scaffolds sharing one highly characteristic ring system.
+    - `csk` and `ring_size_profile` give progressively coarser, stricter variants without
+      changing the algorithm.
 
     Pitfalls
     --------
-    - With `any_shared` linkage, ubiquitous rings (benzene, pyridine, piperazine) can merge most of the dataset into one component -- always check `metadata["largest_component_frac"]`.
-    - Transitive grouping isn't a distance -- two molecules in the same group can be entirely dissimilar, linked only through a chain of shared rings.
-    - Excluding common rings to avoid the giant component changes what the split means; do it only if you say so, since it's no longer a plain ring-system split.
-    - Spiro-merging policy affects group identity -- fixed here at >=1 shared atom, but other toolkits differ.
+    - With `any_shared` linkage, ubiquitous rings (benzene, pyridine, piperazine) can merge most
+      of the dataset into one component. `metadata["largest_component_frac"]` says how much.
+    - Transitive grouping is not a distance. Two molecules in the same group can be entirely
+      dissimilar, linked only through a chain of shared rings.
+    - Excluding common rings to avoid the giant component changes what the split means: it is no
+      longer a plain ring-system split.
+    - Spiro-merging policy affects group identity. It is fixed here at one or more shared atoms,
+      but other toolkits differ.
 
+    References
+    ----------
+    .. [1] Grouping molecules by shared ring systems has no single published origin; the ring-system
+       concept and its enumeration do. Bemis, G. W.; Murcko, M. A. The Properties of Known Drugs. 1.
+       Molecular Frameworks. *J. Med. Chem.* **1996**, 39 (15), 2887-2893.
+       https://doi.org/10.1021/jm9602928
+    .. [2] Visini, R.; Arús-Pous, J.; Awale, M.; Reymond, J.-L. Virtual Exploration of the
+       Ring Systems Chemical Universe. *J. Chem. Inf. Model.* **2017**, 57 (11), 2707-2718.
+       https://doi.org/10.1021/acs.jcim.7b00457
+    .. [3] For ``key="csk"`` (cyclic skeleton): Xu, Y.-J.; Johnson, M. Using Molecular Equivalence
+       Numbers To Visually Explore Structural Features that Distinguish Chemical Libraries.
+       *J. Chem. Inf. Comput. Sci.* **2002**, 42 (4), 912-926. https://doi.org/10.1021/ci025535l
     """
 
     splitter_id: ClassVar[str] = "ring_system"
@@ -463,8 +544,7 @@ class RingSystemSplitter(_ScaffoldFamilyBase):
                 _scaffolds.ring_systems(mol, self.min_ring_size, self.max_ring_size)
             )
         if self.key == "csk":
-            # CSK applied per individual ring system: extract each ring system as its own
-            # submolecule (reusing ring_systems' fused/spiro merge), then generic+saturate it.
+            # CSK per ring system: extract each as a submolecule, then generic + saturate
             keys = set()
             for smi in _scaffolds.ring_systems(mol, self.min_ring_size, self.max_ring_size):
                 sub = Chem.MolFromSmiles(smi)
@@ -523,8 +603,7 @@ class RingSystemSplitter(_ScaffoldFamilyBase):
                         owner[k] = i
             reps = [uf.find(i) for i in range(n)]
             if self.on_empty_scaffold == "own_group":
-                # Give each empty-ring-set record (which never unioned with anything) a unique key
-                # so it truly becomes its own singleton, matching the shared block's contract.
+                # a unique key per ring-less record, so each is genuinely its own singleton
                 next_singleton = n
                 for i in empty_idx:
                     reps[i] = next_singleton
@@ -572,38 +651,48 @@ class RingSystemSplitter(_ScaffoldFamilyBase):
         return meta
 
 
-# -
-# SubstructureSplitter
-# -
-
-
 class SubstructureSplitter(BaseSplitter):
     """Hold out every molecule that contains a given substructure, element or functional group.
 
-    Patterns come from any combination of ``smarts`` (SMARTS strings), ``elements`` (element
-    symbols, e.g. ``["F"]`` for any fluorine) and ``functional_groups`` (names of RDKit's ``fr_*``
-    counters in ``rdkit.Chem.Fragments``, e.g. ``"fr_halogen"``). A molecule matches when it
-    contains any pattern (``match="any"``) or all of them (``match="all"``). Matching molecules go
-    to test (``matched_goes_to="test"``) and the rest to train, or the reverse with
-    ``matched_goes_to="train"``. A validation set, if requested, is drawn at random from the
-    training side (``"substructure.valid"`` stream), so test chemistry stays unseen. Sizes follow
-    the matches; a :class:`~chemsplit.exceptions.SizeToleranceWarning` flags realised fractions
-    more than ``size_tolerance`` (default 0.05) off target.
+    Patterns come from any combination of ``smarts``, ``elements`` and ``functional_groups``.
+    A validation set is drawn off the ``"substructure.valid"`` stream from the training side, so
+    test chemistry stays unseen. Sizes follow the matches, and a
+    :class:`~chemsplit.exceptions.SizeToleranceWarning` flags a realised fraction more than
+    ``size_tolerance`` off target.
+
+    :param smarts: one SMARTS string, or a list of them.
+    :param elements: element symbols; ``["F"]`` matches any fluorine-containing molecule.
+    :param functional_groups: names of RDKit ``fr_*`` counters from
+        :mod:`rdkit.Chem.Fragments`, e.g. ``"fr_halogen"``.
+    :param match: whether a molecule must contain any pattern or all of them.
+    :param matched_goes_to: which partition the matching molecules form.
+    :param size_tolerance: how far the realised fractions may drift from the targets, as a
+        fraction of ``n``, before a :class:`SizeToleranceWarning` is issued.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ParameterError: if no pattern was given, ``match``, ``matched_goes_to`` or
+        ``size_tolerance`` is invalid, or a SMARTS, element or ``fr_*`` name is unknown.
+    :raises DegenerateGroupingError: at split time, if no molecule matches, or every one does.
 
     Advantages
     ----------
-    - Tests one concrete, chemically meaningful question -- "does the model generalise to fluorinated compounds, or to esters?" -- that scaffold and similarity splits only touch indirectly.
-    - Works where scaffolds fail: acyclic molecules and side-chain chemistry, which Bemis-Murcko splits ignore.
-    - Fully transparent: the held-out set is defined by a pattern anyone can rerun.
+    - Tests one concrete question -- does the model generalise to fluorinated compounds, or
+      to esters? -- that scaffold and similarity splits only touch indirectly.
+    - Works where scaffolds fail: acyclic molecules and side-chain chemistry, which
+      Bemis-Murcko splits ignore.
+    - The held-out set is defined by a pattern anyone can rerun.
     - `functional_groups` gives ready-made, named patterns for the common chemotypes.
 
     Pitfalls
     --------
-    - **Sizes are not under your control**: a rare group gives a tiny test set, a common one a huge one. Read `metadata["n_matched"]`.
-    - Train still contains molecules that are similar overall but lack the pattern, so this measures generalisation to one feature, not to new chemistry in general.
-    - SMARTS details (aromaticity, explicit hydrogens, charges) decide what matches; check a few matches before trusting the split.
+    - **Sizes are not under your control**: a rare group gives a tiny test set, a common one a
+      huge one. `metadata["n_matched"]` reports what was realised.
+    - Train still contains molecules that are similar overall but lack the pattern, so this
+      measures generalisation to one feature, not to new chemistry in general.
+    - SMARTS details (aromaticity, explicit hydrogens, charges) decide what matches, and a few
+      matched molecules are worth inspecting before trusting the split.
     - The `fr_*` set and its definitions follow the installed RDKit version.
-    - `match="all"` over several patterns quickly matches nothing (raises `DegenerateGroupingError`).
+    - `match="all"` over several patterns quickly matches nothing, raising
+      `DegenerateGroupingError`.
 
     References
     ----------
@@ -646,10 +735,18 @@ class SubstructureSplitter(BaseSplitter):
         if not (isinstance(size_tolerance, (int, float)) and 0 <= size_tolerance < 1):
             raise ParameterError(f"size_tolerance must be in [0, 1), got {size_tolerance!r}")
         if not self._patterns():
-            raise ParameterError("SubstructureSplitter needs at least one of smarts, elements or functional_groups")
+            raise ParameterError(
+                "SubstructureSplitter needs at least one of smarts, elements or "
+                "functional_groups"
+            )
 
     def _patterns(self) -> list[tuple[str, Any]]:
-        """``(label, matcher)`` pairs; a matcher maps a molecule to True when the pattern is present."""
+        """Build the match predicates from ``smarts``, ``elements`` and ``functional_groups``.
+
+        :raises ParameterError: if a SMARTS string, element symbol or ``fr_*`` name is unknown.
+        :return: ``(label, matcher)`` pairs, where a matcher returns ``True`` when the pattern
+            is present in a molecule.
+        """
         patterns: list[tuple[str, Any]] = []
         smarts = [self.smarts] if isinstance(self.smarts, str) else list(self.smarts or [])
         for sma in smarts:
@@ -675,7 +772,10 @@ class SubstructureSplitter(BaseSplitter):
             known = set(functional_group_names())
             for name in self.functional_groups:
                 if name not in known:
-                    raise ParameterError(f"unknown functional group {name!r}; expected an rdkit.Chem.Fragments fr_* name")
+                    raise ParameterError(
+                        f"unknown functional group {name!r}; expected an "
+                        "rdkit.Chem.Fragments fr_* name"
+                    )
                 counter = getattr(Fragments, name)
                 patterns.append((name, lambda m, fn=counter: fn(m) > 0))
         return patterns
@@ -691,7 +791,8 @@ class SubstructureSplitter(BaseSplitter):
         matched = hits.all(axis=1) if self.match == "all" else hits.any(axis=1)
         if not matched.any() or matched.all():
             raise DegenerateGroupingError(
-                f"SubstructureSplitter: {int(matched.sum())} of {n} records match, so one side would be empty"
+                f"SubstructureSplitter: {int(matched.sum())} of {n} records match, so one "
+                "side would be empty"
             )
         test_side = matched if self.matched_goes_to == "test" else ~matched
         test = np.flatnonzero(test_side).astype(np.int64)
@@ -711,7 +812,8 @@ class SubstructureSplitter(BaseSplitter):
 
             warn_with_details(
                 SizeToleranceWarning(
-                    f"SubstructureSplitter: realised sizes {realised} differ from targets {wanted} by "
+                    f"SubstructureSplitter: realised sizes {realised} differ from targets "
+                    f"{wanted} by "
                     f"more than size_tolerance={self.size_tolerance} (sizes follow the matches)",
                     details={"realised": realised, "targets": wanted},
                 )
@@ -728,16 +830,16 @@ class SubstructureSplitter(BaseSplitter):
                 n_records=n,
                 metadata={
                     "n_matched": int(matched.sum()),
-                    "matches_per_pattern": {label: int(hits[:, j].sum()) for j, (label, _) in enumerate(patterns)},
+                    "matches_per_pattern": {
+                        label: int(hits[:, j].sum())
+                        for j, (label, _) in enumerate(patterns)
+                    },
                     "realised_sizes": realised,
                 },
             )
         ]
 
 
-# -
-# MatchedMolecularSeriesSplitter
-# -
 
 
 def _heavy_atoms(smiles_frag: str) -> int:
@@ -756,20 +858,60 @@ class MatchedMolecularSeriesSplitter(_ScaffoldFamilyBase):
     instead runs a Murcko-scaffold split and then moves any test record sharing a context with a
     train record to ``discard``.
 
+    :param max_cuts: how many acyclic single bonds may be cut at once, 1 to 3. Enumeration cost
+        grows steeply with it.
+    :param max_variable_heavy_atoms: largest variable fragment, in heavy atoms, that still
+        counts as an R-group rather than a second scaffold.
+    :param min_constant_heavy_atoms: smallest constant context, in heavy atoms, that may define
+        a series.
+    :param min_series_size: how many distinct molecules must share a context for it to count as
+        a series.
+    :param fragment_symmetry: canonicalise symmetric fragmentations so that the two ways of
+        cutting a symmetric molecule give one context.
+    :param enforce: ``"group"`` splits on the series themselves; ``"discard_boundary"`` runs a
+        Murcko split and discards test records sharing a context with train.
+    :param max_pairs: ceiling on enumerated fragment pairs, or ``None`` for no ceiling. Exists
+        so an intractable input fails loudly instead of hanging.
+    :param include_chirality: keep stereochemistry, so enantiomeric pairs stay distinct.
+    :param on_empty_scaffold: where acyclic molecules go: each into its own group, all into one
+        shared group, discarded, or raise.
+    :param kwargs: forwarded to :class:`chemsplit.base.GroupSplitter`.
+    :raises ParameterError: if ``max_cuts`` is outside 1-3, ``min_series_size`` is below 2,
+        ``enforce`` is unknown, or ``max_pairs`` is below 1.
+    :raises ScalabilityError: at split time, if enumeration would exceed ``max_pairs``.
+
     Advantages
     ----------
-    - The closest available test of "did the model learn the SAR, or memorise the series?" -- it removes exactly the analogue pairs that make a nearest-neighbour baseline look competitive.
-    - Chemically interpretable -- every group can be explained as "these share a constant context".
-    - `discard_boundary` mode keeps a familiar Murcko-split size profile while surgically removing the analogue leak, often the best practical compromise.
+    - The closest available test of SAR learning against series memorisation: it removes the
+      analogue pairs that make a nearest-neighbour baseline look competitive.
+    - Chemically interpretable, since every group is the set of molecules sharing one constant
+      context.
+    - `discard_boundary` mode keeps a familiar Murcko-split size profile while removing the
+      analogue leak, often the best practical compromise.
 
     Pitfalls
     --------
-    - Enumeration cost is the real constraint -- `max_cuts>1` on sets above roughly 50,000 molecules is impractical, and the ceiling exists so the failure is loud rather than a hung process.
-    - Congeneric libraries collapse into one enormous group, making the requested ratio unreachable -- check `largest_group_frac` before trusting the split.
-    - MMP detection is sensitive to `min_constant_heavy_atoms` -- too low and sharing a methyl counts as a "series", too high and real series are missed. The default of 5 is a convention, not a rule.
-    - `discard_boundary` throws away exactly the records nearest the boundary, biasing the remaining test set to be harder than a uniform sample of held-out chemistry.
-    - Ignores stereochemistry unless `include_chirality=True` -- enantiomeric pairs otherwise look like the same molecule to the fragmenter.
+    - Enumeration cost is the real constraint: `max_cuts>1` above roughly 50,000 molecules is
+      impractical, and the ceiling makes that failure loud rather than a hung process.
+    - Congeneric libraries collapse into one enormous group, making the requested ratio
+      unreachable. `largest_group_frac` shows when that has happened.
+    - Sensitive to `min_constant_heavy_atoms`: too low and a shared methyl is a series, too
+      high and real series are missed. The default of 5 is convention, not rule.
+    - `discard_boundary` throws away exactly the records nearest the boundary, so the remaining
+      test set is harder than a uniform sample of held-out chemistry.
+    - Stereochemistry is ignored unless `include_chirality=True`; otherwise enantiomeric pairs
+      look like one molecule to the fragmenter.
 
+    References
+    ----------
+    .. [1] Hussain, J.; Rea, C. Computationally Efficient Algorithm to Identify Matched
+       Molecular Pairs (MMPs) in Large Data Sets. *J. Chem. Inf. Model.* **2010**, 50 (3),
+       339-348. https://doi.org/10.1021/ci900450m (the fragmentation algorithm
+       ``rdkit.Chem.rdMMPA`` implements)
+    .. [2] O'Boyle, N. M.; Boström, J.; Sayle, R. A.; Gill, A. Using Matched Molecular Series
+       as a Predictive Tool To Optimize Biological Activity. *J. Med. Chem.* **2014**, 57 (6),
+       2704-2713.
+       https://doi.org/10.1021/jm500022q
     """
 
     splitter_id: ClassVar[str] = "matched_molecular_series"
@@ -813,8 +955,7 @@ class MatchedMolecularSeriesSplitter(_ScaffoldFamilyBase):
     def _canonicalise_context(self, constant: str) -> str:
         if not self.fragment_symmetry:
             return constant
-        # Canonicalise attachment-point ([*]) ordering by round-tripping through RDKit's
-        # canonical SMILES, which already normalises equivalent attachment-point numbering.
+        # round-trip through canonical SMILES, which normalises [*] numbering for us
         mol = Chem.MolFromSmiles(constant, sanitize=False)
         if mol is None:
             return constant
@@ -835,14 +976,11 @@ class MatchedMolecularSeriesSplitter(_ScaffoldFamilyBase):
             except Exception:
                 continue
             for pair in fragments:
-                # rdMMPA.FragmentMol returns (core_smiles, chains_smiles) pairs. Verified directly
-                # (not assumed): for a single-bond cut, `core` is EMPTY and `chains` packs BOTH
-                # resulting fragments into one dot-joined SMILES (e.g. ('', 'C[*:1].c1ccc([*:1])
-                # cc1')) -- there is no "remaining scaffold" concept for a single cut. Only for
-                # multi-bond cuts (max_cuts>=2) does `core` become the genuine multi-attachment-
-                # point shared context. Handle both shapes: single-cut splits `chains` on '.' and
-                # picks the larger-by-heavy-atoms piece as the constant context (the smaller as the
-                # variable substituent); multi-cut treats `core` as the constant directly.
+                # FragmentMol yields (core, chains). For a single cut, core is empty and
+                # chains holds both fragments dot-joined, e.g. ('', 'C[*:1].c1ccc([*:1])cc1');
+                # only max_cuts>=2 fills core with the shared multi-attachment context. So:
+                # split chains on '.' and take the heavier piece as the constant context,
+                # or use core directly for multi-cut.
                 if not isinstance(pair, tuple) or len(pair) < 2:
                     continue
                 core, chains = pair[0], pair[1]
@@ -911,8 +1049,7 @@ class MatchedMolecularSeriesSplitter(_ScaffoldFamilyBase):
         if self.enforce == "group":
             return super()._partition(ctx)
 
-        # "discard_boundary": run a Murcko-scaffold split, then move any test record sharing a
-        # matched-molecular context with any train record to discard.
+        # discard_boundary: Murcko split, then discard test records sharing a context with train
         mols = _require_mols(ctx, type(self).__name__)
         murcko_keys = [
             _scaffolds.murcko_scaffold(m, self.include_chirality) if m is not None else ""
@@ -981,32 +1118,71 @@ class MatchedMolecularSeriesSplitter(_ScaffoldFamilyBase):
         return [result]
 
 
-# -
-# ActivityCliffSplitter (NOT group-forming)
-# -
-
-
 class ActivityCliffSplitter(BaseSplitter):
-    """Deliberately place activity-cliff compounds (similar structure, very different potency) in the
-    test set and tag them for separate scoring.
+    """Place activity-cliff compounds -- similar structure, very different potency -- in the
+    test set, and tag them for separate scoring.
 
-    This is a diagnostic, not a general-purpose split -- see Pitfalls.
+    This is a diagnostic, not a general-purpose split; see Pitfalls. It is also the one member
+    of this family that forms no groups, so it exposes no reusable grouping.
+
+    :param similarity_threshold: how similar two molecules must be, on the chosen
+        ``similarity`` definition, to count as a cliff candidate.
+    :param fold_change_threshold: how large the potency ratio between a similar pair must be
+        for the pair to be a cliff.
+    :param y_scale: whether ``y`` is already log-transformed, which decides how the fold change
+        is computed.
+    :param similarity: what "structurally similar" means: fingerprint distance, a shared Murcko
+        scaffold, a matched molecular pair, or a substructure relationship.
+    :param featurizer: featurizer alias or instance, used by ``similarity="ecfp"``.
+    :param metric: distance or similarity metric, used by ``similarity="ecfp"``.
+    :param cliff_target: send every cliff compound to test, or balance them across partitions.
+    :param keep_cliff_partners_together: keep both members of a cliff pair on the same side.
+        Setting it ``False`` leaves a partner in train, which is a much easier experiment.
+    :param max_memory_bytes: ceiling on the similarity matrix; exceeding it raises rather than
+        allocating.
+    :param allow_slow: permit ``similarity="substructure"`` above 5000 records, where it is
+        ``O(n^2)`` substructure matches.
+    :param kwargs: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ParameterError: if ``similarity_threshold`` is outside ``(0, 1)``,
+        ``fold_change_threshold`` is not above 1, or a mode parameter is unknown.
+    :raises ScalabilityError: at split time, if the similarity matrix would exceed
+        ``max_memory_bytes``, or substructure matching is refused for lack of ``allow_slow``.
+    :raises EmptyPartitionError: at split time, if no cliff pair is found.
 
     Advantages
     ----------
-    - Isolates the failure mode that matters most in lead optimisation: two nearly identical molecules with very different potency.
-    - `cliff_mask` lets the caller report cliff and non-cliff performance separately -- the comparison, not the aggregate, is the point.
-    - Four independent definitions of "structurally similar" let you check a conclusion isn't just a fingerprint artefact.
+    - Isolates the failure mode that matters most in lead optimisation: two nearly identical
+      molecules with very different potency.
+    - `cliff_mask` lets the caller score cliff and non-cliff compounds separately, which is
+      where the information is.
+    - Four independent definitions of "structurally similar", so a conclusion can be checked
+      against a fingerprint artefact.
 
     Pitfalls
     --------
-    - This is a **diagnostic, not a general-purpose split**. Reporting only cliff-set performance understates a model that's otherwise fine, and reporting only aggregate performance hides the cliff failure entirely -- report both.
-    - Almost every descriptor-based model collapses to near-random on cliffs -- that's the expected result, not a bug.
-    - Cliff detection is extremely sensitive to `similarity_threshold` and `fold_change_threshold` -- moving the threshold from 0.9 to 0.85 can multiply the cliff count several-fold.
-    - Needs `y` on a log scale for the fold-change semantics to be meaningful; the implementation can't check this.
-    - Assay noise can manufacture fake cliffs -- a 10-fold "cliff" from two single-shot measurements in different papers is measurement error, not chemistry. Aggregate replicates first and prefer single-assay data.
-    - With `keep_cliff_partners_together=False`, a test compound's cliff partner sits in train, which is a much easier and different experiment -- don't compare numbers across this setting.
+    - A **diagnostic, not a general-purpose split**: cliff-set performance alone understates
+      an otherwise fine model, aggregate performance alone hides the cliff failure.
+    - Almost every descriptor-based model collapses to near-random on cliffs. That is the
+      expected result, not a bug.
+    - Very sensitive to `similarity_threshold` and `fold_change_threshold`: 0.9 to 0.85 can
+      multiply the cliff count several-fold.
+    - The fold-change semantics need `y` on a log scale, and the implementation cannot check
+      that.
+    - Assay noise manufactures cliffs: a 10-fold jump between two single-shot measurements
+      from different papers is measurement error, not chemistry.
+    - With `keep_cliff_partners_together=False` a test compound's cliff partner sits in train,
+      which is a much easier and different experiment, and the numbers are not comparable.
 
+    References
+    ----------
+    .. [1] Maggiora, G. M. On Outliers and Activity Cliffs -- Why QSAR Often Disappoints.
+       *J. Chem. Inf. Model.* **2006**, 46 (4), 1535. https://doi.org/10.1021/ci060117s
+    .. [2] Stumpfe, D.; Bajorath, J. Exploring Activity Cliffs in Medicinal Chemistry.
+       *J. Med. Chem.* **2012**, 55 (7), 2932-2942. https://doi.org/10.1021/jm201706b
+    .. [3] van Tilborg, D.; Alenicheva, A.; Grisoni, F. Exposing the Limitations of Molecular
+       Machine Learning with Activity Cliffs. *J. Chem. Inf. Model.* **2022**, 62 (23),
+       5938-5951.
+       https://doi.org/10.1021/acs.jcim.2c01073
     """
 
     splitter_id: ClassVar[str] = "activity_cliff"
@@ -1044,9 +1220,7 @@ class ActivityCliffSplitter(BaseSplitter):
         self.cliff_target = cliff_target
         self.keep_cliff_partners_together = keep_cliff_partners_together
         self.max_memory_bytes = max_memory_bytes
-        # `allow_slow` is a constructor param rather than a `split()`-time kwarg because
-        # `BaseSplitter._run` only forwards a fixed set of named kwargs -- functionally
-        # equivalent, just set at construction instead of per-call.
+        # a constructor param rather than a split() kwarg: _run only forwards a fixed set
         self.allow_slow = allow_slow
         if not (0.0 < similarity_threshold < 1.0):
             raise ParameterError(
@@ -1113,7 +1287,7 @@ class ActivityCliffSplitter(BaseSplitter):
                     for b in range(a + 1, len(members)):
                         pairs.append((members[a], members[b], 1.0))
             return pairs
-        # substructure
+        # similarity == "substructure"
         if n > 5000 and not self.allow_slow:
             raise ScalabilityError(
                 f"{type(self).__name__}: similarity='substructure' is O(n^2) substructure "
@@ -1179,7 +1353,7 @@ class ActivityCliffSplitter(BaseSplitter):
             uf = UnionFind(ctx.n)
             for i, j, _ in cliffs:
                 uf.union(i, j)
-            # Build units: cliff components as-is; every other record its own singleton unit.
+            # cliff components stay whole; everything else is a singleton unit
             units: dict[int, list[int]] = {}
             for i in range(ctx.n):
                 r = uf.find(i) if i in cliff_set else i

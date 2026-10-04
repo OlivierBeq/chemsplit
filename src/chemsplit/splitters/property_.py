@@ -38,15 +38,16 @@ __all__ = [
 EPS = 1e-9
 
 
-# -
-# Shared helpers (local to this module -- every family is built independently)
-# -
 
 
 def _json_safe(value: Any) -> Any:
-    """Recursively coerce ``value`` into something ``json.dumps``-round-trippable, for
-    ``SplitResult.params`` (invariant I4). Callables/splitter instances/arrays are not JSON
-    types, so they are given a stable, informative string/dict representation instead of raising.
+    """Coerce ``value`` into something ``json.dumps`` round-trips, for ``SplitResult.params``.
+
+    Callables, splitter instances and arrays are not JSON types, so they get a stable string or
+    dict representation rather than raising.
+
+    :param value: any node of a parameter value tree.
+    :return: a JSON-round-trippable equivalent of ``value``.
     """
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
@@ -168,8 +169,7 @@ def _select_top_k_with_ties(
         while lo > 0 and v[order[lo - 1]] == boundary_val:
             lo -= 1
         block = order[lo:hi]
-        # everything strictly greater than boundary_val sits to the right of the block, i.e. none
-        # (block already extends to n); definite-selected-outside-block are values > boundary_val
+        # the block already extends to n, so nothing sits strictly above boundary_val
         strictly_beyond = [i for i in order[lo:] if v[i] != boundary_val]
     else:
         boundary_val = v[order[k - 1]]
@@ -187,8 +187,8 @@ def _select_top_k_with_ties(
         selected = block
         overshoot = max(0, len(selected) - k)
         return list(selected), overshoot
-    # "random": exactly k total; the non-tied members strictly on the selected side are forced in,
-    # the remaining slots are filled by a seeded shuffle of the tie block.
+    # random: take the untied members on the selected side, then fill the remaining slots from
+    # a seeded shuffle of the tie block
     n_forced = len(strictly_beyond)
     needed_from_tie = max(0, k - n_forced)
     shuffled_tie = list(tie_block)
@@ -209,14 +209,22 @@ def _cut_by_direction(
 ) -> tuple[np.ndarray, int]:
     order = stable_sort(list(range(ctx.n)), key=lambda i: v[i])
     if direction == "high_test":
-        test, overshoot = _select_top_k_with_ties(order, v, n_test, from_end=True, tie_policy=tie_policy, rng=rng)
+        test, overshoot = _select_top_k_with_ties(
+            order, v, n_test, from_end=True, tie_policy=tie_policy, rng=rng
+        )
     elif direction == "low_test":
-        test, overshoot = _select_top_k_with_ties(order, v, n_test, from_end=False, tie_policy=tie_policy, rng=rng)
+        test, overshoot = _select_top_k_with_ties(
+            order, v, n_test, from_end=False, tie_policy=tie_policy, rng=rng
+        )
     elif direction == "extremes_test":
         lo_k = n_test // 2
         hi_k = n_test - lo_k
-        lo_sel, lo_over = _select_top_k_with_ties(order, v, lo_k, from_end=False, tie_policy=tie_policy, rng=rng)
-        hi_sel, hi_over = _select_top_k_with_ties(order, v, hi_k, from_end=True, tie_policy=tie_policy, rng=rng)
+        lo_sel, lo_over = _select_top_k_with_ties(
+            order, v, lo_k, from_end=False, tie_policy=tie_policy, rng=rng
+        )
+        hi_sel, hi_over = _select_top_k_with_ties(
+            order, v, hi_k, from_end=True, tie_policy=tie_policy, rng=rng
+        )
         test = list(dict.fromkeys(lo_sel + hi_sel))
         overshoot = lo_over + hi_over
     elif direction == "middle_test":
@@ -228,11 +236,6 @@ def _cut_by_direction(
     return np.asarray(sorted(set(int(i) for i in test)), dtype=np.int64), overshoot
 
 
-# -
-# PropertySplitter
-# -
-
-
 class PropertySplitter(BaseSplitter):
     """Split along a continuous molecular property.
 
@@ -241,34 +244,55 @@ class PropertySplitter(BaseSplitter):
     become ``test``. The validation band, when requested, is drawn adjacent to ``test`` on the
     train side so early stopping shares the same extrapolation direction as the test evaluation.
 
-    :param property: An RDKit descriptor name resolvable through ``rdkit.Chem.Descriptors``, or a
-        callable ``Mol -> float``. Defaults to ``"MolWt"``.
-    :param direction: Which end(s) of the sorted property values become ``test``: one of
-        ``"high_test"``, ``"low_test"``, ``"extremes_test"``, ``"middle_test"``. Defaults to
-        ``"high_test"``.
-    :param property_values: Precomputed values, bypassing RDKit descriptor computation.
-    :param tie_policy: How records tied at the cut boundary are resolved: one of ``"by_index"``,
-        ``"random"``, ``"keep_together"``. Defaults to ``"by_index"``.
+    :param property: an RDKit descriptor name resolvable through
+        :mod:`rdkit.Chem.Descriptors`, or a callable ``Mol -> float``.
+    :param direction: which end or ends of the sorted values become test: the high tail, the
+        low tail, both tails, or the central band.
+    :param property_values: precomputed values, which bypass the descriptor computation.
+    :param tie_policy: how records tied at the cut boundary are resolved: by index, by a
+        seeded draw, or by keeping the whole tied block on one side.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`.
     :ivar splitter_id: ``"property"``.
+    :raises ParameterError: if ``property`` is neither a string nor a callable, or
+        ``direction`` or ``tie_policy`` is unknown.
+    :raises UnknownFeaturizerError: at split time, if the descriptor name does not resolve.
+    :raises InputError: at split time, if ``property_values`` has the wrong length.
 
     Advantages
     ----------
-    - Directly models real extrapolations: fragment-to-lead growth (MW), applying a small-molecule model to peptides or PROTACs (size), and solubility/permeability range shifts (logP, TPSA).
-    - Fully deterministic and easy to explain -- `train_range` vs. `test_range` and `overlap` state exactly what was asked of the model.
-    - No featurization, clustering, or seed needed -- the cheapest hard split available.
+    - Models real extrapolations directly: fragment-to-lead growth in MW, a small-molecule
+      model applied to peptides or PROTACs, logP or TPSA range shifts.
+    - Deterministic and easy to explain: `train_range`, `test_range` and `overlap` state what
+      was asked of the model.
+    - No featurization, clustering or seed, which makes it the cheapest hard split available.
 
     Pitfalls
     --------
-    - Molecular weight correlates with almost everything, including assay artefacts, promiscuity, and the era a series was made -- a performance drop may be confounded rather than caused by the property shift.
-    - Because it's a single sorted cut, the test set is chemically homogeneous with strongly correlated errors, so the effective sample size is well below `n_test`.
-    - **Not** a leakage-control split -- a test molecule can be a close analogue of a training molecule that just happens to sit below the cut. Check `metadata["overlap"]` and `audit.nn_similarity_profile`.
-    - `direction="middle_test"` is an interpolation test despite living in this family -- don't report it as extrapolation.
-    - The validation band sits adjacent to test by design, which keeps early stopping honest but makes the validation score optimistic relative to test.
+    - Molecular weight correlates with almost everything -- assay artefacts, promiscuity, the
+      era a series was made -- so a drop may be confounded rather than caused by the shift.
+    - A single sorted cut leaves the test set chemically homogeneous with strongly correlated
+      errors, so the effective sample size is well below `n_test`.
+    - **Not** a leakage control: a test molecule can be a close analogue of a training one
+      that sits below the cut. `metadata["overlap"]` quantifies it.
+    - `direction="middle_test"` is an interpolation test despite living in this family.
+    - The validation band sits adjacent to test by design, which keeps early stopping honest
+      but makes the validation score optimistic relative to test.
 
     Notes
     -----
     Determinism: ``purpose="property.tie"`` only when ``tie_policy="random"``; otherwise seed-free
     (``deterministic_without_seed = True`` unless ``tie_policy == "random"``).
+
+    References
+    ----------
+    .. [1] A single sorted cut on a descriptor is not a named published method. The related
+       work is [2] and [3].
+    .. [2] Sheridan, R. P. Three Useful Dimensions for Domain Applicability in QSAR Models
+       Using Random Forest. *J. Chem. Inf. Model.* **2012**, 52 (3), 814-823.
+       https://doi.org/10.1021/ci300004n
+    .. [3] Wu, Z.; Ramsundar, B.; Feinberg, E. N. et al. MoleculeNet: A Benchmark for Molecular
+       Machine Learning. *Chem. Sci.* **2018**, 9 (2), 513-530.
+       https://doi.org/10.1039/C7SC02664A
     """
 
     splitter_id = "property"
@@ -279,11 +303,9 @@ class PropertySplitter(BaseSplitter):
     accepts = ("smiles", "mol", "features")
     extras: tuple[str,...] = ()
     deterministic_method = True
-    # Conservative class-level default: True only when tie_policy != "random", which is an
-    # instance-level (constructor-parameter-dependent) fact, not a class-level one -- ClassVar
-    # metadata cannot express "depends on how this instance was constructed" (a prior @property
-    # implementation here returned a bool per-instance, which broke class-level introspection
-    # like registry.list_splitters() reading cls.deterministic_without_seed without an instance).
+    # Conservative class-level default: it is really True only for tie_policy != "random",
+    # but a ClassVar can't depend on the instance, and a @property breaks list_splitters(),
+    # which reads this off the class.
     deterministic_without_seed = False
     order_invariant = False
 
@@ -309,20 +331,26 @@ class PropertySplitter(BaseSplitter):
     def _partition(self, ctx: _Context) -> list[SplitResult]:
         v = _resolve_descriptor_values(ctx, self.property, self.property_values)
         rng = seed_for(ctx.rng_seeds, "property.tie", 0) if self.tie_policy == "random" else None
-        test, overshoot = _cut_by_direction(ctx, v, ctx.sizes.n_test, self.direction, self.tie_policy, rng)
+        test, overshoot = _cut_by_direction(
+            ctx, v, ctx.sizes.n_test, self.direction, self.tie_policy, rng
+        )
 
-        remaining = np.asarray([i for i in range(ctx.n) if i not in set(test.tolist())], dtype=np.int64)
+        remaining = np.asarray(
+            [i for i in range(ctx.n) if i not in set(test.tolist())], dtype=np.int64
+        )
         n_valid = ctx.sizes.n_valid
         if n_valid > 0 and remaining.size:
-            # validation band: the n_valid remaining records nearest the test band (by descriptor
-            # value), so it shares the extrapolation direction of test.
+            # validation band: the n_valid remaining records nearest the test band, so it
+            # shares test's extrapolation direction
             test_vals = v[test]
             lo_bound, hi_bound = (test_vals.min(), test_vals.max()) if test.size else (0.0, 0.0)
             dist = np.minimum(np.abs(v[remaining] - lo_bound), np.abs(v[remaining] - hi_bound))
             order_by_dist = stable_sort(list(range(remaining.size)), key=lambda j: dist[j])
             valid_local = order_by_dist[:n_valid]
             valid = remaining[valid_local]
-            train = np.asarray([i for i in remaining if i not in set(valid.tolist())], dtype=np.int64)
+            train = np.asarray(
+                [i for i in remaining if i not in set(valid.tolist())], dtype=np.int64
+            )
         else:
             valid = np.array([], dtype=np.int64)
             train = remaining
@@ -341,42 +369,67 @@ class PropertySplitter(BaseSplitter):
             "overlap": overlap,
             "n_ties_at_boundary": int(overshoot),
         }
-        result = _build_result(self, ctx, train=train, valid=valid, test=test, discard=np.array([], dtype=np.int64), metadata=metadata)
+        result = _build_result(
+            self,
+            ctx,
+            train=train,
+            valid=valid,
+            test=test,
+            discard=np.array([], dtype=np.int64),
+            metadata=metadata,
+        )
         return [result]
-
-
-# -
-# LabelExtrapolationSplitter
-# -
 
 
 class LabelExtrapolationSplitter(BaseSplitter):
     """Train on one part of the label range, test on another.
 
-    :param direction: One of ``"high_test"``, ``"low_test"``, ``"extremes_test"``. Defaults to
-        ``"high_test"``.
-    :param task_index: Column of ``y`` to extrapolate on, when ``y`` is 2-D. Defaults to 0.
-    :param buffer: A gap between train and test in label units (float) or records (int); records
-        inside the buffer go to ``discard``. Defaults to 0.0.
-    :param tie_policy: How records tied at the cut boundary are resolved: one of ``"by_index"``,
-        ``"random"``, ``"keep_together"``. Defaults to ``"keep_together"``, which differs from
-        ``property``: splitting a block of identical labels across the boundary is meaningless
-        for a label-based extrapolation.
+    :param direction: which end or ends of the label range become test: the high tail, the low
+        tail, or both.
+    :param task_index: column of a 2-D ``y`` to extrapolate on.
+    :param buffer: a gap between train and test, in label units as a float or in records as an
+        int. Records inside the buffer are discarded.
+    :param tie_policy: resolve a tie at the boundary by index, by a seeded draw, or by keeping
+        the tied block on one side. Unlike ``property`` this defaults to keeping it: splitting
+        identical labels across a label-based extrapolation means nothing.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ParameterError: if ``task_index`` is negative, ``buffer`` is negative, or
+        ``direction`` or ``tie_policy`` is unknown.
+    :raises LabelError: at split time, if ``y`` is missing or ``task_index`` is out of range.
 
     Advantages
     ----------
-    - The most honest test of whether a model can rank compounds *better than its training data* -- the real requirement for generative design and prioritising untested potency ranges.
-    - `buffer` makes the extrapolation gap explicit and tunable, so performance can be reported as a function of gap width.
-    - Needs no chemistry at all, so it works for any modality.
+    - The most honest test of whether a model can rank compounds *better than its training
+      data*, which generative design and untested potency ranges both require.
+    - `buffer` makes the extrapolation gap explicit and tunable, so performance can be reported
+      against gap width.
+    - Needs no chemistry, so it works for any modality.
 
     Pitfalls
     --------
-    - Brutal by construction -- most regression models regress to their training mean and under-predict the held-out extreme, so a flat prediction can post a respectable RMSE with zero rank correlation. **Always report a ranking metric (Spearman, top-k enrichment) alongside RMSE/R²**, since R² can be negative while ranking is still useful, or vice versa.
-    - Selecting the split with the labels makes it label-aware by construction: the test set is defined by `y`, so label noise at the extreme directly shapes the test population.
-    - Extreme labels concentrate measurement artefacts, censored values, and transcription errors -- exactly where data quality is worst.
-    - Distributional metrics on a truncated label range aren't comparable to the same metrics on a random split -- don't mix them in one table without saying so.
-    - On binary labels this becomes a class holdout where the model never sees a positive example -- a different, usually pointless, experiment.
+    - Brutal by construction: models regress to their training mean, so a near-flat
+      prediction posts a respectable RMSE at zero rank correlation. Spearman or top-k
+      enrichment belongs next to RMSE here, since R² can go negative while the ranking is
+      still useful.
+    - The test set is defined by `y`, which makes the split label-aware and lets label noise at
+      the extreme shape the test population.
+    - Extreme labels concentrate measurement artefacts, censored values and transcription
+      errors, so data quality is worst exactly there.
+    - Distributional metrics on a truncated label range do not compare with the same metrics on
+      a random split.
+    - On binary labels this becomes a class holdout where the model never sees a positive
+      example, which is a different and usually pointless experiment.
 
+    References
+    ----------
+    .. [1] A generic protocol rather than an attributable method. The failure mode its
+       Pitfalls describe is measured in [2] and [3].
+    .. [2] van Tilborg, D.; Alenicheva, A.; Grisoni, F. Exposing the Limitations of Molecular
+       Machine Learning with Activity Cliffs. *J. Chem. Inf. Model.* **2022**, 62 (23),
+       5938-5951. https://doi.org/10.1021/acs.jcim.2c01073
+    .. [3] Wu, Z.; Ramsundar, B.; Feinberg, E. N. et al. MoleculeNet: A Benchmark for Molecular
+       Machine Learning. *Chem. Sci.* **2018**, 9 (2), 513-530.
+       https://doi.org/10.1039/C7SC02664A
     """
 
     splitter_id = "label_extrapolation"
@@ -387,8 +440,7 @@ class LabelExtrapolationSplitter(BaseSplitter):
     accepts = ("smiles", "mol", "features", "interactions", "sequences")
     extras: tuple[str,...] = ()
     deterministic_method = True
-    # See PropertySplitter's identical note above: conservative class-level default, since the
-    # real answer depends on the instance's tie_policy.
+    # conservative class-level default; see PropertySplitter
     deterministic_without_seed = False
     order_invariant = False
 
@@ -412,7 +464,10 @@ class LabelExtrapolationSplitter(BaseSplitter):
     def _check_preconditions(self, ctx: _Context) -> None:
         y = np.asarray(ctx.y)
         if y.ndim == 2 and self.task_index >= y.shape[1]:
-            raise ParameterError(f"task_index={self.task_index} out of range for y with {y.shape[1]} columns")
+            raise ParameterError(
+                f"task_index={self.task_index} out of range for y with "
+                f"{y.shape[1]} columns"
+            )
         col = y if y.ndim == 1 else y[:, self.task_index]
         if not np.all(np.isfinite(col.astype(np.float64))):
             raise LabelError("LabelExtrapolationSplitter requires finite numeric y")
@@ -421,10 +476,14 @@ class LabelExtrapolationSplitter(BaseSplitter):
         y = np.asarray(ctx.y, dtype=np.float64)
         v = y if y.ndim == 1 else y[:, self.task_index]
         rng = seed_for(ctx.rng_seeds, "label.tie", 0) if self.tie_policy == "random" else None
-        test, overshoot = _cut_by_direction(ctx, v, ctx.sizes.n_test, self.direction, self.tie_policy, rng)
+        test, overshoot = _cut_by_direction(
+            ctx, v, ctx.sizes.n_test, self.direction, self.tie_policy, rng
+        )
 
         discard = np.array([], dtype=np.int64)
-        remaining = np.asarray([i for i in range(ctx.n) if i not in set(test.tolist())], dtype=np.int64)
+        remaining = np.asarray(
+            [i for i in range(ctx.n) if i not in set(test.tolist())], dtype=np.int64
+        )
         if self.buffer:
             test_vals = v[test]
             if test_vals.size:
@@ -436,7 +495,9 @@ class LabelExtrapolationSplitter(BaseSplitter):
                     discard = remaining[mask]
                     remaining = remaining[~mask]
                 else:
-                    dist = np.minimum(np.abs(v[remaining] - lo_bound), np.abs(v[remaining] - hi_bound))
+                    dist = np.minimum(
+                        np.abs(v[remaining] - lo_bound), np.abs(v[remaining] - hi_bound)
+                    )
                     order_by_dist = stable_sort(list(range(remaining.size)), key=lambda j: dist[j])
                     k = min(int(self.buffer), remaining.size)
                     discard = remaining[order_by_dist[:k]]
@@ -461,49 +522,64 @@ class LabelExtrapolationSplitter(BaseSplitter):
         metadata = {
             "direction": self.direction,
             "task_index": self.task_index,
-            "train_label_range": [float(v[train].min()), float(v[train].max())] if train.size else None,
+            "train_label_range": (
+                [float(v[train].min()), float(v[train].max())] if train.size else None
+            ),
             "test_label_range": [float(v[test].min()), float(v[test].max())] if test.size else None,
             "buffer_records": int(discard.size),
             "n_ties_at_boundary": int(overshoot),
         }
-        return [_build_result(self, ctx, train=train, valid=valid, test=test, discard=discard, metadata=metadata)]
-
-
-# -
-# DistinctLabelSplitter
-# -
+        return [
+            _build_result(
+                self,
+                ctx,
+                train=train,
+                valid=valid,
+                test=test,
+                discard=discard,
+                metadata=metadata,
+            )
+        ]
 
 
 class DistinctLabelSplitter(BaseSplitter):
     """One record per distinct label value trains; every repeat of a value is held out (SWNW).
 
-    Records are sorted by label. A label value that occurs once sends its record to train; a value
-    shared by several records sends one of them, drawn from the ``"distinct_label.pick"`` stream,
-    to train and the rest to the held-out set. If a validation set is requested it is drawn at
-    random (``"distinct_label.valid"`` stream) from the held-out set, up to ``n_valid``; the rest is
-    test. The sizes therefore follow the data: train holds exactly one record per distinct value,
-    as in the single-weight nationwide (SWNW) method of Li et al.
+    Records sort by label. A value occurring once sends its record to train; a shared value
+    sends one record, off the ``"distinct_label.pick"`` stream, to train and the rest to the
+    held-out set. A validation set is drawn from that set off ``"distinct_label.valid"``, and
+    the rest is test. Sizes therefore follow the data -- train holds exactly one record per
+    distinct value -- as in the single-weight nationwide (SWNW) method of Li et al.
 
-    :param resolution: Width of the label bins that count as one value: values are equal when
-        ``floor(y / resolution)`` matches. ``None`` compares labels exactly, which suits assay
-        values recorded on a fixed grid; continuous labels need a resolution, or every value is
-        distinct. Defaults to ``None``.
-    :param task_index: Column of ``y`` to use, when ``y`` is 2-D. Defaults to 0.
-    :param size_tolerance: Warn with :class:`~chemsplit.exceptions.SizeToleranceWarning` when a
-        realised partition fraction misses its target by more than this. Defaults to 0.05.
+    :param resolution: bin width within which labels count as equal, matching when
+        ``floor(y / resolution)`` does. ``None`` compares exactly, which suits a fixed assay
+        grid; continuous labels need a resolution or every value is distinct.
+    :param task_index: column of a 2-D ``y`` to use.
+    :param size_tolerance: how far a realised partition fraction may miss its target before a
+        :class:`SizeToleranceWarning` is issued.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ParameterError: if ``resolution`` is not positive, or ``task_index`` is negative.
+    :raises LabelError: at split time, if ``y`` is missing or ``task_index`` is out of range.
+    :raises ConstraintUnsatisfiableError: at split time, if every label value is distinct, so
+        there is nothing to hold out.
 
     Advantages
     ----------
-    - Every distinct label value is represented in training exactly once, so the model sees the full label range without over-weighting values that happen to be measured many times.
-    - Tails of the label distribution, usually sparse, are never left out of training.
-    - Simple and explainable: the split is fully described by the label table and one seed.
+    - Every distinct label value appears in training exactly once, so the model sees the full
+      label range without over-weighting values that happen to be measured many times.
+    - The tails of the label distribution, usually sparse, are never left out of training.
+    - Simple and explainable: the label table and one seed describe the split completely.
 
     Pitfalls
     --------
-    - **Sizes are not under your control.** Train size equals the number of distinct values; requested sizes are only checked, with a warning when missed.
-    - Test holds repeats of training label values, so test labels are never new: an optimistic, interpolative evaluation.
-    - Without `resolution`, continuous labels have no repeats and the split cannot hold anything out (raises `ConstraintUnsatisfiableError`); with it, the bin width becomes a hidden experimental choice.
-    - Selection ignores chemistry: repeats of a value can be structurally unlike the record kept in train, or near-duplicates of it.
+    - **Sizes are not under your control.** Train size equals the number of distinct values,
+      and the requested sizes are only checked, with a warning when missed.
+    - Test holds repeats of training label values, so test labels are never new. The evaluation
+      is optimistic and interpolative.
+    - Without `resolution`, continuous labels have no repeats and nothing can be held out,
+      raising `ConstraintUnsatisfiableError`. With it, bin width is a hidden design choice.
+    - Selection ignores chemistry, so repeats of a value can be structurally unlike the record
+      kept in train, or near-duplicates of it.
     - The split depends on `y`, so it is not label-blind.
 
     References
@@ -537,10 +613,16 @@ class DistinctLabelSplitter(BaseSplitter):
         self.task_index = task_index
         self.size_tolerance = size_tolerance
         if resolution is not None and (
-            isinstance(resolution, bool) or not isinstance(resolution, (int, float)) or not resolution > 0
+            isinstance(resolution, bool)
+            or not isinstance(resolution, (int, float))
+            or not resolution > 0
         ):
             raise ParameterError(f"resolution must be None or > 0, got {resolution!r}")
-        if isinstance(task_index, bool) or not isinstance(task_index, (int, np.integer)) or task_index < 0:
+        if (
+            isinstance(task_index, bool)
+            or not isinstance(task_index, (int, np.integer))
+            or task_index < 0
+        ):
             raise ParameterError(f"task_index must be an int >= 0, got {task_index!r}")
         if not (isinstance(size_tolerance, (int, float)) and 0 <= size_tolerance < 1):
             raise ParameterError(f"size_tolerance must be in [0, 1), got {size_tolerance!r}")
@@ -549,7 +631,10 @@ class DistinctLabelSplitter(BaseSplitter):
         y = np.asarray(ctx.y)
         if y.ndim == 2:
             if self.task_index >= y.shape[1]:
-                raise ParameterError(f"task_index={self.task_index} out of range for y with {y.shape[1]} columns")
+                raise ParameterError(
+                    f"task_index={self.task_index} out of range for y with "
+                    f"{y.shape[1]} columns"
+                )
             y = y[:, self.task_index]
         try:
             v = y.astype(np.float64)
@@ -574,7 +659,10 @@ class DistinctLabelSplitter(BaseSplitter):
         held: list[int] = []
         for members in levels.values():
             members = sorted(members)
-            keep = members[int(pick_rng.integers(0, len(members)))] if len(members) > 1 else members[0]
+            if len(members) > 1:
+                keep = members[int(pick_rng.integers(0, len(members)))]
+            else:
+                keep = members[0]
             train.append(keep)
             held.extend(r for r in members if r != keep)
         if not held:
@@ -598,8 +686,10 @@ class DistinctLabelSplitter(BaseSplitter):
         if any(abs(d) > self.size_tolerance for d in off.values()):
             warn_with_details(
                 SizeToleranceWarning(
-                    f"DistinctLabelSplitter: realised sizes {realised} differ from targets {targets} "
-                    f"by more than size_tolerance={self.size_tolerance} (sizes follow the label values)",
+                    f"DistinctLabelSplitter: realised sizes {realised} differ from "
+                    f"targets {targets} by more than "
+                    f"size_tolerance={self.size_tolerance} (sizes follow the label "
+                    "values)",
                     details={"realised": realised, "targets": targets},
                 )
             )
@@ -611,14 +701,17 @@ class DistinctLabelSplitter(BaseSplitter):
         }
         return [
             _build_result(
-                self, ctx, train=train_arr, valid=valid, test=test, discard=np.array([], dtype=np.int64), metadata=metadata
+                self,
+                ctx,
+                train=train_arr,
+                valid=valid,
+                test=test,
+                discard=np.array([], dtype=np.int64),
+                metadata=metadata,
             )
         ]
 
 
-# -
-# StratifiedDistributionSplitter
-# -
 
 
 def _quantile_bins(v: np.ndarray, n_bins: int) -> np.ndarray:
@@ -630,29 +723,45 @@ def _quantile_bins(v: np.ndarray, n_bins: int) -> np.ndarray:
 class StratifiedDistributionSplitter(BaseSplitter):
     """Match the full label *distribution* (not just class balance) between train and test.
 
-    :param n_bins: Number of bins. Defaults to 20.
-    :param binning: One of ``"quantile"``, ``"uniform"``, ``"kmeans"``. Defaults to
-        ``"quantile"``.
-    :param match: ``"histogram"``: per-bin apportionment (deterministic, always succeeds).
-        ``"moments"``: a seeded local swap hill-climb minimising
-        ``|Δmean| + |Δstd| + |Δskew|``. ``"ks"``: restart with different seeds until the
-        two-sample KS statistic is ``<= max_ks``. Defaults to ``"histogram"``.
-    :param max_ks: Defaults to 0.05.
-    :param max_restarts: Defaults to 20.
+    :param n_bins: how many bins the label range is cut into.
+    :param binning: equal-frequency quantiles, equal-width bins, or 1-D k-means.
+    :param match: apportion per bin, deterministically and always successfully; hill-climb on
+        ``|dmean| + |dstd| + |dskew|`` by seeded swaps; or restart until the two-sample KS
+        statistic is at most ``max_ks``.
+    :param max_ks: the KS statistic ``match="ks"`` must reach.
+    :param max_restarts: how many restarts ``match="ks"`` may use.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ParameterError: if ``n_bins`` is below 2, ``max_ks`` is outside ``(0, 1]``,
+        ``max_restarts`` is below 1, or ``binning`` or ``match`` is unknown.
+    :raises LabelError: at split time, if ``y`` is missing.
+    :raises ConstraintUnsatisfiableError: at split time, if ``match="ks"`` exhausts its
+        restarts without reaching ``max_ks``.
 
     Advantages
     ----------
-    - Cuts metric variance on small regression datasets more effectively than class-level stratification, since it matches shape rather than just balance.
-    - Reports `ks_statistic`, so "the partitions share a label distribution" is evidenced, not assumed.
+    - Cuts metric variance on small regression datasets better than class-level
+      stratification, matching the distribution's shape rather than only its balance.
+    - Reports `ks_statistic`, so a shared label distribution is evidenced rather than assumed.
     - Deterministic in its default `histogram` mode.
 
     Pitfalls
     --------
-    - Changes nothing about chemical leakage -- it's `stratified_random` with more bins, and calling it a "distribution-matched split" invites more rigour than it actually has.
-    - Matching the label distribution makes the test set *easier* by construction, removing exactly the label shift a real prospective test would contain.
+    - Changes nothing about chemical leakage. It is `stratified_random` with more bins, and the
+      name "distribution-matched split" suggests more rigour than it has.
+    - Matching the label distribution makes the test set *easier* by construction, since it
+      removes exactly the label shift a real prospective test would contain.
     - `match="ks"` can loop to the restart limit on tied or censored labels.
-    - The swap optimisation in `moments` mode is a heuristic, and failure to converge is only reported through `n_swaps_accepted`.
+    - The swap optimisation in `moments` mode is a heuristic, and non-convergence shows up only
+      through `n_swaps_accepted`.
 
+    References
+    ----------
+    .. [1] Histogram apportionment, moment matching and the two-sample Kolmogorov-Smirnov
+       statistic are standard statistics rather than a cheminformatics splitting method. [2] is
+       cited for benchmark-protocol context only.
+    .. [2] Wu, Z.; Ramsundar, B.; Feinberg, E. N. et al. MoleculeNet: A Benchmark for Molecular
+       Machine Learning. *Chem. Sci.* **2018**, 9 (2), 513-530.
+       https://doi.org/10.1039/C7SC02664A
     """
 
     splitter_id = "stratified_distribution"
@@ -683,7 +792,9 @@ class StratifiedDistributionSplitter(BaseSplitter):
         self.max_ks = max_ks
         self.max_restarts = max_restarts
 
-    def _stratified_split(self, ctx: _Context, v: np.ndarray, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _stratified_split(
+        self, ctx: _Context, v: np.ndarray, rng: np.random.Generator
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         n_bins = min(self.n_bins, len(np.unique(v)))
         if self.binning == "uniform":
             edges = np.linspace(v.min(), v.max(), n_bins + 1)
@@ -691,7 +802,9 @@ class StratifiedDistributionSplitter(BaseSplitter):
         elif self.binning == "kmeans":
             from sklearn.cluster import KMeans
 
-            labels = KMeans(n_clusters=max(1, n_bins), n_init=10, random_state=0).fit_predict(v.reshape(-1, 1))
+            labels = KMeans(
+                n_clusters=max(1, n_bins), n_init=10, random_state=0
+            ).fit_predict(v.reshape(-1, 1))
             order_of_centroids = np.argsort([v[labels == k].mean() for k in np.unique(labels)])
             remap = {int(old): new for new, old in enumerate(order_of_centroids)}
             strata = np.array([remap[int(k)] for k in labels])
@@ -725,7 +838,10 @@ class StratifiedDistributionSplitter(BaseSplitter):
         v = y if y.ndim == 1 else y[:, 0]
         rng = seed_for(ctx.rng_seeds, "stratdist.permutation", 0)
         train, valid, test = self._stratified_split(ctx, v, rng)
-        ks_stat = float(sp_stats.ks_2samp(v[train], v[test]).statistic) if train.size and test.size else 0.0
+        if train.size and test.size:
+            ks_stat = float(sp_stats.ks_2samp(v[train], v[test]).statistic)
+        else:
+            ks_stat = 0.0
         n_swaps = 0
 
         if self.match == "moments" and train.size and test.size:
@@ -739,7 +855,10 @@ class StratifiedDistributionSplitter(BaseSplitter):
                 attempt += 1
                 rng2 = seed_for(ctx.rng_seeds, "stratdist.permutation", attempt)
                 tr2, va2, te2 = self._stratified_split(ctx, v, rng2)
-                stat2 = float(sp_stats.ks_2samp(v[tr2], v[te2]).statistic) if tr2.size and te2.size else 1.0
+                if tr2.size and te2.size:
+                    stat2 = float(sp_stats.ks_2samp(v[tr2], v[te2]).statistic)
+                else:
+                    stat2 = 1.0
                 if stat2 < best[0]:
                     best = (stat2, tr2, va2, te2)
             ks_stat, train, valid, test = best
@@ -749,7 +868,10 @@ class StratifiedDistributionSplitter(BaseSplitter):
                     f"{self.max_restarts} restarts; best achieved KS statistic was {ks_stat:.4f}"
                 )
 
-        mean_delta = float(abs(v[train].mean() - v[test].mean())) if train.size and test.size else 0.0
+        if train.size and test.size:
+            mean_delta = float(abs(v[train].mean() - v[test].mean()))
+        else:
+            mean_delta = 0.0
         std_delta = float(abs(v[train].std() - v[test].std())) if train.size and test.size else 0.0
         metadata = {
             "n_bins": self.n_bins,
@@ -759,11 +881,25 @@ class StratifiedDistributionSplitter(BaseSplitter):
             "std_delta": std_delta,
             "n_swaps_accepted": n_swaps,
         }
-        return [_build_result(self, ctx, train=train, valid=valid, test=test, discard=np.array([], dtype=np.int64), metadata=metadata)]
+        return [
+            _build_result(
+                self,
+                ctx,
+                train=train,
+                valid=valid,
+                test=test,
+                discard=np.array([], dtype=np.int64),
+                metadata=metadata,
+            )
+        ]
 
     @staticmethod
     def _moment_match(
-        v: np.ndarray, train: np.ndarray, test: np.ndarray, rng: np.random.Generator, max_restarts: int = 20
+        v: np.ndarray,
+        train: np.ndarray,
+        test: np.ndarray,
+        rng: np.random.Generator,
+        max_restarts: int = 20,
     ) -> tuple[np.ndarray, np.ndarray, int]:
         from scipy import stats as sp_stats
 
@@ -796,12 +932,11 @@ class StratifiedDistributionSplitter(BaseSplitter):
         return np.sort(train), np.sort(test), n_accepted
 
 
-# -
-# MOODSplitter
-# -
 
 
-def _distance_stat(F: np.ndarray, reference: np.ndarray, stat: str, knn_k: int, metric: str) -> np.ndarray:
+def _distance_stat(
+    F: np.ndarray, reference: np.ndarray, stat: str, knn_k: int, metric: str
+) -> np.ndarray:
     from chemsplit.metrics import pairwise_distances
 
     D = pairwise_distances(F, reference, metric=metric)
@@ -812,8 +947,10 @@ def _distance_stat(F: np.ndarray, reference: np.ndarray, stat: str, knn_k: int, 
         part = np.partition(D, k - 1, axis=1)[:,:k]
         return part.mean(axis=1)
     # "centroid"
-    centroid = reference.mean(axis=0, keepdims=True) if not hasattr(reference, "toarray") else reference.toarray().mean(axis=0, keepdims=True)
-    return pairwise_distances(F if not hasattr(F, "toarray") else F.toarray(), centroid, metric="euclidean").ravel()
+    ref = reference.toarray() if hasattr(reference, "toarray") else reference
+    centroid = ref.mean(axis=0, keepdims=True)
+    dense = F.toarray() if hasattr(F, "toarray") else F
+    return pairwise_distances(dense, centroid, metric="euclidean").ravel()
 
 
 def _discrepancy(obs: np.ndarray, target: np.ndarray, kind: str, n_bins: int) -> float:
@@ -823,8 +960,8 @@ def _discrepancy(obs: np.ndarray, target: np.ndarray, kind: str, n_bins: int) ->
         return float(sp_stats.wasserstein_distance(obs, target))
     if kind == "ks":
         return float(sp_stats.ks_2samp(obs, target).statistic)
-    # "js" Jensen-Shannon over shared equal-width bins on [0,1] (distances are non-negative;
-    # rescale both samples into [0,1] using their joint range for a shared histogram support)
+    # js: Jensen-Shannon over equal-width bins, with both samples rescaled into [0,1] by
+    # their joint range so the histogram support is shared
     lo = min(obs.min(initial=0.0), target.min(initial=0.0))
     hi = max(obs.max(initial=1.0), target.max(initial=1.0))
     hi = hi if hi > lo else lo + 1.0
@@ -844,30 +981,54 @@ def _discrepancy(obs: np.ndarray, target: np.ndarray, kind: str, n_bins: int) ->
 
 class MOODSplitter(SimilarityParamsMixin, BaseSplitter):
     """Select, among candidate splitters, the one whose train→test distance distribution best
-    matches the train→**deployment** distance distribution (MOOD: "Massive
-    Out-Of-Distribution shift" splitter).
+    matches the train→**deployment** distance distribution (MOOD: "Molecular
+    Out-Of-Distribution").
 
-    :param candidates: Already-instantiated candidate splitters -- string IDs are not accepted; a
-        ``ParameterError`` names this explicitly.
-    :param deployment_set: The library you actually intend to screen. Required.
-    :param distance_stat: One of ``"nn"``, ``"knn_mean"``, ``"centroid"``. Defaults to ``"nn"``.
-    :param discrepancy: One of ``"wasserstein"``, ``"ks"``, ``"js"``. Defaults to
-        ``"wasserstein"``.
+    :param candidates: already-built candidate splitters. Registry ids are not accepted here.
+    :param deployment_set: the library actually intended for screening. Required.
+    :param distance_stat: how train-to-test distance is summarised per record: nearest
+        neighbour, mean of the k nearest, or distance to the centroid.
+    :param knn_k: neighbours used by ``distance_stat="knn_mean"``.
+    :param discrepancy: how two distance distributions are compared: Wasserstein distance, the
+        KS statistic, or Jensen-Shannon divergence.
+    :param n_bins: bins used by ``discrepancy="js"``.
+    :param return_all: keep every candidate's score in ``metadata``, not just the winner's.
+    :param featurizer: featurizer alias or instance.
+    :param metric: distance metric; see :mod:`chemsplit.metrics`.
+    :param max_memory_bytes: ceiling on any pairwise matrix.
+    :param n_jobs: worker count. Results never depend on it.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ParameterError: if ``candidates`` holds a string, ``knn_k`` or ``n_bins`` is below
+        1, or ``distance_stat`` or ``discrepancy`` is unknown.
+    :raises ConfigurationError: if ``deployment_set`` is missing.
 
     Advantages
     ----------
-    - Reframes "which split is hardest?" as "which split is *representative* of my deployment?" -- the only version of the question with a defensible answer.
-    - Produces an auditable table of candidate scores, so the choice is evidence rather than taste.
-    - Automatically falls back to a *random* split when that's genuinely appropriate, which no difficulty-ranking heuristic would do.
+    - Reframes "which split is hardest?" as "which split is *representative* of my
+      deployment?", the only version of the question with a defensible answer.
+    - Produces an auditable table of candidate scores, so the choice rests on evidence rather
+      than taste.
+    - Falls back to a *random* split when that is genuinely appropriate, which no
+      difficulty-ranking heuristic would do.
 
     Pitfalls
     --------
-    - Requires the deployment library up front; without it the method is undefined, and a guessed deployment set silently decides the answer.
-    - The selected split is chosen using a statistic computed from the data, so the reported score is mildly optimistic in a model-selection sense -- the honest protocol selects the split on one dataset and reports on another, or discloses the selection.
-    - Distance-distribution matching is a one-dimensional summary -- two very different splits can produce identical NN-distance distributions.
-    - Running five candidate splitters costs five splits, which is expensive on `O(n²)` candidates.
-    - If the deployment set overlaps the training data, MOOD correctly picks a random split, which readers unfamiliar with the method may mistake for a weak evaluation.
+    - Needs the deployment library up front. Without it the method is undefined, and a guessed
+      deployment set decides the answer.
+    - The split is selected from a statistic computed on the data, so the score is mildly
+      optimistic. Selecting on one dataset and reporting on another avoids that.
+    - Distance-distribution matching is a one-dimensional summary, and two very different
+      splits can produce identical NN-distance distributions.
+    - Running five candidate splitters costs five splits, which is expensive on `O(n^2)`
+      candidates.
+    - When the deployment set overlaps the training data, MOOD correctly picks a random split,
+      which readers unfamiliar with the method may mistake for a weak evaluation.
 
+    References
+    ----------
+    .. [1] Tossou, P.; Wognum, C.; Craig, M.; Mary, H.; Noutahi, E. Real-World Molecular
+       Out-Of-Distribution: Specification and Investigation. *J. Chem. Inf. Model.* **2024**,
+       64 (3), 697-711. https://doi.org/10.1021/acs.jcim.3c01774
     """
 
     splitter_id = "mood"
@@ -898,7 +1059,11 @@ class MOODSplitter(SimilarityParamsMixin, BaseSplitter):
         **base: Any,
     ) -> None:
         SimilarityParamsMixin.__init__(
-            self, featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, n_jobs=n_jobs
+            self,
+            featurizer=featurizer,
+            metric=metric,
+            max_memory_bytes=max_memory_bytes,
+            n_jobs=n_jobs,
         )
         BaseSplitter.__init__(self, **base)
         self.candidates = tuple(candidates)
@@ -928,14 +1093,20 @@ class MOODSplitter(SimilarityParamsMixin, BaseSplitter):
         if ctx.mols is not None:
             from rdkit import Chem
 
-            deploy_mols = [Chem.MolFromSmiles(s) if isinstance(s, str) else s for s in self.deployment_set]
+            deploy_mols = [
+                Chem.MolFromSmiles(s) if isinstance(s, str) else s
+                for s in self.deployment_set
+            ]
             F_deploy = featurizer.transform(deploy_mols)
         else:
             F_deploy = np.asarray(self.deployment_set)
 
         target = _distance_stat(F_deploy, F_data, self.distance_stat, self.knn_k, self.metric)
 
-        cand_X = ctx.mols if ctx.mols is not None else (ctx.smiles if ctx.smiles is not None else ctx.raw_features)
+        if ctx.mols is not None:
+            cand_X = ctx.mols
+        else:
+            cand_X = ctx.smiles if ctx.smiles is not None else ctx.raw_features
 
         results = []
         errors: dict[str, str] = {}
@@ -944,7 +1115,13 @@ class MOODSplitter(SimilarityParamsMixin, BaseSplitter):
             cid = getattr(cand, "splitter_id", type(cand).__name__)
             try:
                 r = cand.split_result(cand_X, ctx.y)[0]
-                obs = _distance_stat(F_data[r.test], F_data[r.train], self.distance_stat, self.knn_k, self.metric)
+                obs = _distance_stat(
+                    F_data[r.test],
+                    F_data[r.train],
+                    self.distance_stat,
+                    self.knn_k,
+                    self.metric,
+                )
                 score = _discrepancy(obs, target, self.discrepancy, self.n_bins)
                 results.append((cid, score, r))
                 scores.append([cid, score])
@@ -955,7 +1132,8 @@ class MOODSplitter(SimilarityParamsMixin, BaseSplitter):
         if not results:
             if errors:
                 raise ConstraintUnsatisfiableError(
-                    f"MOODSplitter: every candidate failed; first error: {next(iter(errors.values()))}"
+                    "MOODSplitter: every candidate failed; first error: "
+                    f"{next(iter(errors.values()))}"
                 )
             raise ConstraintUnsatisfiableError("MOODSplitter: every candidate failed")
 
@@ -980,35 +1158,61 @@ class MOODSplitter(SimilarityParamsMixin, BaseSplitter):
         ]
 
 
-# -
-# AdversarialSplitter
-# -
-
-
 class AdversarialSplitter(SimilarityParamsMixin, BaseSplitter):
     """Use a train-vs-test discriminator either to *audit* an existing split or to *construct* a
     target covariate shift.
 
-    :param mode: One of ``"audit"``, ``"construct"``. Defaults to ``"construct"``.
-    :param target_auc: Defaults to 0.75.
-    :param base_splitter: Defaults to a fresh random split.
-    :param classifier: One of ``"logreg"``, ``"gbdt"``. Defaults to ``"logreg"``.
-    :param swap_frac: Defaults to 0.05.
+    :param mode: measure the shift in an existing split, or build one to a target shift.
+    :param target_auc: the discriminator AUC ``mode="construct"`` aims for.
+    :param base_splitter: the split ``mode="construct"`` starts from, or ``None`` for a fresh
+        random split.
+    :param classifier: the discriminator: logistic regression, or gradient-boosted trees.
+    :param cv: cross-validation folds used to estimate the AUC.
+    :param max_iter: cap on swap iterations in ``mode="construct"``.
+    :param swap_frac: fraction of records exchanged per iteration.
+    :param tolerance: how close to ``target_auc`` counts as converged.
+    :param featurizer: featurizer alias or instance.
+    :param metric: distance metric; see :mod:`chemsplit.metrics`.
+    :param max_memory_bytes: ceiling on any pairwise matrix.
+    :param n_jobs: worker count. Results never depend on it.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ParameterError: if ``target_auc`` is outside ``(0.5, 1]``, ``cv``, ``max_iter``,
+        ``swap_frac`` or ``tolerance`` is out of range, or ``mode`` or ``classifier`` is
+        unknown.
 
     Advantages
     ----------
-    - `mode="audit"` is the cheapest possible check that a split is what it claims -- one comparable number across splitters, datasets, and papers, worth attaching to every reported split.
-    - `mode="construct"` lets you dial covariate shift to a chosen level and measure degradation as a function of shift, instead of arguing over which named split is "realistic".
-    - `top_discriminative_features` names the bits or descriptors separating the partitions, often revealing an unintended confound -- a salt, a project, a vendor.
+    - `mode="audit"` is the cheapest check that a split is what it claims, and gives one
+      comparable number across splitters, datasets and papers.
+    - `mode="construct"` dials covariate shift to a chosen level, so degradation can be
+      measured against shift instead of argued over named splits.
+    - `top_discriminative_features` names the bits or descriptors separating the partitions,
+      which often reveals an unintended confound: a salt, a project, a vendor.
 
     Pitfalls
     --------
-    - A constructed split is optimised against a specific discriminator on specific features -- a different model may see no shift at all, so the number isn't a property of the data alone.
-    - Pushing AUC up tends to surface *trivial* separations first -- molecular size, a common substructure, a fingerprint density artefact -- rather than chemically interesting shift.
-    - In `audit` mode a high AUC only shows the partitions differ, not whether the split is good or bad; interpreting it still requires knowing what shift you wanted.
-    - The discriminator fits on the same features used to build the split, making `construct` mode circular in the same way as `latent_space`.
-    - Convergence isn't guaranteed and is only reported, not enforced -- a non-converged run shouldn't be described as a "target_auc = 0.75 split".
+    - A constructed split is optimised against one discriminator on one feature set, so a
+      different model may see no shift at all. The number is not a property of the data alone.
+    - Pushing the AUC up surfaces *trivial* separations first: molecular size, a common
+      substructure, a fingerprint density artefact.
+    - In `audit` mode a high AUC shows only that the partitions differ, not whether the split
+      is good. Interpreting it needs the intended shift as a reference.
+    - The discriminator fits on the same features used to build the split, which makes
+      `construct` mode circular in the same way as `latent_space`.
+    - Convergence is reported rather than enforced, so a non-converged run is not a
+      "target_auc = 0.75 split".
 
+    References
+    ----------
+    .. [1] "Adversarial validation" comes from competition practice rather than a paper. Its
+       rigorous equivalent is the classifier two-sample test, [2].
+    .. [2] Lopez-Paz, D.; Oquab, M. Revisiting Classifier Two-Sample Tests. *International
+       Conference on Learning Representations (ICLR)*, **2017**. No DOI;
+       https://arxiv.org/abs/1610.06545
+    .. [3] Ben-David, S.; Blitzer, J.; Crammer, K.; Kulesza, A.; Pereira, F.; Wortman
+       Vaughan, J. A Theory of Learning from Different Domains. *Mach. Learn.* **2010**,
+       79 (1-2), 151-175. https://doi.org/10.1007/s10994-009-5152-4 (the H-divergence a domain
+       classifier estimates)
     """
 
     splitter_id = "adversarial"
@@ -1040,7 +1244,11 @@ class AdversarialSplitter(SimilarityParamsMixin, BaseSplitter):
         **base: Any,
     ) -> None:
         SimilarityParamsMixin.__init__(
-            self, featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, n_jobs=n_jobs
+            self,
+            featurizer=featurizer,
+            metric=metric,
+            max_memory_bytes=max_memory_bytes,
+            n_jobs=n_jobs,
         )
         BaseSplitter.__init__(self, **base)
         self.mode = mode
@@ -1088,11 +1296,22 @@ class AdversarialSplitter(SimilarityParamsMixin, BaseSplitter):
             used = np.concatenate([train, test])
             seed = int(seed_for(ctx.rng_seeds, "adv.cv", it).integers(0, 2**31 - 1))
             clf = (
-                LogisticRegression(penalty="l2", C=1.0, solver="liblinear", max_iter=1000, random_state=seed)
+                LogisticRegression(
+                    penalty="l2",
+                    C=1.0,
+                    solver="liblinear",
+                    max_iter=1000,
+                    random_state=seed,
+                )
                 if self.classifier == "logreg"
-                else HistGradientBoostingClassifier(max_depth=6, max_iter=200, learning_rate=0.1, random_state=seed)
+                else HistGradientBoostingClassifier(
+                    max_depth=6, max_iter=200, learning_rate=0.1, random_state=seed
+                )
             )
-            cv = min(self.cv, int(np.bincount(labels[used]).min()) if len(np.unique(labels[used])) > 1 else 1)
+            if len(np.unique(labels[used])) > 1:
+                cv = min(self.cv, int(np.bincount(labels[used]).min()))
+            else:
+                cv = min(self.cv, 1)
             cv = max(cv, 2)
             try:
                 scores = cross_val_score(clf, F_dense[used], labels[used], cv=cv, scoring="roc_auc")
@@ -1112,8 +1331,14 @@ class AdversarialSplitter(SimilarityParamsMixin, BaseSplitter):
             else:
                 out_of_train = sorted(train, key=lambda i: (p[i], i))[:k]
                 out_of_test = sorted(test, key=lambda i: (-p[i], i))[:k]
-            train = np.asarray(sorted(set(train.tolist()) - set(out_of_train) | set(out_of_test)), dtype=np.int64)
-            test = np.asarray(sorted(set(test.tolist()) - set(out_of_test) | set(out_of_train)), dtype=np.int64)
+            train = np.asarray(
+                sorted(set(train.tolist()) - set(out_of_train) | set(out_of_test)),
+                dtype=np.int64,
+            )
+            test = np.asarray(
+                sorted(set(test.tolist()) - set(out_of_test) | set(out_of_train)),
+                dtype=np.int64,
+            )
             if self.mode == "audit":
                 break
 
@@ -1129,5 +1354,21 @@ class AdversarialSplitter(SimilarityParamsMixin, BaseSplitter):
         if self.mode == "construct" and not converged:
             from chemsplit.exceptions import SizeToleranceWarning, warn_with_details
 
-            warn_with_details(SizeToleranceWarning(f"AdversarialSplitter did not converge to target_auc within {self.max_iter} iterations", details=metadata))
-        return [_build_result(self, ctx, train=train, valid=r.valid, test=test, discard=r.discard, metadata=metadata)]
+            warn_with_details(
+                SizeToleranceWarning(
+                    "AdversarialSplitter did not converge to target_auc within "
+                    f"{self.max_iter} iterations",
+                    details=metadata,
+                )
+            )
+        return [
+            _build_result(
+                self,
+                ctx,
+                train=train,
+                valid=r.valid,
+                test=test,
+                discard=r.discard,
+                metadata=metadata,
+            )
+        ]

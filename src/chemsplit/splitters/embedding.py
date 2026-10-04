@@ -183,6 +183,15 @@ class UMAPClusterSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitt
     Notes
     -----
     Determinism ``purpose`` strings: ``"umap.fit"``, ``"kmeans.fit"``, ``"group.assign"``.
+
+    References
+    ----------
+    .. [1] McInnes, L.; Healy, J.; Saul, N.; Großberger, L. UMAP: Uniform Manifold Approximation and
+       Projection. *J. Open Source Softw.* **2018**, 3 (29), 861. https://doi.org/10.21105/joss.00861
+       (algorithm preprint: https://arxiv.org/abs/1802.03426)
+    .. [2] Guo, Q.; Hernandez-Hernandez, S.; Ballester, P. J. UMAP-Based Clustering Split for Rigorous
+       Evaluation of AI Models for Virtual Screening on Cancer Cell Lines. *J. Cheminform.* **2025**,
+       17 (1), 94. https://doi.org/10.1186/s13321-025-01039-8
     """
 
     splitter_id: ClassVar[str] = "umap_cluster"
@@ -351,6 +360,27 @@ class ProjectionSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitte
     ``metadata["nondeterministic_method"]`` is ``True`` for ``method`` in ``{"tsne", "mds"}``
     (irreducible BLAS-level non-determinism). SVD/PCA/KernelPCA components are deterministically
     sign-fixed.
+
+    References
+    ----------
+    .. [1] ``method="pca"``: Pearson, K. On Lines and Planes of Closest Fit to Systems of Points in Space.
+       *Philos. Mag.* **1901**, 2 (11), 559-572. https://doi.org/10.1080/14786440109462720; and
+       Hotelling, H. Analysis of a Complex of Statistical Variables into Principal Components.
+       *J. Educ. Psychol.* **1933**, 24 (6), 417-441. https://doi.org/10.1037/h0071325
+    .. [2] ``method="svd"`` (randomized truncated SVD): Halko, N.; Martinsson, P. G.; Tropp, J. A. Finding
+       Structure with Randomness: Probabilistic Algorithms for Constructing Approximate Matrix
+       Decompositions. *SIAM Rev.* **2011**, 53 (2), 217-288. https://doi.org/10.1137/090771806
+    .. [3] ``method="tsne"``: van der Maaten, L.; Hinton, G. Visualizing Data Using t-SNE. *J. Mach. Learn.
+       Res.* **2008**, 9, 2579-2605. No DOI; https://jmlr.org/papers/v9/vandermaaten08a.html
+    .. [4] ``method="mds"``: Torgerson, W. S. Multidimensional Scaling: I. Theory and Method.
+       *Psychometrika* **1952**, 17 (4), 401-419. https://doi.org/10.1007/BF02288916; and Kruskal, J. B.
+       Multidimensional Scaling by Optimizing Goodness of Fit to a Nonmetric Hypothesis.
+       *Psychometrika* **1964**, 29 (1), 1-27. https://doi.org/10.1007/BF02289565
+    .. [5] ``method="kernel_pca"``: Schölkopf, B.; Smola, A.; Müller, K.-R. Nonlinear Component Analysis as
+       a Kernel Eigenvalue Problem. *Neural Comput.* **1998**, 10 (5), 1299-1319.
+       https://doi.org/10.1162/089976698300017467
+    .. [6] The ``mode="axis_cut"``/``"grid"`` splitting rules are chemsplit's own; they have no published
+       origin.
     """
 
     splitter_id: ClassVar[str] = "projection"
@@ -875,6 +905,19 @@ class LatentSpaceSplitter(_ClusterCountMixin, GroupSplitter):
     - Latent geometry drifts with checkpoint, tokenizer, and pooling choices, so a split reproduces only against a pinned encoder artefact.
     - Cosine distance in a latent space has no chemical units, so fingerprint-space cutoff intuitions don't transfer.
 
+
+    References
+    ----------
+    .. [1] Clustering a caller-supplied learned embedding has no single published origin. What is documented
+       is the circularity risk this splitter warns about:
+    .. [2] Kapoor, S.; Narayanan, A. Leakage and the Reproducibility Crisis in Machine-Learning-Based
+       Science. *Patterns* **2023**, 4 (9), 100804. https://doi.org/10.1016/j.patter.2023.100804
+    .. [3] Hermann, L.; Fiedler, T.; Nguyen, H. A.; Nowicka, M.; Bartoszewicz, J. M. Beware of Data Leakage
+       from Protein LLM Pretraining. *bioRxiv* preprint, **2024** (not peer reviewed; demonstrated for
+       proteins, not small molecules). https://doi.org/10.1101/2024.07.23.604678
+    .. [4] Deng, J.; Yang, Z.; Wang, H.; Ojima, I.; Samaras, D.; Wang, F. A Systematic Study of Key Elements
+       Underlying Molecular Property Prediction. *Nat. Commun.* **2023**, 14, 6395.
+       https://doi.org/10.1038/s41467-023-41948-6
     """
 
     splitter_id: ClassVar[str] = "latent_space"

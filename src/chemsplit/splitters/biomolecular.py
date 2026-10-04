@@ -96,6 +96,25 @@ class SequenceIdentitySplitter(GroupSplitter):
     - Multi-domain and multi-chain proteins align poorly as single strings; coverage filtering helps but doesn't solve it.
     - `aligner="kmer"` is an approximation and must be disclosed.
 
+
+    References
+    ----------
+    .. [1] Pahikkala, T.; Airola, A.; Pietilä, S. et al. Toward More Realistic Drug-Target Interaction
+       Predictions. *Brief. Bioinform.* **2015**, 16 (2), 325-337. https://doi.org/10.1093/bib/bbu010
+       (the rationale for requiring unseen targets)
+    .. [2] Smith, T. F.; Waterman, M. S. Identification of Common Molecular Subsequences. *J. Mol. Biol.*
+       **1981**, 147 (1), 195-197. https://doi.org/10.1016/0022-2836(81)90087-5; and Needleman, S. B.;
+       Wunsch, C. D. A General Method Applicable to the Search for Similarities in the Amino Acid
+       Sequence of Two Proteins. *J. Mol. Biol.* **1970**, 48 (3), 443-453.
+       https://doi.org/10.1016/0022-2836(70)90057-4
+    .. [3] ``algorithm="parasail"``: Daily, J. Parasail: SIMD C Library for Global, Semi-Global, and Local
+       Pairwise Sequence Alignments. *BMC Bioinformatics* **2016**, 17, 81.
+       https://doi.org/10.1186/s12859-016-0930-z
+    .. [4] Established identity-clustering tools solving the same grouping problem: Li, W.; Godzik, A.
+       Cd-hit. *Bioinformatics* **2006**, 22 (13), 1658-1659.
+       https://doi.org/10.1093/bioinformatics/btl158; Steinegger, M.; Söding, J. MMseqs2 Enables
+       Sensitive Protein Sequence Searching for the Analysis of Massive Data Sets. *Nat. Biotechnol.*
+       **2017**, 35 (11), 1026-1028. https://doi.org/10.1038/nbt.3988
     """
 
     splitter_id: ClassVar[str] = "sequence_identity"
@@ -190,6 +209,18 @@ class ProteinFamilySplitter(GroupSplitter):
     - Most datasets have very few families, so holding one out is high-variance; prefer leave-one-family-out via `leave_one_cluster_out`.
     - Family sizes are extremely skewed (kinases dominate public data), so the requested ratio is usually unreachable.
 
+
+    References
+    ----------
+    .. [1] Holding out caller-supplied family labels is generic; the hierarchies and the leave-family-out
+       precedent are published:
+    .. [2] Mistry, J.; Chuguransky, S.; Williams, L. et al. Pfam: The Protein Families Database in 2021.
+       *Nucleic Acids Res.* **2021**, 49 (D1), D412-D419. https://doi.org/10.1093/nar/gkaa913
+    .. [3] Zdrazil, B.; Felix, E.; Hunter, F. et al. The ChEMBL Database in 2023. *Nucleic Acids Res.*
+       **2024**, 52 (D1), D1180-D1192. https://doi.org/10.1093/nar/gkad1004
+    .. [4] Kramer, C.; Gedeck, P. Leave-Cluster-Out Cross-Validation Is Appropriate for Scoring
+       Functions Derived from Diverse Protein Data Sets. *J. Chem. Inf. Model.* **2010**, 50 (11),
+       1961-1969. https://doi.org/10.1021/ci100264e
     """
 
     splitter_id: ClassVar[str] = "protein_family"
@@ -249,6 +280,20 @@ class BindingSiteSplitter(GroupSplitter):
     - Pocket residue lists from a single co-crystal reflect one ligand's contacts, not the pocket itself.
     - Unavailable for targets without structures, so the method silently applies only to the structurally characterised subset unless the caller handles the rest -- which is why missing pockets raise rather than get dropped.
 
+
+    References
+    ----------
+    .. [1] No publication defines this exact splitter; the pocket representation and the clustering do:
+    .. [2] Weill, N.; Rognan, D. Alignment-Free Ultra-High-Throughput Comparison of Druggable
+       Protein-Ligand Binding Sites. *J. Chem. Inf. Model.* **2010**, 50 (1), 123-135.
+       https://doi.org/10.1021/ci900349y (FuzCav; the residue-composition fingerprint
+       ``representation="composition"`` mirrors)
+    .. [3] Ehrt, C.; Brinkjost, T.; Koch, O. Impact of Binding Site Comparisons on Medicinal Chemistry and
+       Rational Molecular Design. *J. Med. Chem.* **2016**, 59 (9), 4121-4151.
+       https://doi.org/10.1021/acs.jmedchem.6b00078 (distant sequences can share near-identical pockets)
+    .. [4] Butina, D. Unsupervised Data Base Clustering Based on Daylight's Fingerprint and Tanimoto
+       Similarity. *J. Chem. Inf. Comput. Sci.* **1999**, 39 (4), 747-750.
+       https://doi.org/10.1021/ci9803381
     """
 
     splitter_id: ClassVar[str] = "binding_site"
@@ -357,6 +402,19 @@ class DepositionDateSplitter(BaseSplitter):
     - Pruning by ligand similarity removes exactly the complexes most informative for testing, which depresses absolute scores intentionally -- but makes cross-study comparison unsafe unless the ceilings match.
     - Sequence pruning is off by default because it needs sequences; leaving it off keeps homologous complexes in training, as the docstring notes.
 
+
+    References
+    ----------
+    .. [1] Li, Y.; Yang, J. Structural and Sequence Similarity Makes a Significant Impact on
+       Machine-Learning-Based Scoring Functions for Protein-Ligand Interactions.
+       *J. Chem. Inf. Model.* **2017**, 57 (4), 1007-1012. https://doi.org/10.1021/acs.jcim.7b00049
+    .. [2] Li, J.; Guan, X.; Zhang, O. et al. Leak Proof PDBBind: A Reorganized Data Set of
+       Protein-Ligand Complexes for More Generalizable Binding Affinity Prediction.
+       *J. Phys. Chem. B* **2026**, 130 (2), 730-740. https://doi.org/10.1021/acs.jpcb.5c08598
+       (a temporal holdout combined with sequence/ligand-similarity de-leaking, as here)
+    .. [3] Su, M.; Yang, Q.; Du, Y. et al. Comparative Assessment of Scoring Functions: The CASF-2016
+       Update. *J. Chem. Inf. Model.* **2019**, 59 (2), 895-913.
+       https://doi.org/10.1021/acs.jcim.8b00545
     """
 
     splitter_id: ClassVar[str] = "deposition_date"
@@ -479,6 +537,20 @@ class ComplexJointSplitter(BaseSplitter):
     - A tiny test set invites over-interpreting a single number -- report per-complex results, not just an aggregate.
     - `mode="either_novel"` is much weaker and is frequently reported as if it were `"both_novel"`.
 
+
+    References
+    ----------
+    .. [1] Pahikkala, T.; Airola, A.; Pietilä, S. et al. Toward More Realistic Drug-Target Interaction
+       Predictions. *Brief. Bioinform.* **2015**, 16 (2), 325-337. https://doi.org/10.1093/bib/bbu010
+       (setting S4: both the compound and the target are unseen)
+    .. [2] Li, J.; Guan, X.; Zhang, O. et al. Leak Proof PDBBind: A Reorganized Data Set of
+       Protein-Ligand Complexes for More Generalizable Binding Affinity Prediction.
+       *J. Phys. Chem. B* **2026**, 130 (2), 730-740. https://doi.org/10.1021/acs.jpcb.5c08598
+    .. [3] Durairaj, J.; Adeshina, Y.; Cao, Z. et al. PLINDER: The Protein-Ligand Interactions Dataset and
+       Evaluation Resource. *bioRxiv* preprint, **2024** (not peer reviewed).
+       https://doi.org/10.1101/2024.07.17.603955
+    .. [4] The ``sqrt(f)`` sizing rule that reaches the requested test fraction on two axes at once is
+       chemsplit's own; it has no published origin.
     """
 
     splitter_id: ClassVar[str] = "complex_joint"

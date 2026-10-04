@@ -150,6 +150,14 @@ class GroupKFoldSplitter(GroupSplitter):
     - Greedy bin packing is deterministic but not optimal, so an adversarial group-size distribution can still yield a badly skewed fold.
     - With few groups, `n_splits` is capped and folds end up large and highly correlated.
 
+
+    References
+    ----------
+    .. [1] Roberts, D. R.; Bahn, V.; Ciuti, S. et al. Cross-Validation Strategies for Data with Temporal,
+       Spatial, Hierarchical, or Phylogenetic Structure. *Ecography* **2017**, 40 (8), 913-929.
+       https://doi.org/10.1111/ecog.02881
+    .. [2] Hastie, T.; Tibshirani, R.; Friedman, J. *The Elements of Statistical Learning*, 2nd ed.;
+       Springer: New York, **2009**; Chapter 7. https://doi.org/10.1007/978-0-387-84858-7
     """
 
     splitter_id: ClassVar[str] = "group_k_fold"
@@ -282,6 +290,13 @@ class ThreeWaySplitter(BaseSplitter):
     - With `order="test_first"`, `valid_size` is relative to the whole dataset but realised within `1 - test_frac`; realised sizes are reported and may differ slightly from the request.
     - Applying a group-forming criterion twice compounds the size drift.
 
+
+    References
+    ----------
+    .. [1] Hastie, T.; Tibshirani, R.; Friedman, J. *The Elements of Statistical Learning*, 2nd ed.;
+       Springer: New York, **2009**; Chapter 7. https://doi.org/10.1007/978-0-387-84858-7
+    .. [2] Tropsha, A. Best Practices for QSAR Model Development, Validation, and Exploitation.
+       *Mol. Inf.* **2010**, 29 (6-7), 476-488. https://doi.org/10.1002/minf.201000061
     """
 
     splitter_id: ClassVar[str] = "three_way"
@@ -377,6 +392,14 @@ class RepeatedSplitter(BaseSplitter):
     - The spread across repeats measures split variance, not model uncertainty -- don't report it as a model confidence interval.
     - Cost multiplies directly, so `O(n²)` splitters get expensive fast.
 
+
+    References
+    ----------
+    .. [1] Krstajic, D.; Buturovic, L. J.; Leahy, D. E.; Thomas, S. Cross-Validation Pitfalls When
+       Selecting and Assessing Regression and Classification Models. *J. Cheminform.* **2014**,
+       6 (1), 10. https://doi.org/10.1186/1758-2946-6-10
+    .. [2] Picard, R. R.; Cook, R. D. Cross-Validation of Regression Models. *J. Am. Stat. Assoc.*
+       **1984**, 79 (387), 575-583. https://doi.org/10.1080/01621459.1984.10478083
     """
 
     splitter_id: ClassVar[str] = "repeated"
@@ -465,6 +488,14 @@ class NestedCVSplitter(BaseSplitter):
     - Re-clustering inside each outer fold changes the grouping, so inner and outer criteria differ even under the same class -- `inner_grouping` discloses this.
     - Estimates the performance of the *whole tuning procedure*, not one chosen model -- the final model must be refit on all data and can't inherit the nested estimate as its own.
 
+
+    References
+    ----------
+    .. [1] Varma, S.; Simon, R. Bias in Error Estimation When Using Cross-Validation for Model Selection.
+       *BMC Bioinformatics* **2006**, 7, 91. https://doi.org/10.1186/1471-2105-7-91
+    .. [2] Cawley, G. C.; Talbot, N. L. C. On Over-Fitting in Model Selection and Subsequent Selection
+       Bias in Performance Evaluation. *J. Mach. Learn. Res.* **2010**, 11, 2079-2107.
+       https://www.jmlr.org/papers/v11/cawley10a.html
     """
 
     splitter_id: ClassVar[str] = "nested_cv"
@@ -585,6 +616,13 @@ class ExternalHoldoutSplitter(BaseSplitter):
     - A single external set is one sample of one distribution -- a good score is evidence, not proof.
     - Overlap removal biases the training set by dropping exactly the compounds most similar to the evaluation set.
 
+
+    References
+    ----------
+    .. [1] Golbraikh, A.; Tropsha, A. Beware of q2! *J. Mol. Graph. Model.* **2002**, 20 (4), 269-276.
+       https://doi.org/10.1016/S1093-3263(01)00123-1
+    .. [2] Tropsha, A. Best Practices for QSAR Model Development, Validation, and Exploitation.
+       *Mol. Inf.* **2010**, 29 (6-7), 476-488. https://doi.org/10.1002/minf.201000061
     """
 
     splitter_id: ClassVar[str] = "external_holdout"
@@ -673,6 +711,18 @@ class ApplicabilityDomainSplitter(BaseSplitter):
     - Leverage assumes a linear model and a full-rank descriptor matrix; on fingerprints it's nearly meaningless without heavy dimensionality reduction.
     - A monotone-looking curve can be an artefact of a confound (molecular size increasing with distance) -- check what actually varies along the bands before interpreting it.
 
+
+    References
+    ----------
+    .. [1] Sheridan, R. P.; Feuston, B. P.; Maiorov, V. N.; Kearsley, S. K. Similarity to Molecules in the
+       Training Set Is a Good Discriminator for Prediction Accuracy in QSAR. *J. Chem. Inf. Comput.
+       Sci.* **2004**, 44 (6), 1912-1928. https://doi.org/10.1021/ci049782w
+    .. [2] Jaworska, J.; Nikolova-Jeliazkova, N.; Aldenberg, T. QSAR Applicability Domain Estimation by
+       Projection of the Training Set in Descriptor Space: A Review. *Altern. Lab. Anim.* **2005**,
+       33 (5), 445-459. https://doi.org/10.1177/026119290503300508
+    .. [3] Sahigara, F.; Mansouri, K.; Ballabio, D. et al. Comparison of Different Approaches to Define
+       the Applicability Domain of QSAR Models. *Molecules* **2012**, 17 (5), 4791-4810.
+       https://doi.org/10.3390/molecules17054791
     """
 
     splitter_id: ClassVar[str] = "applicability_domain"
@@ -811,6 +861,13 @@ class IntersectionSplitter(BaseSplitter):
     - Only train/test and train/valid are checked; test and valid may still share a `secondary` group.
     - Composing more than two criteria requires nesting `IntersectionSplitter` inside another one -- the conflict-resolution order then matters and isn't commutative in general.
 
+
+    References
+    ----------
+    .. [1] No single published origin: this is a composition of two independent splitting criteria. The
+       need to control several leakage channels at once is argued in Sheridan, R. P. Time-Split
+       Cross-Validation as a Method for Estimating the Goodness of Prospective Prediction.
+       *J. Chem. Inf. Model.* **2013**, 53 (4), 783-790. https://doi.org/10.1021/ci400084k
     """
 
     splitter_id: ClassVar[str] = "intersection"

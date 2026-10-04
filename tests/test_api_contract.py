@@ -419,19 +419,18 @@ def test_unknown_splitter_raises_with_suggestions():
 
 
 # -
-# Docstring sections: splitters implementing a published method cite it.
+# Docstring sections: every splitter states its advantages, its pitfalls, and its sources.
 # -
 
-_REFERENCED_IDS = [
-    "spxy", "sphere_exclusion", "opti_sim", "minimal_test_set_dissimilarity", "support_points",
-    "duplex", "d_optimal", "self_organizing_map", "distinct_label", "fidelity", "substructure",
-    "max_min", "spectral", "stratified_random", "k_fold",
-]
-
-
-@pytest.mark.parametrize("splitter_id", _REFERENCED_IDS)
+@pytest.mark.parametrize("splitter_id", ALL_IDS)
 def test_docstring_has_advantages_pitfalls_and_references(splitter_id):
+    """Every splitter documents its trade-offs and cites its scientific source(s).
+
+    Splitters with no single published origin still carry a References section that says so and
+    cites the underlying method or the evidence behind their documented pitfalls.
+    """
     doc = REGISTRY[splitter_id].__doc__ or ""
     for section in ("Advantages\n    ----------", "Pitfalls\n    --------", "References\n    ----------"):
         assert section in doc, f"{splitter_id}: docstring lacks {section.split()[0]!r}"
-    assert "https://" in doc.split("References", 1)[1]
+    references = doc.split("References\n    ----------", 1)[1]
+    assert "https://" in references, f"{splitter_id}: References section has no resolvable link"
