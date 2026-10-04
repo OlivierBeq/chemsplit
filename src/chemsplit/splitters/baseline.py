@@ -48,9 +48,10 @@ class RandomSplitter(BaseSplitter):
     The cheapest possible split and the correct control for "is my pipeline wired correctly?" --
     see Pitfalls below for why it is the wrong tool for "will this generalise?".
 
-    :param shuffle: If ``False``, the split is a contiguous prefix/suffix cut in input order and
-        ``random_state`` is ignored (an *index split*).
-    :param base: See :class:`chemsplit.base.BaseSplitter`.
+    :param shuffle: when ``False``, the split is a contiguous prefix/suffix cut in input order
+        and ``random_state`` is ignored, i.e. an index split.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ParameterError: if ``shuffle`` is not a bool.
 
     Notes
     -----
@@ -62,18 +63,24 @@ class RandomSplitter(BaseSplitter):
     Advantages
     ----------
     - Linear-time and dependency-free: no featurization, no chemistry, nothing to compute.
-    - The only split that leaves train and test distributionally identical by construction, so it is the right control for "is my pipeline wired correctly?" rather than "will this generalise?".
-    - An unbiased estimate of interpolation error within the dataset's own chemical space -- the correct answer when the deployment library is drawn from that same space (e.g. re-scoring a collection you already own).
-    - Lower variance across seeds than any structural split, making small model differences easier to detect.
+    - The only split that leaves train and test distributionally identical by construction, so
+      it answers "is my pipeline wired correctly?" rather than "will this generalise?".
+    - An unbiased estimate of interpolation error within the dataset's own chemical space,
+      which is the right question when the deployment library comes from that space too.
+    - Lower variance across seeds than any structural split, so small model differences are
+      easier to detect.
 
     Pitfalls
     --------
-    - Scatters congeneric series across train and test, so near-duplicates land on both sides and reported metrics overstate prospective performance, often by 0.2-0.4 in R² or ROC-AUC.
-    - On datasets built from a handful of papers, a random split can be close to a memorisation test, where a nearest-neighbour baseline matches a deep model.
+    - Scatters congeneric series across train and test, so near-duplicates land on both sides
+      and metrics overstate prospective performance, often by 0.2-0.4 in R² or ROC-AUC.
+    - On datasets built from a handful of papers, a random split comes close to a memorisation
+      test, where a nearest-neighbour baseline matches a deep model.
     - Says nothing about scaffold generalisation, temporal drift, or assay-protocol shift.
-    - Exact duplicates (salts, tautomers, unspecified stereocentres) straddle the boundary unless removed first -- see `chemsplit.preprocess.find_duplicates` and `aggregate_replicates`.
-    - Reporting only a random-split number is the most common cause of irreproducible QSAR results.
-
+    - Salts, tautomers and unspecified stereocentres straddle the boundary unless
+      `chemsplit.preprocess` removes them first.
+    - A random-split number on its own is the most common cause of irreproducible QSAR
+      results.
 
     References
     ----------
@@ -100,9 +107,8 @@ class RandomSplitter(BaseSplitter):
         self.shuffle = shuffle
         if not isinstance(shuffle, bool):
             raise ParameterError(f"shuffle must be bool, got {shuffle!r}")
-        # Instance-level override of the ClassVar default: deterministic without a seed only
-        # when shuffle=False (an index split). Not a @property: registry-style introspection
-        # elsewhere may read this off the class or an unconstructed default instance.
+        # instance-level override: seed-free only for an index split. Not a @property, since
+        # introspection elsewhere reads this off the class or a default instance.
         self.deterministic_without_seed = not shuffle
 
     def _partition(self, ctx: _Context) -> list[SplitResult]:
@@ -192,7 +198,10 @@ def _compute_strata(
         if is_intlike:
             resolved_task = "classification"
         else:
-            n_distinct = len(np.unique(y[~np.isnan(y.astype(float))])) if y.dtype.kind == "f" else len(np.unique(y))
+            if y.dtype.kind == "f":
+                n_distinct = len(np.unique(y[~np.isnan(y.astype(float))]))
+            else:
+                n_distinct = len(np.unique(y))
             resolved_task = "classification" if n_distinct <= 20 else "regression"
 
     if resolved_task == "classification":
@@ -230,42 +239,56 @@ class StratifiedRandomSplitter(BaseSplitter):
     """Random split stratified on the label (class balance for classification, quantile/uniform/
     k-means bins for regression), sized per-stratum by largest-remainder apportionment.
 
-    :param task: ``"auto"``, ``"classification"``, or ``"regression"``.
-    :param n_bins: Number of quantile/uniform/k-means bins for regression stratification.
-    :param binning: ``"quantile"``, ``"uniform"``, or ``"kmeans"``.
-    :param min_per_stratum: Minimum stratum size before ``on_small_stratum`` kicks in.
-    :param on_small_stratum: ``"merge"``, ``"raise"``, or ``"ignore"``.
-    :param multitask: How 2-D ``y`` is handled: ``"error"``, ``"first"``, ``"sum_labels"``,
-        ``"iterative"`` (iterative stratification of binary multi-label data, Sechidis et al.) or
-        ``"iterative_pairs"`` (its second-order variant over label pairs, Szymański &
-        Kajdanowicz).
-    :param base: See :class:`chemsplit.base.BaseSplitter`.
+    :param task: treat ``y`` as classes or as a continuous label to bin. ``"auto"`` decides
+        from the number of distinct values.
+    :param n_bins: how many bins to cut a regression label into.
+    :param binning: equal-frequency quantiles, equal-width bins, or 1-D k-means.
+    :param min_per_stratum: smallest stratum size before ``on_small_stratum`` applies.
+    :param on_small_stratum: merge an undersized stratum into its neighbour, raise, or leave it
+        alone.
+    :param multitask: how a 2-D ``y`` is handled: raise, use the first column, stratify on the
+        row sum, or run iterative stratification over single labels or over label pairs.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ParameterError: if ``n_bins`` is below 2, ``min_per_stratum`` is below 1, or
+        ``task``, ``binning``, ``on_small_stratum`` or ``multitask`` is unknown.
+    :raises LabelError: at split time, if ``y`` is missing, or is 2-D with
+        ``multitask="error"``, or is non-binary under an iterative mode.
 
     Notes
     -----
-    Per-stratum quotas use Hare-quota (largest-remainder) apportionment,
-    which guarantees exact totals and off-target deviation of at most one record per stratum.
-    ``purpose="stratified.permutation"``. ``multitask="iterative"``/``"iterative_pairs"`` need
-    binary labels (0, 1 or NaN for unmeasured) and assign records label by label, rarest first,
-    to the partition that most needs that label (ties to the emptier partition, then to the
-    ``"stratified.iterative"`` stream); full partitions are skipped so sizes are exact. In
-    ``"iterative_pairs"`` a record with a single positive label is balanced on that label.
+    Per-stratum quotas use Hare-quota apportionment, so totals are exact and each stratum is
+    off target by at most one record. The iterative modes need binary labels (0, 1, or NaN for
+    unmeasured) and assign records label by label, rarest first, to the partition that most
+    needs that label; ties go to the emptier partition, then to the stream. Full partitions
+    are skipped, so sizes stay exact. Under ``"iterative_pairs"`` a record with one positive
+    label is balanced on that label. Streams: ``"stratified.permutation"``,
+    ``"stratified.iterative"``.
 
     Advantages
     ----------
-    - Guarantees every class, or every label decile, appears in every partition -- essential for imbalanced data where a naive random split can leave a fold with zero actives.
-    - Cuts the variance of ROC-AUC/PR-AUC/R² estimates on small datasets, often more than any change to the model.
-    - Largest-remainder apportionment keeps realised sizes exactly reproducible and off by at most one record per stratum.
-    - The same mechanism handles regression through quantile binning, so one splitter serves both task types.
+    - Guarantees every class, or every label decile, appears in every partition, which matters
+      for imbalanced data where a naive random split can leave a fold with zero actives.
+    - Cuts the variance of ROC-AUC/PR-AUC/R² estimates on small datasets, often more than any
+      change to the model does.
+    - Largest-remainder apportionment keeps realised sizes reproducible and off by at most one
+      record per stratum.
+    - The same mechanism handles regression through quantile binning, so one splitter serves
+      both task types.
 
     Pitfalls
     --------
-    - Only controls the **label** distribution; says nothing about chemical similarity, and the word "stratified" tempts people to treat it as a rigorous split.
-    - Quantile binning on a heavily tied label (e.g. a censored `pIC50 = 5.0` for every inactive) produces degenerate bins -- check `metadata["bin_edges"]`.
-    - Stratifying on the label leaks the label distribution into the split design; on very small `n` this mildly biases the test set toward looking like train.
-    - Multi-task stratification is genuinely hard: `multitask="sum_labels"` is a crude heuristic. `"iterative"` balances each label to within about one record per partition but not label co-occurrence; `"iterative_pairs"` balances co-occurrence at some cost to rare single labels. For sparse multi-task regression matrices prefer `BalancedMultiTaskSplitter`.
-    - Merging small strata changes the effective `n_bins`; read it back from `metadata["n_strata"]` instead of assuming the requested value held.
-
+    - Controls the **label** distribution only. It says nothing about chemical similarity, and
+      the word "stratified" invites treating it as a rigorous split.
+    - Quantile binning on a heavily tied label, e.g. a censored `pIC50 = 5.0` for every
+      inactive, produces degenerate bins. `metadata["bin_edges"]` shows them.
+    - Stratifying on the label puts the label distribution into the split design, which on very
+      small `n` biases the test set toward looking like train.
+    - Multi-task stratification is hard: `"sum_labels"` is crude, `"iterative"` balances each
+      label to within about one record but not co-occurrence, and `"iterative_pairs"` balances
+      co-occurrence at the cost of rare single labels. Sparse regression matrices want
+      `BalancedMultiTaskSplitter`.
+    - Merging small strata changes the effective `n_bins`, so the realised count is in
+      `metadata["n_strata"]` rather than the requested value.
 
     References
     ----------
@@ -296,7 +319,9 @@ class StratifiedRandomSplitter(BaseSplitter):
         binning: Literal["quantile", "uniform", "kmeans"] = "quantile",
         min_per_stratum: int = 2,
         on_small_stratum: Literal["merge", "raise", "ignore"] = "merge",
-        multitask: Literal["error", "first", "sum_labels", "iterative", "iterative_pairs"] = "error",
+        multitask: Literal[
+            "error", "first", "sum_labels", "iterative", "iterative_pairs"
+        ] = "error",
         **base: Any,
     ) -> None:
         super().__init__(**base)
@@ -323,7 +348,11 @@ class StratifiedRandomSplitter(BaseSplitter):
         if self.multitask in _ITERATIVE_MODES and np.asarray(ctx.y).ndim == 2:
             return self._iterative_partition(ctx)
         strata, resolved_task = _compute_strata(
-            ctx.y, task=self.task, n_bins=self.n_bins, binning=self.binning, multitask=self.multitask
+            ctx.y,
+            task=self.task,
+            n_bins=self.n_bins,
+            binning=self.binning,
+            multitask=self.multitask,
         )
         strata = self._handle_small_strata(strata, resolved_task)
 
@@ -387,7 +416,9 @@ class StratifiedRandomSplitter(BaseSplitter):
             fold = iterative_stratification(
                 np.asarray(ctx.y), (*sizes, discard_n), rng, order=order, owner=type(self).__name__
             )
-            train, valid, test, discard = (np.flatnonzero(fold == m).astype(np.int64) for m in range(4))
+            train, valid, test, discard = (
+                np.flatnonzero(fold == m).astype(np.int64) for m in range(4)
+            )
             results.append(
                 SplitResult(
                     train=train,
@@ -420,8 +451,8 @@ class StratifiedRandomSplitter(BaseSplitter):
             )
         if self.on_small_stratum == "ignore":
             return strata
-        # Regression bins are ordered (merge by index); classification codes aren't (merge by
-        # frequency, ties -> lowest index).
+        # regression bins are ordered, so merge by index; class codes aren't, so merge by
+        # frequency with ties to the lowest index
         strata = strata.copy()
         all_strata = sorted(counts)
         for s in small:
@@ -441,39 +472,46 @@ class StratifiedRandomSplitter(BaseSplitter):
 class KFoldSplitter(BaseSplitter):
     """Standard (optionally stratified, optionally leave-one-out) k-fold cross-validation.
 
-    :param n_splits: Number of folds, or ``"loo"`` for leave-one-out.
-    :param shuffle: Whether to shuffle before folding.
-    :param stratify: Whether to stratify folds on the label.
-    :param stratify_kwargs: Extra kwargs forwarded to the stratification helper, or ``None``.
-    :param multitask: With ``stratify=True`` and 2-D binary ``y``: ``"iterative"`` or
-        ``"iterative_pairs"`` stratify the folds by iterative multi-label stratification (see
-        :class:`StratifiedRandomSplitter`; ``"kfold.iterative"`` stream). ``"error"`` rejects 2-D
-        ``y``. Defaults to ``"error"``.
-    :param base: See :class:`chemsplit.base.BaseSplitter`. ``train_size``/``valid_size``/
-        ``test_size`` MUST be left ``None`` here (fold sizes are determined by ``n_splits``);
-        passing any raises :class:`chemsplit.exceptions.ConfigurationError`.
+    :param n_splits: number of folds, or ``"loo"`` for leave-one-out.
+    :param shuffle: shuffle the records before folding.
+    :param stratify: stratify the folds on the label.
+    :param stratify_kwargs: extra kwargs for the stratification helper, or ``None``.
+    :param multitask: as on :class:`StratifiedRandomSplitter`, but only over single labels or
+        label pairs, and only with ``stratify=True``.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`. The size parameters must be
+        left ``None``, since ``n_splits`` determines the fold sizes.
+    :raises ConfigurationError: a :class:`chemsplit.exceptions.ConfigurationError` if a size
+        parameter is set, or ``multitask`` is used without ``stratify=True``.
+    :raises ParameterError: if ``n_splits`` is neither an int above 1 nor ``"loo"``.
+    :raises ScalabilityError: at split time, if ``"loo"`` is asked for above 10,000 records
+        without ``allow_large_loo=True``.
 
     Notes
     -----
-    ``"loo"`` sets ``n_splits = n`` (leave-one-out; guarded above ``n=10_000`` unless
-    ``allow_large_loo=True`` is passed to :meth:`split`). Unshuffled folds are index-contiguous and
-    match ``sklearn.model_selection.KFold(shuffle=False)`` fold *contents* exactly.
-    ``purpose="kfold.permutation"``, ``k=0`` -- one permutation shared by every fold, not one per
-    fold.
+    ``"loo"`` sets ``n_splits = n``, guarded above ``n=10_000`` unless ``allow_large_loo=True``
+    reaches :meth:`split`. Unshuffled folds are index-contiguous and match
+    ``sklearn.model_selection.KFold(shuffle=False)`` fold *contents* exactly. One
+    ``"kfold.permutation"`` draw at ``k=0`` is shared by every fold.
 
     Advantages
     ----------
-    - Every record serves for both training and evaluation, cutting estimator variance on the small assay-sized datasets (n < 2000) this is typically used on.
-    - Yields a *distribution* of scores instead of a single number, so model comparisons can be tested statistically rather than eyeballed.
-    - Composes with any grouping -- feed group labels from any group-forming splitter into `GroupKFoldSplitter` for the structural analogue.
+    - Every record serves for both training and evaluation, which cuts estimator variance on
+      the assay-sized datasets (n < 2000) this is usually used on.
+    - Yields a *distribution* of scores instead of a single number, so model comparisons can be
+      tested statistically rather than eyeballed.
+    - Composes with any grouping: feed group labels from any group-forming splitter into
+      `GroupKFoldSplitter` for the structural analogue.
 
     Pitfalls
     --------
-    - K-fold is a **resampling protocol, not a split criterion**: plain `KFoldSplitter` inherits every weakness of `random`, and calling a model "cross-validated" says nothing about chemical generalisation.
-    - Fold scores aren't independent -- training sets overlap by `(k-2)/(k-1)` -- so a naive standard error across folds understates uncertainty. Use repeated k-fold (`repeated`) and report the spread between repeats.
-    - Selecting hyperparameters on the same folds used for reporting inflates the score; use `NestedCVSplitter` instead.
-    - Leave-one-out has very high variance for classification metrics and ROC-AUC is undefined per fold, so per-fold ranking metrics are left to the caller rather than computed here.
-
+    - A **resampling protocol, not a split criterion**: it inherits every weakness of
+      `random`, and "cross-validated" says nothing about chemical generalisation.
+    - Training sets overlap by `(k-2)/(k-1)`, so a naive standard error across folds
+      understates uncertainty; `repeated` gives the spread between repeats instead.
+    - Selecting hyperparameters on the same folds used for reporting inflates the score;
+      `NestedCVSplitter` separates the two.
+    - Leave-one-out has very high variance for classification metrics, and ROC-AUC is undefined
+      per fold, so per-fold ranking metrics are left to the caller.
 
     References
     ----------
@@ -540,6 +578,12 @@ class KFoldSplitter(BaseSplitter):
         return n if self.n_splits == "loo" else int(self.n_splits)
 
     def get_n_splits(self, X: Any = None, y: Any = None, groups: Any = None) -> int:
+        """Report how many splits will be yielded.
+
+        :param X: the records, needed to resolve ``n_splits="loo"``.
+        :param y: ignored, as is ``groups``.
+        :return: ``n_splits``, or ``len(X)`` when it is ``"loo"``.
+        """
         if self.n_splits == "loo":
             if X is None:
                 return 1
@@ -581,7 +625,9 @@ class KFoldSplitter(BaseSplitter):
             )
             folds = [np.flatnonzero(fold_of == i).tolist() for i in range(k)]
         elif self.stratify:
-            strata, _ = _compute_strata(ctx.y, task="auto", n_bins=10, binning="quantile", multitask="error")
+            strata, _ = _compute_strata(
+                ctx.y, task="auto", n_bins=10, binning="quantile", multitask="error"
+            )
             folds: list[list[int]] = [[] for _ in range(k)]
             for s in sorted(np.unique(strata).tolist()):
                 members = [int(i) for i in perm if strata[i] == s]
@@ -598,7 +644,11 @@ class KFoldSplitter(BaseSplitter):
         results = []
         for i in range(k):
             test = np.sort(np.asarray(folds[i], dtype=np.int64))
-            train = np.sort(np.asarray([idx for j in range(k) if j != i for idx in folds[j]], dtype=np.int64))
+            train = np.sort(
+                np.asarray(
+                    [idx for j in range(k) if j != i for idx in folds[j]], dtype=np.int64
+                )
+            )
             params = _resolved_random_state_params(self, ctx)
             results.append(
                 SplitResult(
@@ -624,34 +674,39 @@ class MonteCarloSplitter(BaseSplitter):
     """Repeated independent random splits (``ShuffleSplit``); unlike :class:`KFoldSplitter`, test
     sets across repeats are NOT disjoint.
 
-    :param n_splits: Number of repeats.
-    :param stratify: Whether to stratify each repeat on the label.
-    :param stratify_kwargs: Extra kwargs forwarded to the stratification helper, or ``None``.
-    :param base: See :class:`chemsplit.base.BaseSplitter`.
+    :param n_splits: number of repeats.
+    :param stratify: stratify each repeat on the label.
+    :param stratify_kwargs: extra kwargs for the stratification helper, or ``None``.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ParameterError: if ``n_splits`` is not an int above 0.
+    :raises LabelError: at split time, if ``stratify=True`` and ``y`` is missing.
 
     Notes
     -----
-    Delegates each repeat to :class:`RandomSplitter`/:class:`StratifiedRandomSplitter` logic with
-    ``purpose="montecarlo.permutation"``, ``k=`` the repeat index.
+    Each repeat runs :class:`RandomSplitter` or :class:`StratifiedRandomSplitter` logic on the
+    ``"montecarlo.permutation"`` stream, keyed by repeat index.
 
     Advantages
     ----------
-    - Decouples test-set size from the repeat count, so a 10% test set can be evaluated 50 times -- not possible with k-fold.
-    - The spread across repeats directly estimates split-induced variance, which for chemical data often exceeds the gap between the models being compared.
+    - Decouples test-set size from the repeat count, so a 10% test set can be evaluated 50
+      times, which k-fold cannot do.
+    - The spread across repeats estimates split-induced variance, which for chemical data often
+      exceeds the gap between the models being compared.
 
     Pitfalls
     --------
-    - Test sets overlap across repeats, so results are correlated and the naive standard error is optimistic.
-    - Some records may never land in any test set (probability `(1-p)^n_splits`); the last fold's `metadata` reports coverage, and callers needing full coverage should use `k_fold`.
+    - Test sets overlap across repeats, so the results are correlated and the naive standard
+      error is optimistic.
+    - Some records may never land in any test set, with probability `(1-p)^n_splits`, and the
+      result does not report which. `k_fold` guarantees full coverage.
     - Inherits every chemical-leakage weakness of `random`.
-
 
     References
     ----------
     .. [1] Picard, R. R.; Cook, R. D. Cross-Validation of Regression Models. *J. Am. Stat. Assoc.*
        **1984**, 79 (387), 575-583. https://doi.org/10.1080/01621459.1984.10478083
-    .. [2] Xu, Q.-S.; Liang, Y.-Z. Monte Carlo Cross Validation. *Chemom. Intell. Lab. Syst.* **2001**,
-       56 (1), 1-11. https://doi.org/10.1016/S0169-7439(00)00122-2
+    .. [2] Xu, Q.-S.; Liang, Y.-Z. Monte Carlo Cross Validation. *Chemom. Intell. Lab. Syst.*
+       **2001**, 56 (1), 1-11. https://doi.org/10.1016/S0169-7439(00)00122-2
     """
 
     splitter_id: ClassVar[str] = "monte_carlo"
@@ -684,6 +739,11 @@ class MonteCarloSplitter(BaseSplitter):
             raise ParameterError(f"n_splits must be >= 1, got {n_splits!r}")
 
     def get_n_splits(self, X: Any = None, y: Any = None, groups: Any = None) -> int:
+        """Report how many splits will be yielded.
+
+        :param X: ignored, as are ``y`` and ``groups``; the signature is sklearn\'s.
+        :return: ``n_splits``, the repeat count.
+        """
         return int(self.n_splits)
 
     def _partition(self, ctx: _Context) -> list[SplitResult]:
@@ -753,38 +813,47 @@ class PredefinedSplitter(BaseSplitter):
     The only way to reproduce a published benchmark's numbers exactly, and the correct way to
     replace an internal (non-shareable) time split with a shareable index list.
 
-    :param assignment: Sequence of partition names, or mapping of partition name to index list.
-        Sequence form: length ``n``, values in ``{"train","valid","test","discard"}``. Mapping
-        form: partition name -> index list; disjoint; unlisted indices go to ``discard``.
-    :param fold_column: Per-record fold id, or ``None``. Values ``>= 0`` are fold ids; ``-1``
-        means "always train". Yields ``n_splits = n_distinct(non-negative)`` folds.
-    :param base: See :class:`chemsplit.base.BaseSplitter`. ``train_size``/``valid_size``/
-        ``test_size`` MUST be ``None``.
+    :param assignment: a length-``n`` sequence of ``"train"``/``"valid"``/``"test"``/
+        ``"discard"``, or a mapping from those names to disjoint index lists, where anything
+        unlisted is discarded.
+    :param fold_column: per-record fold id, or ``None``. Non-negative values are fold ids,
+        ``-1`` means "always train", and the number of distinct ids becomes ``n_splits``.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`. The size parameters must be
+        left ``None``, since the assignment fixes the sizes.
+    :raises ConfigurationError: if neither or both of ``assignment`` and ``fold_column`` are
+        given, or if any size parameter is set.
+    :raises ParameterError: if a partition name is unknown, the indices overlap or fall outside
+        ``range(n)``, or the sequence length does not match ``n``.
 
     Notes
     -----
-    No randomness; direct construction. Exactly one of ``assignment``/``fold_column`` must be
-    given.
+    No randomness. Exactly one of ``assignment`` and ``fold_column`` must be given.
 
     Advantages
     ----------
-    - The only way to reproduce a published benchmark's numbers exactly, which is the whole point of cross-paper comparability.
-    - Zero ambiguity: the split is data, not an algorithm, so it can be shipped, diffed, and checksummed.
-    - Lets an internal time split that can't be published be replaced with a shareable index list.
+    - The only way to reproduce a published benchmark's numbers exactly, which is the whole
+      point of cross-paper comparability.
+    - No ambiguity: the split is data rather than an algorithm, so it can be shipped, diffed
+      and checksummed.
+    - Lets an internal time split that cannot be published be replaced by a shareable index
+      list.
 
     Pitfalls
     --------
-    - Comparability is the *only* guarantee -- several widely used benchmark splits, including some MoleculeNet scaffold splits, contain near-duplicate leakage across the boundary, and inheriting the split inherits the flaw.
-    - A published split is tied to a specific row order; filtering, deduplicating, or re-standardising the dataset silently shifts what the indices point to. Always re-key on InChIKey and verify with `chemsplit.audit.audit_split`.
-    - Encourages leaderboard over-fitting, since the community tunes against one fixed test set for years.
-
+    - Comparability is the *only* guarantee. Several widely used benchmark splits, MoleculeNet
+      scaffold splits among them, carry near-duplicate leakage, and inheriting one inherits
+      the flaw.
+    - Tied to one row order, so filtering or re-standardising shifts what the indices point
+      to. Re-keying on InChIKey, then `chemsplit.audit.audit_split`, catches that.
+    - Encourages leaderboard over-fitting, since the community tunes against one fixed test set
+      for years.
 
     References
     ----------
-    .. [1] No method of its own: this splitter reproduces a partition decided elsewhere. Reporting the
-       exact partition alongside a model is part of standard QSAR practice -- see Tropsha, A. Best
-       Practices for QSAR Model Development, Validation, and Exploitation. *Mol. Inf.* **2010**,
-       29 (6-7), 476-488. https://doi.org/10.1002/minf.201000061
+    .. [1] This splitter reproduces a partition decided elsewhere, so it has no method of its
+       own. Publishing the exact partition alongside a model is standard QSAR practice:
+       Tropsha, A. Best Practices for QSAR Model Development, Validation, and Exploitation.
+       *Mol. Inf.* **2010**, 29 (6-7), 476-488. https://doi.org/10.1002/minf.201000061
     """
 
     splitter_id: ClassVar[str] = "predefined"
@@ -822,6 +891,11 @@ class PredefinedSplitter(BaseSplitter):
                 raise ConfigurationError(f"PredefinedSplitter: {name} must be None")
 
     def get_n_splits(self, X: Any = None, y: Any = None, groups: Any = None) -> int:
+        """Report how many splits will be yielded.
+
+        :param X: ignored, as are ``y`` and ``groups``; the signature is sklearn\'s.
+        :return: the number of distinct non-negative fold ids, or ``1`` for an ``assignment``.
+        """
         if self.fold_column is not None:
             return len({v for v in self.fold_column if v is not None and v >= 0})
         return 1
@@ -876,7 +950,10 @@ class PredefinedSplitter(BaseSplitter):
             splitter_id=self.splitter_id,
             params=params,
             n_records=n,
-            metadata={"source": "assignment", "realised_sizes": _realised_sizes(train, valid, test)},
+            metadata={
+                "source": "assignment",
+                "realised_sizes": _realised_sizes(train, valid, test),
+            },
         )
 
     def _from_fold_column(self, ctx: _Context) -> list[SplitResult]:
@@ -913,7 +990,9 @@ class PredefinedSplitter(BaseSplitter):
                     metadata={
                         "source": "fold_column",
                         "fold_index": int(f),
-                        "realised_sizes": _realised_sizes(train, np.array([], dtype=np.int64), test),
+                        "realised_sizes": _realised_sizes(
+                            train, np.array([], dtype=np.int64), test
+                        ),
                     },
                 )
             )

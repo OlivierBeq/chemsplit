@@ -2029,7 +2029,7 @@ class DOptimalSplitter(BaseSplitter):
     ----------
     - The training set gives the most precise estimates of a linear model's coefficients in the chosen descriptor space -- the classical optimal-design criterion.
     - Deterministic without a seed under the default Kennard-Stone start.
-    - `metadata["log_det"]` reports the achieved criterion, so designs can be compared.
+    - `metadata["train_design"]["log_det"]` reports the achieved criterion, so designs can be compared.
     - Works on PCA scores, so it stays well-posed with many correlated descriptors.
 
     Pitfalls
@@ -2573,8 +2573,8 @@ class BalancedMultiTaskSplitter(GroupSplitter):
     Pitfalls
     --------
     - Infeasibility is common on real sparse matrices -- a task with three actives in one cluster simply can't be balanced. `on_infeasible="relax"` is the pragmatic escape, but a relaxed tolerance means the balance requested isn't the balance achieved; read `metadata["tolerance_used"]`.
-    - Solve time grows quickly with cluster count; the `dust` merge that keeps it tractable changes the grouping in a way that's invisible unless you read `metadata["dust_merged"]`.
-    - Multi-threaded MIP solving is non-deterministic -- raising `threads` above 1 for speed silently breaks reproducibility.
+    - Solve time grows quickly with cluster count, and every backend is wall-clock time-limited by `time_limit_s` (default 300 s), so a solve that hits the limit depends on machine speed rather than on the data alone.
+    - `solver="auto"` dispatches purely on problem size -- exact branch-and-bound for tiny problems, local search above that -- so a dataset crossing the threshold is balanced by a different algorithm; read `metadata["solver"]`. The heuristic backends always report `solver_status="time_limit_feasible"` whether or not the limit bit, so only branch-and-bound and MILP can say the assignment was proven optimal.
     - Balancing on label statistics chooses the split partly using the labels, a mild form of information leakage into the experimental design -- usually the lesser evil versus undefined metrics, but it should be disclosed.
 
 
