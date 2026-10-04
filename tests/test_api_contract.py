@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 
 import numpy as np
@@ -23,10 +24,6 @@ ALL_IDS = sorted(REGISTRY)
 assert len(REGISTRY) == 64, f"expected 64 registered splitters, found {len(REGISTRY)}"
 
 
-# -
-# Shared fixtures / builders
-# -
-
 _SCAFFOLD_FX = ds.make_scaffold_families(n_scaffolds=5, per_scaffold=10, seed=0)  # n=50, 5 groups
 _DATED_FX = ds.make_dated_series(n=50, seed=0)
 _SEQ_FX = ds.make_sequences(n=20, families=4, identity_within=0.8, seed=0)
@@ -41,11 +38,16 @@ _DEPLOYMENT_SET = ds.make_two_clusters(n=50, seed=2).smiles
 _SPECIAL_KWARGS = {
     "predefined": lambda: {"assignment": ["train"] * 40 + ["test"] * 10},  # PredefinedSplitter
     "source": lambda: {"source": _SCAFFOLD_FX.groups_true},  # SourceSplitter
-    "fidelity": lambda: {"fidelity": [i % 3 for i in range(len(_SCAFFOLD_FX.smiles))]},  # FidelitySplitter
+    "fidelity": lambda: {
+        "fidelity": [i % 3 for i in range(len(_SCAFFOLD_FX.smiles))]
+    },  # FidelitySplitter
     "substructure": lambda: {"smarts": "c1ccncc1"},  # SubstructureSplitter: pyridines -> test
     "mood": lambda: {  # MOODSplitter
         "deployment_set": _DEPLOYMENT_SET,
-        "candidates": [RandomSplitter(random_state=0), RandomSplitter(random_state=1, shuffle=True)],
+        "candidates": [
+            RandomSplitter(random_state=0),
+            RandomSplitter(random_state=1, shuffle=True),
+        ],
     },
     "group_k_fold": lambda: {  # GroupKFoldSplitter
         "grouper": __import__(
@@ -70,7 +72,10 @@ _SPECIAL_KWARGS = {
     },
     "decoy_benchmark": lambda: {"decoy_pool": _DECOY_POOL},  # DecoyBenchmarkSplitter
     "party": lambda: {"synthesis": "dirichlet"},  # PartySplitter: avoid needing party=
-    "density_cluster": lambda: {"eps": 0.6, "min_samples": 2},  # DensityClusterSplitter: default eps
+    "density_cluster": lambda: {
+        "eps": 0.6,
+        "min_samples": 2,
+    },  # DensityClusterSplitter: default eps
     # is too tight (everything is "noise") for this small synthetic scaffold-family dataset.
     "protein_family": lambda: {  # ProteinFamilySplitter: accepts includes "sequences" (and not
         # "smiles"), so the generic builder routes it to _SEQ_FX (n=20), not _SCAFFOLD_FX (n=50).
@@ -78,9 +83,11 @@ _SPECIAL_KWARGS = {
     },
     "binding_site": lambda: {"representation": "pocket_sequence"},  # BindingSiteSplitter
     "deposition_date": lambda: {"cut_date": "2017-06-01"},  # DepositionDateSplitter
-    "scaffold_hop": lambda: {"min_pharm_similarity": 0.05},  # ScaffoldHopSplitter: the strict default
+    "scaffold_hop": lambda: {
+        "min_pharm_similarity": 0.05
+    },  # ScaffoldHopSplitter: the strict default
     # (every member of a held-out scaffold must be pharmacophore-similar to a train active) is
-    # rarely satisfiable on a small synthetic scaffold set; loosened here for contract-test purposes.
+    # rarely satisfiable on a small synthetic scaffold set, so loosened for the contract test
 }
 
 # Binary {0,1} activity labels, spread across all 5 scaffold groups (needed by scaffold_hop/ave,
@@ -109,7 +116,10 @@ def _default_build_x_y(cls: type[BaseSplitter]):
         X = _SEQ_FX.sequences
         extra_kw["X_kind"] = "sequences"  # Sequence[str] defaults to SMILES otherwise
     elif "interactions" in cls.accepts:
-        X = [(_INTERACTIONS_FX.smiles[c], _INTERACTIONS_FX.targets[t]) for (c, t, _y) in _INTERACTIONS_FX.interactions]
+        X = [
+            (_INTERACTIONS_FX.smiles[c], _INTERACTIONS_FX.targets[t])
+            for (c, t, _y) in _INTERACTIONS_FX.interactions
+        ]
     else:
         X = _FEATURES
 
@@ -120,36 +130,49 @@ def _default_build_x_y(cls: type[BaseSplitter]):
     return X, y, extra_kw
 
 
-# A few splitters need label/feature *shapes* the generic builder above can't produce (real
-# activity-cliff structure, a 2-D multi-task label matrix, binary activity labels) -- override
-# (X, y, extra_kw) entirely for these rather than bolting more special cases onto the generic path.
+# Splitters needing label or feature *shapes* the generic builder can't produce: real
+# activity-cliff structure, a 2-D multi-task matrix, binary activity labels. They override
+# (X, y, extra_kw) outright instead of adding cases to the generic path.
 _SPECIAL_XY = {
-    "activity_cliff": lambda: (_ACTIVITY_CLIFF_FX.smiles, _ACTIVITY_CLIFF_FX.y, {}),  # ActivityCliffSplitter
-    "balanced_multi_task": lambda: (# BalancedMultiTaskSplitter: requires a 2-D (n, n_tasks) label matrix
+    "activity_cliff": lambda: (
+        _ACTIVITY_CLIFF_FX.smiles,
+        _ACTIVITY_CLIFF_FX.y,
+        {},
+    ),  # ActivityCliffSplitter
+    # BalancedMultiTaskSplitter needs a 2-D (n, n_tasks) label matrix
+    "balanced_multi_task": lambda: (
         _SCAFFOLD_FX.smiles,
         np.random.default_rng(0).random((len(_SCAFFOLD_FX.smiles), 3)),
         {},
     ),
-    "scaffold_hop": lambda: (# ScaffoldHopSplitter: needs enough distinct scaffolds among actives to
+    # ScaffoldHopSplitter needs enough distinct scaffolds among the actives to
+    "scaffold_hop": lambda: (
         # find one whose pharmacophore is still similar to a training active -- 5 groups was too
         # few candidates for that constraint to ever be satisfiable on this synthetic data.
-        (_fx:= ds.make_scaffold_families(n_scaffolds=10, per_scaffold=10, seed=1)).smiles,
+        (_fx := ds.make_scaffold_families(n_scaffolds=10, per_scaffold=10, seed=1)).smiles,
         (np.random.default_rng(2).random(len(_fx.smiles)) > 0.5).astype(np.float64),
         {},
     ),
     "ave": lambda: (_SCAFFOLD_FX.smiles, _BINARY_Y, {}),  # AVESplitter
-    "complex_joint": lambda: (# ComplexJointSplitter: needs both ligand smiles and target sequences
+    # ComplexJointSplitter needs both ligand SMILES and target sequences
+    "complex_joint": lambda: (
         _SCAFFOLD_FX.smiles,
         None,
-        {"sequences": [_SEQ_FX.sequences[i % len(_SEQ_FX.sequences)] for i in range(len(_SCAFFOLD_FX.smiles))]},
+        {
+            "sequences": [
+                _SEQ_FX.sequences[i % len(_SEQ_FX.sequences)]
+                for i in range(len(_SCAFFOLD_FX.smiles))
+            ]
+        },
     ),
-    "distinct_label": lambda: (# DistinctLabelSplitter: needs repeated label values to hold any out
+    # DistinctLabelSplitter needs repeated label values to hold any out
+    "distinct_label": lambda: (
         _SCAFFOLD_FX.smiles,
         (np.arange(len(_SCAFFOLD_FX.smiles)) % 10).astype(np.float64),
         {},
     ),
-    "simpd": lambda: (# SIMPDSplitter requires n >= 200
-        (_fx2:= ds.make_scaffold_families(n_scaffolds=10, per_scaffold=20, seed=1)).smiles,
+    "simpd": lambda: (  # SIMPDSplitter requires n >= 200
+        (_fx2 := ds.make_scaffold_families(n_scaffolds=10, per_scaffold=20, seed=1)).smiles,
         np.random.default_rng(3).standard_normal(len(_fx2.smiles)),
         {},
     ),
@@ -176,15 +199,10 @@ def _instance_and_data(splitter_id: str):
     return inst, X, y, extra_kw
 
 
-# A handful of splitters are legitimately slow/heavy for a "run this 64 times in a loop" suite
-# (genetic algorithms, O(n^2) similarity work at n=50 is fine, but GA population*generations is
-# not) -- give those a smaller n or fewer repeats rather than skipping the contract entirely.
+# Genetic-algorithm splitters are too slow for a sweep that runs all 64 in a loop: O(n^2)
+# similarity at n=50 is fine, population*generations is not. They get a smaller problem rather
+# than being skipped.
 _SLOW_IDS = {"simpd", "ave"}  # SIMPDSplitter, AVESplitter (deap GA)
-
-
-# -
-# 1. Registrability
-# -
 
 
 @pytest.mark.parametrize("splitter_id", ALL_IDS)
@@ -194,11 +212,6 @@ def test_registrability(splitter_id):
     assert cls.splitter_id == splitter_id
     assert cls.family in FAMILY_NAMES
     assert splitter_id == reg._camel_to_snake(cls.__name__)
-
-
-# -
-# 2. Metadata completeness
-# -
 
 
 @pytest.mark.parametrize("splitter_id", ALL_IDS)
@@ -216,11 +229,7 @@ def test_metadata_types(splitter_id):
     assert cls.strictness is not None
 
 
-# -
-# 3. sklearn clone()/get_params() round trip -- representative sample of default-constructible
-# splitters across every family.
-# -
-
+# default-constructible splitters, sampled across every family
 _CLONE_SAMPLE = [sid for sid in ALL_IDS if sid not in _SPECIAL_KWARGS and sid not in _SLOW_IDS]
 
 
@@ -235,11 +244,6 @@ def test_clone_and_get_params_roundtrip(splitter_id):
     params = inst.get_params()
     rebuilt = type(inst)(**params)
     assert rebuilt.get_params() == params
-
-
-# -
-# 4. Eager parameter validation
-# -
 
 
 @pytest.mark.parametrize(
@@ -262,23 +266,21 @@ def test_eager_validation_of_train_size_range(splitter_id):
         _make_instance(splitter_id, cls, train_size=1.5)
 
 
-# -
-# 5-7, 9-10. split() output contract, no mutation, determinism, JSON round-trip, group atomicity
-# -- one combined pass over all 64 splitters, since constructing (instance, X, y) is the expensive
-# shared part.
-# -
-
-
 @pytest.mark.parametrize("splitter_id", ALL_IDS)
 def test_split_result_contract(splitter_id):
+    """Check the split() output contract on every splitter in one pass.
+
+    Covers the shape of the result, that the input is not mutated, that a second run with the
+    same seed agrees, that the result round-trips through JSON, and that no group straddles a
+    partition. They share one test because building ``(instance, X, y)`` is the expensive part.
+    """
     cls = REGISTRY[splitter_id]
     inst = _make_instance(splitter_id, cls, random_state=0)
     X, y, extra_kw = _build_x_y(cls, splitter_id)
 
     if splitter_id in _SLOW_IDS:
-        # shrink the GA-based splitters' problem size so the contract suite stays fast; the GA
-        # machinery itself is exercised at full scale in tests/splitters/test_lineage.py and
-        # tests/splitters/test_task.py.
+        # shrink the GA splitters so the contract suite stays fast; the GA runs at full scale
+        # in the lineage and task modules
         pass
 
     X_before = list(X) if not isinstance(X, np.ndarray) else X.copy()
@@ -297,7 +299,7 @@ def test_split_result_contract(splitter_id):
             assert arr.ndim == 1
             if arr.size > 1:
                 assert np.all(np.diff(arr) > 0), f"{name} not strictly ascending"
-        # I2: disjoint + complete over 0.n_records-1
+        # disjoint and complete over 0..n_records-1
         total = result.train.size + result.valid.size + result.test.size + result.discard.size
         assert total == result.n_records
         all_idx = np.concatenate([result.train, result.valid, result.test, result.discard])
@@ -368,11 +370,6 @@ def test_group_atomicity(splitter_id):
         assert not (groups_a & groups_b), f"{splitter_id}: a group spans {a} and {b}"
 
 
-# -
-# 8. Documented error taxonomy
-# -
-
-
 @pytest.mark.parametrize("splitter_id", [sid for sid in ALL_IDS if REGISTRY[sid].requires_labels])
 def test_requires_labels_raises_label_error(splitter_id):
     cls = REGISTRY[splitter_id]
@@ -390,11 +387,6 @@ def test_wrong_input_kind_raises_input_kind_error(splitter_id):
     inst = _make_instance(splitter_id, cls, random_state=0)
     with pytest.raises(InputKindError):
         inst.split_result(_FEATURES)
-
-
-# -
-# 11. Registry lookup consistency
-# -
 
 
 @pytest.mark.parametrize("splitter_id", ALL_IDS)
@@ -418,10 +410,6 @@ def test_unknown_splitter_raises_with_suggestions():
         reg.get_splitter("not_a_real_splitter_xyz")
 
 
-# -
-# Docstring sections: every splitter states its advantages, its pitfalls, and its sources.
-# -
-
 @pytest.mark.parametrize("splitter_id", ALL_IDS)
 def test_docstring_has_advantages_pitfalls_and_references(splitter_id):
     """Every splitter documents its trade-offs and cites its scientific source(s).
@@ -429,8 +417,10 @@ def test_docstring_has_advantages_pitfalls_and_references(splitter_id):
     Splitters with no single published origin still carry a References section that says so and
     cites the underlying method or the evidence behind their documented pitfalls.
     """
-    doc = REGISTRY[splitter_id].__doc__ or ""
-    for section in ("Advantages\n    ----------", "Pitfalls\n    --------", "References\n    ----------"):
+    # cleandoc, not raw __doc__: 3.13+ strips leading indentation at compile time, so matching
+    # indented section underlines would pass on 3.12 and fail everywhere on 3.13.
+    doc = inspect.cleandoc(REGISTRY[splitter_id].__doc__ or "")
+    for section in ("Advantages\n----------", "Pitfalls\n--------", "References\n----------"):
         assert section in doc, f"{splitter_id}: docstring lacks {section.split()[0]!r}"
-    references = doc.split("References\n    ----------", 1)[1]
+    references = doc.split("References\n----------", 1)[1]
     assert "https://" in references, f"{splitter_id}: References section has no resolvable link"
