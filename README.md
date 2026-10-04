@@ -115,6 +115,224 @@ chemsplit --help
 ```
 </details>
 
+## 🎯 Choosing a split
+
+A split is a stand-in for one deployment question: *"how will the model do on the molecules I will actually predict?"* A split is **appropriate** when the relationship between train and test mirrors the relationship between train and the deployment data. It is **biased** when it changes that relationship in one direction: too easy (test molecules sit inside training chemistry) or too hard (an artificially extreme gap). It is **nonsensical** when the axis it separates on has nothing to do with the deployment question -- splitting on Murcko scaffolds to ask whether a model transfers to a new target is of that last kind, because a scaffold says nothing about which target a molecule was made for.
+
+Below, scenarios come first: the deployment question, then which splits answer it, which bias it, and which don't apply. Each scenario lists ✅ the right splits, ➕ useful complements, ⚠️ biased splits (with the direction of the bias), and ❌ nonsensical ones. Names are chemsplit registry ids -- see [Available splitters](#-available-splitters) for the full table of 64.
+
+<details>
+<summary><strong>16 deployment scenarios -- click to expand</strong></summary>
+
+### 1. Checking the pipeline works, or setting an upper bound
+
+> "Is my featurization and training wired correctly? What is the best this model could possibly do?"
+
+- ✅ `random`; `stratified_random` for imbalanced classes; `k_fold` or `repeated` to get a variance.
+- ⚠️ Reporting this number as "generalization" is optimistic, often badly so, because near-duplicates and analogues sit on both sides.
+- ❌ Any extrapolative split here. It mixes up "the pipeline is broken" with "the task is hard".
+
+### 2. Hit identification: screening a large, diverse library
+
+> "I will screen a vendor library or an on-demand chemical space for new actives."
+
+Most deployment molecules are far from anything in training.
+
+- ✅ `hi` (no test molecule above a similarity threshold to train), `similarity_threshold`, `butina`, `sphere_exclusion`, `k_means_cluster` or `opti_sim` (cluster mode) at a cutoff that matches the library's distance to your training set.
+- ✅ `mood`: give it the actual library, and it picks the candidate split whose train→test distances best match train→library.
+- ➕ `applicability_domain` (performance against distance), and `adversarial` in audit mode to confirm the split's shift is the one you intended.
+- ⚠️ `murcko_scaffold`: optimistic. Molecules with different Murcko scaffolds can still be near-identical, for example after adding a ring.
+- ⚠️ `spectral`, `umap_cluster`, `max_dissimilarity`: often more pessimistic than a real library. The hardest split is not the right one unless `mood` says so.
+- ❌ `max_min`/Kennard-Stone, `spxy`, `duplex`, `d_optimal`, `support_points`, `minimal_test_set_dissimilarity`, `distinct_label`, `self_organizing_map` in stratified mode. These put test molecules inside the training distribution by design, which answers the opposite question.
+- ❌ `lo`: it tests ranking within known series, which is not what screening does.
+
+### 3. Lead optimization: predicting new analogues in a known series
+
+> "Chemists will make the next analogues of series we already have data on."
+
+Deployment molecules are close neighbours of training molecules. What matters is ranking within a series and catching small changes with large effects.
+
+- ✅ `temporal` within a project, using real synthesis or registration dates. This is the gold standard: it reproduces the actual design order.
+- ✅ `lo`: holds out clusters of similar molecules that still span a range of activity, and scores ranking within each cluster.
+- ➕ `activity_cliff`, as a diagnostic only, scored separately: are pairs with big potency jumps predicted at all?
+- ➕ `simpd`, but only when real dates are missing.
+- ⚠️ `random` within a project: mildly optimistic, because "future" analogues leak backwards. Acceptable as a lower bound on error.
+- ❌ `hi`, `murcko_scaffold`, `butina`, `matched_molecular_series`, and every cluster split. They remove the series from training, so they ask "predict a series you've never seen", which lead optimization never does.
+
+### 4. Benchmark design: generalisation or memorisation?
+
+> "My model beats the baselines on this benchmark. Is that chemistry, or is it analogue bias?"
+
+The question is not about a deployment set at all; it is about whether the benchmark's own train/test geometry hands the model the answer. A nearest-neighbour baseline that matches a trained model is the symptom.
+
+- ✅ `ave`: minimises the asymmetric nearest-neighbour bias that lets a 1-NN lookup win a virtual screen, and reports `ave_initial` so the debiased and raw scores can be compared.
+- ✅ `decoy_benchmark`: keeps each active grouped with its property-matched decoys so the pair never straddles the boundary, which is the other half of the same artefact.
+- ➕ `adversarial` in audit mode, and `audit_split`'s nearest-neighbour and scaffold-overlap statistics, to quantify the bias before and after.
+- ➕ `hi` or `similarity_threshold` as a contrast arm: a model whose score survives both debiasing and a similarity constraint is learning something.
+- ⚠️ `ave` driven all the way to zero: over-corrects, strips genuine signal with the artefact, and is defined only for binary labels. Report the debiased and raw splits side by side.
+- ⚠️ `murcko_scaffold` as a debiasing measure: it is the split most often found to be analogue-biased, not a fix for it.
+- ⚠️ Property-matched decoys carry a bias of their own -- matching 2-D properties while enforcing topological dissimilarity leaves a latent signature a deep model can learn. Measure it with `ave`.
+- ❌ `max_min`, `d_optimal`, `support_points`, `duplex`, `spxy`. They optimise coverage of the feature space, which neither creates nor removes analogue bias; they just change the subject.
+
+### 5. Activity cliffs: small changes with large effects
+
+> "Will the model notice that this one methyl costs two logs of potency?"
+
+- ✅ `activity_cliff`, with `cliff_mask` used to score cliff and non-cliff compounds separately. The comparison is the result; the aggregate is not.
+- ➕ `matched_molecular_series`: tests whether an R-group effect learned in one constant context transfers to another.
+- ➕ `lo`, which scores within-cluster ranking over clusters that deliberately span an activity range.
+- ⚠️ Cliff detection moves a lot with `similarity_threshold` and `fold_change_threshold`; a conclusion that survives only one setting is a fingerprint artefact, not a finding.
+- ⚠️ Assay noise manufactures cliffs. A 10-fold jump between two single-shot measurements from different papers is measurement error -- aggregate replicates and prefer single-assay data first.
+- ⚠️ `random`: cliff partners land on both sides, so a good aggregate score can coexist with total failure on every cliff.
+- ❌ `hi`, `similarity_threshold`, `butina`, `spectral`, `max_dissimilarity`. A cliff is only a cliff if its partner is in training; remove the neighbourhood and the held-out molecule is merely out of domain, which is a different experiment.
+
+### 6. Scaffold hopping: a new chemotype for the same pharmacophore
+
+> "Will it rank a compound that hits the same target from a different core?"
+
+- ✅ `scaffold_hop`: test actives whose scaffolds are absent from train, while 2-D pharmacophoric similarity to a training active is retained. This is the only splitter here that enforces both halves of the question.
+- ✅ `generic_scaffold`, `scaffold_tree` at a coarse pruning level, or `ring_system` for a label-free, weaker version when actives are too few for `scaffold_hop`.
+- ➕ `intersection` with a scaffold criterion as primary and a similarity grouping as secondary, so a near-identical analogue cannot cross the boundary through a scaffold technicality.
+- ➕ `audit_split`'s shared-scaffold and shared-ring-system counts, which catch the technicality directly.
+- ⚠️ `murcko_scaffold`: optimistic. Adding or opening a ring produces a new scaffold without producing a hop.
+- ⚠️ `hi`, `max_dissimilarity`: too hard in the wrong direction. They remove the pharmacophoric relationship as well as the scaffold, which turns the question back into hit identification.
+- ⚠️ 2-D pharmacophore similarity is a weak proxy for 3-D recognition; a pair that passes `min_pharm_similarity` may bind in completely different ways.
+- ❌ `random`, `stratified_random`, `property`, `label_extrapolation`. None of them separates chemotypes.
+
+### 7. Prospective performance: will it still work next quarter?
+
+> "The project's chemistry is moving. Does the model hold up on compounds that do not exist yet?"
+
+- ✅ `temporal` on real dates, preferably `mode="rolling"` with an `embargo`, so the score is an average over several eras rather than one contiguous, chemically homogeneous block.
+- ✅ `deposition_date` for structure-based models, where redundant re-depositions otherwise put near-identical complexes on both sides of the cut.
+- ➕ `repeated` over rolling windows for a variance estimate, and `applicability_domain` plus `adversarial` (audit) to attribute a drop to chemical drift rather than to assay or volume changes.
+- ➕ `simpd` when no usable dates exist: a GA rearranges the dataset until it reproduces the descriptor and property shifts measured in real time splits.
+- ⚠️ `simpd` as a substitute for dates: it simulates the statistics of a time split, not time. Changing project goals and genuine unforeseeability are not reproduced.
+- ⚠️ `temporal` confounds several shifts at once -- chemistry, protocol, target selection, data volume -- so it shows degradation, not its cause. And dates are frequently wrong: registration, first-test, publication and deposition dates differ, and datasets mix them.
+- ⚠️ `butina`, `murcko_scaffold` as "proxies for time": they capture one component of drift and miss the protocol and selection components entirely.
+- ❌ `random`, `k_fold`, `monte_carlo`, `stratified_distribution`, `minimal_test_set_dissimilarity`, `distinct_label`, `support_points`. Every one of them lets the future leak backwards.
+
+### 8. A different lab, vendor or assay
+
+> "The model was trained on our data. It will be applied to someone else's."
+
+Between-source differences are systematic offsets, not noise: the same Ki measured in two labs routinely differs by more than the model's error bar.
+
+- ✅ `source`, at a hierarchy level that matches the deployment gap -- document-level is weaker than lab-level, assay-level weaker still.
+- ✅ `external_holdout` when the other source's data is already in hand; it forces that dataset to be the entire test set.
+- ➕ `leave_one_cluster_out` or `group_k_fold` over the source labels, since a single held-out source is one sample of one distribution.
+- ➕ `intersection` with `source` as primary and a scaffold or similarity grouping as secondary -- grouping by provenance does **not** guarantee chemical separation, because two labs can publish the same series.
+- ➕ `adversarial` in audit mode, to check the shift you obtained is the one you meant.
+- ⚠️ `source` alone: a `NaN`-heavy source column degenerates silently toward a random split. Read `metadata["n_missing_source"]`.
+- ⚠️ "External" describes provenance, not chemistry: a holdout drawn from the same vendor catalogue is not external in any useful sense. Check `max_similarity_to_train`.
+- ⚠️ `temporal` as a proxy for provenance: eras and sources correlate, which is exactly why neither cleanly isolates the other.
+- ❌ `random`, `k_fold`, `stratified_random`. They distribute every source evenly across both sides, which assumes away the entire question.
+- ❌ `murcko_scaffold`, `butina` as stand-ins for provenance. Chemistry is not the axis that differs.
+
+### 9. Cheap measurements now, expensive measurements later
+
+> "We have thousands of single-shot or computed values and a few hundred dose-response ones. Can the first predict the second?"
+
+- ✅ `fidelity`: train on the low-fidelity levels, test on the highest, with `structure_leakage` controlling what happens to molecules measured at both.
+- ➕ `intersection` or `group_k_fold` over a scaffold or similarity grouping, so that an analogue measured at both fidelities does not reintroduce the leak that `structure_leakage` removes for exact matches.
+- ➕ `source` when fidelity and assay provenance coincide, to separate the two explanations for a drop.
+- ⚠️ `fidelity` confounds the label's fidelity with the chemistry measured at each level -- high-fidelity assays run on already-optimised compounds. The drop is real; its cause is not isolated.
+- ⚠️ Low- and high-fidelity labels may be different quantities on different scales. The split does not harmonise them, and sizes are coarse with few levels: read `metadata["level_partition"]`.
+- ❌ `random` over the pooled levels: the same molecule appears at both fidelities, so the test label is a replicate of a training label.
+- ❌ `label_extrapolation`. It cuts the label *range*, not the label's provenance; the two are routinely confused.
+
+### 10. A consortium model: does it help every contributor?
+
+> "Several partners pool data, or train federated. Is the result useful to the small contributors or only to the largest?"
+
+- ✅ `party` for a deliberately non-IID partition across owners, reported **per party** with `party_sizes` alongside.
+- ✅ `source` whenever real owner labels exist -- real parties beat synthesised ones every time.
+- ➕ `leave_one_cluster_out` or `group_k_fold` over party labels, so each partner takes a turn as the held-out one.
+- ➕ A per-party `temporal` split, since each partner's chemistry drifts on its own schedule.
+- ⚠️ A pooled average across parties is dominated by the largest contributor and hides a model that is useless to everyone else. This is the failure the scenario exists to detect, so never report it.
+- ⚠️ `dirichlet_alpha` has no natural value and must be reported; results at `alpha=0.1` and `alpha=1.0` are not comparable. Synthesised parties model heterogeneity, not the real thing -- real partners differ in assay protocol and target selection, not just chemistry.
+- ⚠️ This is a data split, not a privacy guarantee. It says nothing about what the training scheme leaks.
+- ❌ `random`, `stratified_random`, `k_fold`. Pooling IID is precisely the assumption under test.
+- ❌ `hi`, `murcko_scaffold` as proxies for owner boundaries. Partners are not defined by chemotype.
+
+### 11. A known target, a new compound
+
+> "Fixed panel of targets, novel chemistry against them."
+
+- ✅ `cold_drug` **with** a `compound_grouper` (scaffold- or similarity-based), so held-out compounds are structurally novel rather than merely unseen keys.
+- ➕ `balanced_multi_task` when the matrix is a multi-task problem and every task needs a workable train/test ratio.
+- ➕ `intersection` to stop an analogue of a training compound slipping in under a different identifier.
+- ⚠️ `cold_drug` without a grouper: optimistic. A different registry number is not different chemistry.
+- ⚠️ This is the weakest of the three cold-start settings, and the most often reported as if it were the strongest: a model can score well on target-level marginals ("this kinase is promiscuous") while learning nothing about interactions.
+- ⚠️ Targets can disappear from training altogether, hiding a cold-target evaluation inside a cold-drug split. Read `targets_lost_from_train`.
+- ❌ `random` over interaction records: the same compound appears on both sides against different targets.
+- ❌ `cold_target`, `cold_pair` as substitutes. They answer different questions and their scores are not comparable to this one.
+
+### 12. A new target with no ligand data
+
+> "Can the model say anything about a target we have never screened?"
+
+- ✅ `cold_target` paired with a sequence-identity grouping on the target axis -- holding out a kinase while training on its 95%-identical paralogue is not a cold-target experiment, and the splitter warns every time the grouping is missing.
+- ✅ `leave_one_cluster_out` over target groups when target counts are small, which they almost always are; holding out 20% of thirty targets gives a number with no stable error bar.
+- ➕ `protein_family` to measure how far the novelty extends: a new target inside a familiar family is a much easier question than a new family.
+- ⚠️ Compounds are seen, so compound-level marginals ("this compound is promiscuous") are exploitable in the same way `cold_drug` exploits target marginals.
+- ⚠️ Each held-out target brings its own assay protocol, so the biological shift arrives bundled with a protocol shift.
+- ❌ `random`, `cold_drug`, and any ligand-axis split -- `murcko_scaffold`, `butina`, `hi`. Separating the compound axis answers the compound question, whatever the target axis happens to do.
+
+### 13. Both new at once
+
+> "A new compound against a new target -- the honest worst case for an interaction model."
+
+- ✅ `cold_pair`, with groupers on both axes (ligand similarity or scaffold on one, sequence identity on the other), so neither member of a test pair has a near-twin in training.
+- ✅ `complex_joint` for structure-based models, in `mode="both_novel"`.
+- ➕ `leave_one_cluster_out` on the target axis to spread the variance of a small target count.
+- ⚠️ `cold_pair` discards the two off-diagonal blocks -- typically 50-90% of the data -- so the surviving test block is small and noisy, and the realised test fraction is a product of both axes that rarely matches the request.
+- ⚠️ `complex_joint` routinely discards more than 80%; `mode="either_novel"` is far weaker and is frequently reported as if it were `"both_novel"`.
+- ⚠️ Comparing these scores to `cold_drug` or `cold_target` numbers. Performance here is much lower by construction, and the comparison is a common, serious error.
+- ❌ `random`, `cold_drug`, `cold_target` presented as this setting.
+
+### 14. A new protein family, or a familiar sequence with an unfamiliar pocket
+
+> "How far across target space does the model travel -- and does it recognise the pocket or the sequence?"
+
+- ✅ `protein_family`, ideally as leave-one-family-out via `leave_one_cluster_out`, for the family question.
+- ✅ `binding_site` for the pocket question, where pockets are defined: it separates on pocket residue composition rather than global sequence, so a familiar sequence with a remodelled site counts as novel.
+- ➕ `sequence_identity` as a floor on both, and `complex_joint` for structure-based models that must also face novel ligands.
+- ⚠️ `sequence_identity` as a proxy for pocket novelty: two proteins at 20% overall identity can share nearly identical pockets, and the split will separate them while leaking the pharmacology. Percent identity is also not one number -- local vs. global and the choice of denominator change it substantially.
+- ⚠️ Family annotations are incomplete and heavily skewed (kinases dominate public data), so the requested ratio is usually unreachable and the unlabelled targets form a junk group worth checking. Family boundaries do not imply pharmacological independence either: ATP-binding proteins outside the kinase family still share ligand chemistry.
+- ⚠️ `binding_site` needs a pocket definition the library cannot produce, and `residue_composition` ignores geometry -- two pockets with the same residue counts and different shapes look identical to it.
+- ❌ `random`, and every ligand-axis split, for either question.
+
+### 15. Predicting outside the measured range
+
+> "Everything we have measured is between 10 nM and 10 µM. Will it pick the single-digit nanomolar compound?"
+
+- ✅ `label_extrapolation`, trained on one part of the label range and tested on another, **with a ranking metric (Spearman, top-k enrichment) reported next to RMSE/R²** -- a model that predicts its training mean posts a respectable RMSE with zero rank correlation.
+- ✅ `property` for a physicochemical range rather than an activity one (solubility, molecular weight, logP), noting that `direction="middle_test"` is an interpolation test living in the same family.
+- ➕ `applicability_domain` to see whether the failure tracks distance or the label itself.
+- ➕ `intersection` over a scaffold or similarity grouping: `property` is not a leakage control, and a test molecule can be a close analogue of a training one that happens to sit below the cut.
+- ⚠️ Selecting the test set with `y` makes the experiment label-aware by construction, and the extremes are exactly where censored values, transcription errors and measurement artefacts concentrate.
+- ⚠️ Metrics on a truncated label range are not comparable to the same metrics on a random split. Do not put them in one table without saying so.
+- ⚠️ `property` on molecular weight: MolWt correlates with almost everything, including promiscuity, assay artefacts and the era a series was made.
+- ❌ `stratified_random`, `stratified_distribution`, `distinct_label`, `minimal_test_set_dissimilarity`, `spxy`. All of them work to keep every part of the label range represented in training -- the opposite of what this scenario asks.
+- ❌ `label_extrapolation` on a binary label. It degenerates into a class holdout where the model never sees a positive.
+
+### 16. Does my evaluation set look like the library I will screen?
+
+> "Before I trust any of these numbers: is my test set in the same relationship to training as my deployment library is?"
+
+This is the applicability-domain question, and it is the one that decides which of the scenarios above you are actually in.
+
+- ✅ `mood`, given the real deployment library: it selects, among candidate splitters, the one whose train→test distance distribution best matches train→deployment.
+- ✅ `applicability_domain` for a distance-versus-performance curve rather than a single number, so the score can be read at the distance your library actually sits at.
+- ➕ `external_holdout` when part of the library has been measured, and `adversarial` (audit) plus `audit_split`'s nearest-neighbour profile to describe the gap you have.
+- ⚠️ `mood` needs the deployment set up front; a guessed library silently decides the answer. Its selection also uses the data, so the reported score is mildly optimistic unless the selection is disclosed. If the library overlaps training, `mood` correctly picks a random split -- which readers may mistake for a weak evaluation.
+- ⚠️ `applicability_domain` bands are subsets of one test set, so each is small and noisy, and the x-axis is fingerprint- and metric-dependent. A tidy monotone curve can also be a confound: check whether molecular size increases along the bands.
+- ⚠️ `max_dissimilarity`, `perimeter`, `spectral` chosen as "the conservative option". The hardest split is the right answer only if the deployment library is genuinely that far away; `perimeter` in particular holds out fragments, salts and standardisation failures, so a poor score may be a data-quality result.
+- ❌ A single `random` split offered as evidence of domain coverage.
+
+</details>
+
 ## 🧭 Design principles
 
 1. **Determinism.** Same inputs + same `random_state` ⇒ byte-identical outputs, on any platform, any CPU count, any `n_jobs`. An integer `random_state` is reconstructible by anyone who knows it -- use `random_state=None` for holdouts that must stay secret.
