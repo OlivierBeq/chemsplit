@@ -301,7 +301,8 @@ Between-source differences are systematic offsets, not noise: the same Ki measur
 - ➕ `leave_one_cluster_out` or `group_k_fold` over party labels, so each partner takes a turn as the held-out one.
 - ➕ A per-party `temporal` split, since each partner's chemistry drifts on its own schedule.
 - ⚠️ A pooled average across parties is dominated by the largest contributor and hides a model that is useless to everyone else. This is the failure the scenario exists to detect, so never report it.
-- ⚠️ `dirichlet_alpha` has no natural value and must be reported; results at `alpha=0.1` and `alpha=1.0` are not comparable. Synthesised parties model heterogeneity, not the real thing -- real partners differ in assay protocol and target selection, not just chemistry.
+- ⚠️ `dirichlet_alpha` has no natural value and must be reported: results at `alpha=0.1` and `alpha=1.0` are not comparable.
+- ⚠️ Synthesised parties model heterogeneity, not the real thing -- real partners differ in assay protocol and target selection, not just chemistry.
 - ⚠️ This is a data split, not a privacy guarantee. It says nothing about what the training scheme leaks.
 - ❌ `random`, `stratified_random`, `k_fold`. Pooling IID is precisely the assumption under test.
 - ❌ `hi`, `murcko_scaffold` as proxies for owner boundaries. Partners are not defined by chemotype.
@@ -365,8 +366,10 @@ Between-source differences are systematic offsets, not noise: the same Ki measur
 - ✅ `protein_family`, ideally as leave-one-family-out via `leave_one_cluster_out`, for the family question.
 - ✅ `binding_site` for the pocket question, where pockets are defined: it separates on pocket residue composition rather than global sequence, so a familiar sequence with a remodelled site counts as novel.
 - ➕ `sequence_identity` as a floor on both, and `complex_joint` for structure-based models that must also face novel ligands.
-- ⚠️ `sequence_identity` as a proxy for pocket novelty: two proteins at 20% overall identity can share nearly identical pockets, and the split will separate them while leaking the pharmacology. Percent identity is also not one number -- local vs. global and the choice of denominator change it substantially.
-- ⚠️ Family annotations are incomplete and heavily skewed (kinases dominate public data), so the requested ratio is usually unreachable and the unlabelled targets form a junk group worth checking. Family boundaries do not imply pharmacological independence either: ATP-binding proteins outside the kinase family still share ligand chemistry.
+- ⚠️ `sequence_identity` as a proxy for pocket novelty: two proteins at 20% overall identity can share nearly identical pockets, so the split separates them while leaking the pharmacology.
+- ⚠️ Percent identity is not one number either -- local vs. global alignment and the choice of denominator change it substantially.
+- ⚠️ Family annotations are incomplete and skewed -- kinases dominate public data -- so the requested ratio is usually unreachable, and the unlabelled targets form a junk group worth checking.
+- ⚠️ A family boundary is not pharmacological independence: ATP-binding proteins outside the kinase family still share ligand chemistry.
 - ⚠️ `binding_site` needs a pocket definition the library cannot produce, and `residue_composition` ignores geometry -- two pockets with the same residue counts and different shapes look identical to it.
 - ❌ `random`, and every ligand-axis split, for either question.
 
@@ -457,9 +460,11 @@ This is the applicability-domain question, and it is the one that decides which 
 - ✅ `mood`, given the real deployment library: it selects, among candidate splitters, the one whose train→test distance distribution best matches train→deployment.
 - ✅ `applicability_domain` for a distance-versus-performance curve rather than a single number, so the score can be read at the distance your library actually sits at.
 - ➕ `external_holdout` when part of the library has been measured, and `adversarial` (audit) plus `audit_split`'s nearest-neighbour profile to describe the gap you have.
-- ⚠️ `mood` needs the deployment set up front; a guessed library silently decides the answer. Its selection also uses the data, so the reported score is mildly optimistic unless the selection is disclosed. If the library overlaps training, `mood` correctly picks a random split -- which readers may mistake for a weak evaluation.
+- ⚠️ `mood` needs the deployment set up front, so a guessed library silently decides the answer. Its selection also uses the data, making the score mildly optimistic unless disclosed.
+- ⚠️ If the library overlaps training, `mood` correctly picks a random split -- which readers may mistake for a weak evaluation.
 - ⚠️ `applicability_domain` bands are subsets of one test set, so each is small and noisy, and the x-axis is fingerprint- and metric-dependent. A tidy monotone curve can also be a confound: check whether molecular size increases along the bands.
-- ⚠️ `max_dissimilarity`, `perimeter`, `spectral` chosen as "the conservative option". The hardest split is the right answer only if the deployment library is genuinely that far away; `perimeter` in particular holds out fragments, salts and standardisation failures, so a poor score may be a data-quality result.
+- ⚠️ `max_dissimilarity`, `perimeter`, `spectral` chosen as "the conservative option". The hardest split is right only if the deployment library is genuinely that far away.
+- ⚠️ `perimeter` holds out fragments, salts and standardisation failures, so a poor score there may be a data-quality result rather than a chemistry one.
 - ❌ A single `random` split offered as evidence of domain coverage.
 
 </details>
