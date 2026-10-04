@@ -83,19 +83,25 @@ class TestRegenerateGoldensWrite:
 class TestToleranceTierPayload:
     def test_tolerance_tier_branch(self):
         """A splitter with metadata["nondeterministic_method"]=True takes the tolerance-tier
-        payload path (sizes + group-size histogram as a multiset, no exact index arrays)."""
+        payload path: partition sizes and a grouping summary, no exact index arrays."""
+        import numpy as np
+
         result = SimpleNamespace(
             metadata={"nondeterministic_method": True},
-            groups=__import__("numpy").array([0, 0, 1, 1, 1], dtype="int64"),
-            train=__import__("numpy").array([0, 1], dtype="int64"),
-            valid=__import__("numpy").array([], dtype="int64"),
-            test=__import__("numpy").array([2, 3, 4], dtype="int64"),
-            discard=__import__("numpy").array([], dtype="int64"),
+            n_records=5,
+            groups=np.array([0, 0, 1, 1, 1], dtype="int64"),
+            train=np.array([0, 1], dtype="int64"),
+            valid=np.array([], dtype="int64"),
+            test=np.array([2, 3, 4], dtype="int64"),
+            discard=np.array([], dtype="int64"),
         )
         payload = _devtools._to_golden_payload(result)
         assert payload["tier"] == "tolerance"
+        assert payload["n_records"] == 5
         assert payload["n_train"] == 2
         assert payload["n_test"] == 3
+        assert payload["n_groups"] == 2
+        assert payload["largest_group_frac"] == pytest.approx(0.6)
         assert payload["group_size_histogram"] == [2, 3]
 
     def test_tolerance_tier_without_groups(self):
@@ -103,6 +109,7 @@ class TestToleranceTierPayload:
 
         result = SimpleNamespace(
             metadata={"nondeterministic_method": True},
+            n_records=2,
             groups=None,
             train=np.array([0], dtype="int64"),
             valid=np.array([], dtype="int64"),
@@ -111,6 +118,8 @@ class TestToleranceTierPayload:
         )
         payload = _devtools._to_golden_payload(result)
         assert payload["group_size_histogram"] is None
+        assert payload["n_groups"] is None
+        assert payload["largest_group_frac"] is None
 
 
 class TestMain:
@@ -125,7 +134,9 @@ class TestMain:
     def test_main_returns_1_when_nothing_written(self, tmp_path, monkeypatch):
         monkeypatch.setattr(_devtools, "_GOLDEN_DIR", tmp_path)
         monkeypatch.setenv("CHEMSPLIT_ALLOW_GOLDEN_REGEN", "1")
-        rc = _devtools.main(["regenerate_goldens", "--confirm", "--splitter", "not_a_real_splitter"])
+        rc = _devtools.main(
+            ["regenerate_goldens", "--confirm", "--splitter", "not_a_real_splitter"]
+        )
         assert rc == 1
 
     def test_main_returns_0_on_success(self, tmp_path, monkeypatch):

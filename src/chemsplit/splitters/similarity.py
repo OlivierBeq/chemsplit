@@ -1859,6 +1859,9 @@ class SupportPointsSplitter(BaseSplitter):
                 "used_label_columns": n_label_cols,
                 "test_selection": test_meta,
                 "valid_selection": valid_meta,
+                # The fixed-point update is a chain of BLAS matrix products; not bit-exact across
+                # BLAS builds.
+                "nondeterministic_method": True,
                 "realised_sizes": {"train": len(train), "valid": len(valid), "test": len(test)},
             },
         )

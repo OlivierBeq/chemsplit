@@ -28,19 +28,20 @@ from chemsplit.exceptions import (
 from chemsplit.exceptions import DeterminismWarning as _DeterminismWarning
 from chemsplit.types import IndexArray
 
-__all__ = ["LatentSpaceSplitter", "ProjectionSplitter", "SelfOrganizingMapSplitter", "UMAPClusterSplitter"]
+__all__ = [
+    "LatentSpaceSplitter",
+    "ProjectionSplitter",
+    "SelfOrganizingMapSplitter",
+    "UMAPClusterSplitter",
+]
 
 
-# -
-# Shared n_clusters/cluster_algorithm/auto_rule/auto_range block. Local to this module
-# (UMAPClusterSplitter and ProjectionSplitter use it directly; LatentSpaceSplitter clusters in a
-# caller-fixed space but still exposes the same constructor block, so it reuses this mixin too).
-# -
 
 
 class _ClusterCountMixin:
-    """``n_clusters``/``cluster_algorithm``/``auto_rule``/``auto_range`` + cluster-count
-    resolution and the actual clustering call, shared by all three embedding-family splitters."""
+    """Cluster-count parameters, their resolution, and the clustering call itself, shared by
+    the three embedding-family splitters that cluster.
+    """
 
     def __init__(
         self,
@@ -57,8 +58,12 @@ class _ClusterCountMixin:
 
     def _validate_cluster_count_params(self) -> None:
         if self.n_clusters != "auto":
-            if isinstance(self.n_clusters, bool) or not isinstance(self.n_clusters, (int, np.integer)):
-                raise ParameterError(f"n_clusters must be 'auto' or an int, got {self.n_clusters!r}")
+            if isinstance(self.n_clusters, bool) or not isinstance(
+                self.n_clusters, (int, np.integer)
+            ):
+                raise ParameterError(
+                    f"n_clusters must be 'auto' or an int, got {self.n_clusters!r}"
+                )
             if self.n_clusters < 2:
                 raise ParameterError(f"n_clusters must be >= 2, got {self.n_clusters!r}")
         if self.cluster_algorithm not in ("kmeans", "agglomerative", "hdbscan"):
@@ -66,8 +71,14 @@ class _ClusterCountMixin:
         if self.auto_rule not in ("sqrt_n", "n_over_50", "silhouette"):
             raise ParameterError(f"invalid auto_rule: {self.auto_rule!r}")
         lo, hi = self.auto_range
-        if not (isinstance(lo, (int, np.integer)) and isinstance(hi, (int, np.integer)) and 1 <= lo <= hi):
-            raise ParameterError(f"auto_range must be (lo, hi) with 1 <= lo <= hi, got {self.auto_range!r}")
+        if not (
+            isinstance(lo, (int, np.integer))
+            and isinstance(hi, (int, np.integer))
+            and 1 <= lo <= hi
+        ):
+            raise ParameterError(
+                f"auto_range must be (lo, hi) with 1 <= lo <= hi, got {self.auto_range!r}"
+            )
 
     def _resolve_n_clusters(self, n: int, Z: np.ndarray, rng: np.random.Generator) -> int:
         lo, hi = self.auto_range
@@ -85,7 +96,9 @@ class _ClusterCountMixin:
 
             sub_n = min(n, 5000)
             if sub_n < n:
-                sub_idx = seed_for(self._silhouette_bundle, "kmeans.silhouette_subsample", 0).choice(
+                sub_idx = seed_for(
+                    self._silhouette_bundle, "kmeans.silhouette_subsample", 0
+                ).choice(
                     n, size=sub_n, replace=False
                 )
                 Zs = Z[sub_idx]
@@ -114,7 +127,9 @@ class _ClusterCountMixin:
                 random_state=seed,
             ).fit_predict(Z)
         elif self.cluster_algorithm == "agglomerative":
-            labels = AgglomerativeClustering(n_clusters=k, linkage="ward", metric="euclidean").fit_predict(Z)
+            labels = AgglomerativeClustering(
+                n_clusters=k, linkage="ward", metric="euclidean"
+            ).fit_predict(Z)
         else:  # hdbscan
             labels = HDBSCAN(min_cluster_size=max(2, Z.shape[0] // (2 * k))).fit_predict(Z)
             noise = labels == -1
@@ -140,45 +155,59 @@ def _fix_sign(Z: np.ndarray) -> np.ndarray:
     return Z
 
 
-# -
-# UMAPClusterSplitter
-# -
-
-
 class UMAPClusterSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitter):
-    """UMAP embedding followed by clustering (``umap_cluster``).
+    """UMAP embedding followed by clustering, each cluster an atomic group.
 
-    Embeds the featurized records into a low-dimensional UMAP space, then clusters that embedding
-    and treats each cluster as an atomic group.
-
-    :param n_components: Embedding dimension. 2 is conventional and lossy; 5-10 preserves more
-        structure and is recommended when the embedding is used for splitting rather than
-        visualisation. Defaults to 2.
-    :param n_neighbors: UMAP local-neighbourhood size. Governs the local/global trade-off and
-        materially changes the resulting split. Defaults to 15.
-    :param min_dist: Minimum embedded distance. Defaults to 0.1.
-    :param umap_metric: UMAP's own metric on the input features. ``"jaccard"`` is correct for
-        binary fingerprints (equals Tanimoto distance on binary vectors); ``"euclidean"`` on raw
-        bit vectors is a common and documented mistake. Defaults to ``"jaccard"``.
-    :param n_epochs: ``None`` uses UMAP's own default (500 for n<10000, else 200). Pinning it
-        makes runs comparable across dataset sizes. Defaults to ``None``.
+    :param n_components: embedding dimension. 2 is conventional and lossy; 5-10 preserves more
+        structure, which suits splitting rather than visualisation.
+    :param n_neighbors: UMAP neighbourhood size, governing the local/global trade-off.
+    :param min_dist: minimum embedded distance.
+    :param umap_metric: UMAP's own metric on the input features. ``"jaccard"`` equals Tanimoto
+        on binary vectors; ``"euclidean"`` on raw bit vectors is a common mistake.
+    :param n_epochs: training epochs, or ``None`` for UMAP's own default of 500 below n=10,000
+        and 200 above. Pinning it makes runs comparable across dataset sizes.
+    :param densmap: run DensMAP, which preserves local density in the embedding.
     :ivar splitter_id: ``"umap_cluster"``.
+    :param n_clusters: how many clusters to form in the embedding, or ``"auto"`` to derive it
+        from ``auto_rule``.
+    :param cluster_algorithm: k-means, agglomerative clustering, or HDBSCAN.
+    :param auto_rule: how ``n_clusters="auto"`` is derived: ``sqrt(n)``, ``n/50``, or the best
+        silhouette score over ``auto_range``.
+    :param auto_range: lower and upper clamp on the derived cluster count.
+    :param featurizer: featurizer alias or instance.
+    :param metric: distance metric used outside the embedding, e.g. for diagnostics.
+    :param max_memory_bytes: ceiling on any pairwise matrix.
+    :param n_jobs: worker count. Must stay 1 here, since parallelism breaks reproducibility.
+    :param size_tolerance: how far a realised partition size may drift from its target before
+        a :class:`SizeToleranceWarning` is issued.
+    :param group_assignment: how clusters are handed to partitions; see
+        :func:`chemsplit.base.assign_groups`.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises MissingDependencyError: if the ``umap`` extra is not installed.
+    :raises ParameterError: if ``n_components``, ``n_neighbors``, ``min_dist`` or ``n_epochs``
+        is out of range, or a mode parameter is unknown.
+    :raises ConfigurationError: if ``n_jobs`` is above 1.
 
     Advantages
     ----------
-    - Typically produces the widest train/test gap among routinely used splits -- a strong stress test.
-    - The embedding is directly plottable, so train and test regions are visible on one figure -- something no fingerprint-space split offers.
+    - Typically the widest train/test gap among routinely used splits, so a strong stress test.
+    - The embedding is plottable, so train and test regions are visible on one figure. No
+      fingerprint-space split offers that.
     - Non-linear, so it separates chemical families that PCA blends together.
     - Scales to far larger datasets than spectral clustering.
 
     Pitfalls
     --------
-    - **UMAP doesn't preserve global distances.** Inter-cluster distances in the embedding aren't meaningful, so "these clusters are far apart in UMAP" isn't evidence of dissimilarity. Verify with `audit.nn_similarity_profile` in fingerprint space.
-    - The split shifts substantially with `n_neighbors`, `min_dist`, `n_components`, `densmap`, and the seed -- all recorded in `params` and all must be reported.
-    - Reproducibility depends on library versions, not just the seed: a `numba` or `pynndescent` upgrade can change the embedding and therefore the split, which is why `metadata` records the version triple -- its golden test uses a size/histogram tolerance, not an exact match.
-    - `n_jobs > 1` silently breaks UMAP reproducibility, so this implementation refuses it at a real speed cost.
-    - Choosing the cluster count is guesswork, as in `k_means_cluster`, compounded here by the embedding's own hyperparameters.
-    - `n_components=2` suits pictures, not splitting -- it discards a lot of structure. Prefer 5-10 when the embedding is meant to define groups.
+    - **UMAP does not preserve global distances.** "Far apart in UMAP" is not evidence of
+      dissimilarity; `audit.nn_similarity_profile` checks it in fingerprint space.
+    - The split shifts substantially with `n_neighbors`, `min_dist`, `n_components`, `densmap`
+      and the seed, all recorded in `params`.
+    - A `numba` or `pynndescent` upgrade can change the embedding, and so the split, at a fixed
+      seed; `metadata` records the version triple and the golden test uses a size histogram.
+    - `n_jobs > 1` breaks UMAP reproducibility, so it is refused at a real speed cost.
+    - Choosing the cluster count is guesswork, as in `k_means_cluster`, compounded by the
+      embedding's own hyperparameters.
+    - `n_components=2` suits pictures, not splitting: it discards a lot of structure.
 
     Notes
     -----
@@ -186,12 +215,13 @@ class UMAPClusterSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitt
 
     References
     ----------
-    .. [1] McInnes, L.; Healy, J.; Saul, N.; Großberger, L. UMAP: Uniform Manifold Approximation and
-       Projection. *J. Open Source Softw.* **2018**, 3 (29), 861. https://doi.org/10.21105/joss.00861
-       (algorithm preprint: https://arxiv.org/abs/1802.03426)
-    .. [2] Guo, Q.; Hernandez-Hernandez, S.; Ballester, P. J. UMAP-Based Clustering Split for Rigorous
-       Evaluation of AI Models for Virtual Screening on Cancer Cell Lines. *J. Cheminform.* **2025**,
-       17 (1), 94. https://doi.org/10.1186/s13321-025-01039-8
+    .. [1] McInnes, L.; Healy, J.; Saul, N.; Großberger, L. UMAP: Uniform Manifold
+       Approximation and Projection. *J. Open Source Softw.* **2018**, 3 (29), 861.
+       https://doi.org/10.21105/joss.00861 (algorithm preprint:
+       https://arxiv.org/abs/1802.03426)
+    .. [2] Guo, Q.; Hernandez-Hernandez, S.; Ballester, P. J. UMAP-Based Clustering Split for
+       Rigorous Evaluation of AI Models for Virtual Screening on Cancer Cell Lines.
+       *J. Cheminform.* **2025**, 17 (1), 94. https://doi.org/10.1186/s13321-025-01039-8
     """
 
     splitter_id: ClassVar[str] = "umap_cluster"
@@ -242,9 +272,17 @@ class UMAPClusterSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitt
             self, size_tolerance=size_tolerance, group_assignment=group_assignment,
             n_jobs=n_jobs, **base,
         )
-        if isinstance(n_components, bool) or not isinstance(n_components, (int, np.integer)) or n_components < 1:
+        if (
+            isinstance(n_components, bool)
+            or not isinstance(n_components, (int, np.integer))
+            or n_components < 1
+        ):
             raise ParameterError(f"n_components must be >= 1, got {n_components!r}")
-        if isinstance(n_neighbors, bool) or not isinstance(n_neighbors, (int, np.integer)) or n_neighbors < 2:
+        if (
+            isinstance(n_neighbors, bool)
+            or not isinstance(n_neighbors, (int, np.integer))
+            or n_neighbors < 2
+        ):
             raise ParameterError(f"n_neighbors must be >= 2, got {n_neighbors!r}")
         if not (0.0 <= min_dist < 1.0):
             raise ParameterError(f"min_dist must satisfy 0 <= min_dist < 1, got {min_dist!r}")
@@ -294,7 +332,8 @@ class UMAPClusterSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitt
 
         self._silhouette_bundle = ctx.rng_seeds
         k = self._resolve_n_clusters(ctx.n, Z, seed_for(ctx.rng_seeds, "kmeans.fit", 0))
-        labels = self._cluster(Z, k, int(seed_for(ctx.rng_seeds, "kmeans.fit", 0).integers(0, 2**31 - 1)))
+        cluster_seed = int(seed_for(ctx.rng_seeds, "kmeans.fit", 0).integers(0, 2**31 - 1))
+        labels = self._cluster(Z, k, cluster_seed)
 
         self._last_embedding_shape = list(Z.shape)
         self._last_labels = labels
@@ -321,39 +360,57 @@ class UMAPClusterSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitt
         }
 
 
-# -
-# ProjectionSplitter
-# -
-
-
 class ProjectionSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitter):
     """Linear or manifold projection followed by clustering, an axis cut, or a grid
     (``projection``).
 
-    :param method: Projection method. Defaults to ``"pca"``.
-    :param n_components: Projected dimension. Defaults to 2.
-    :param mode: ``"cluster"`` clusters the projection as in ``umap_cluster``. ``"axis_cut"``
-        sorts by component ``axis`` and cuts into contiguous blocks sized by the size targets.
-        ``"grid"`` bins each of the first ``n_components`` axes into ``grid_bins``
-        equal-frequency bins; the group is the cell tuple. Defaults to ``"cluster"``.
-    :param axis: Component index used by ``mode="axis_cut"``. Defaults to 0.
-    :param grid_bins: Bins per axis for ``mode="grid"``. Defaults to 4.
-    :param tsne_perplexity: t-SNE perplexity (only used when ``method="tsne"``). Defaults to 30.0.
-    :param kernel: Kernel for ``method="kernel_pca"``. Defaults to ``"rbf"``.
+    :param method: projection method: PCA, truncated SVD, t-SNE, MDS, or kernel PCA.
+    :param n_components: projected dimension.
+    :param mode: cluster the projection as ``umap_cluster`` does; sort by component ``axis``
+        and cut contiguous blocks at the size targets; or bin the first ``n_components`` axes
+        into ``grid_bins`` equal-frequency bins and group by cell.
+    :param axis: component index used by ``mode="axis_cut"``.
+    :param grid_bins: bins per axis for ``mode="grid"``.
+    :param tsne_perplexity: perplexity for ``method="tsne"``.
+    :param kernel: kernel for ``method="kernel_pca"``.
+    :param n_clusters: how many clusters to form in the projection, or ``"auto"`` to derive it
+        from ``auto_rule``.
+    :param cluster_algorithm: k-means, agglomerative clustering, or HDBSCAN.
+    :param auto_rule: how ``n_clusters="auto"`` is derived: ``sqrt(n)``, ``n/50``, or the best
+        silhouette score over ``auto_range``.
+    :param auto_range: lower and upper clamp on the derived cluster count.
+    :param featurizer: featurizer alias or instance.
+    :param metric: distance metric used outside the projection, e.g. for MDS.
+    :param max_memory_bytes: ceiling on any pairwise matrix.
+    :param n_jobs: worker count. Results never depend on it.
+    :param size_tolerance: how far a realised partition size may drift from its target before
+        a :class:`SizeToleranceWarning` is issued.
+    :param group_assignment: how groups are handed to partitions; see
+        :func:`chemsplit.base.assign_groups`.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ParameterError: if ``n_components``, ``axis``, ``grid_bins`` or
+        ``tsne_perplexity`` is out of range, or ``method``, ``mode`` or ``kernel`` is unknown.
 
     Advantages
     ----------
-    - PCA is linear, cheap, and interpretable -- the loading vector shows *which* descriptors define the split direction, unlike any non-linear method.
-    - `mode="axis_cut"` gives a clean, reportable one-dimensional extrapolation along the dataset's main axis of variation.
-    - `explained_variance_ratio` states plainly how much of the data the projection actually captured -- an honesty check UMAP and t-SNE lack.
+    - PCA is linear, cheap and interpretable: the loading vector shows *which* descriptors
+      define the split direction, which no non-linear method offers.
+    - `mode="axis_cut"` gives a clean, reportable one-dimensional extrapolation along the
+      dataset's main axis of variation.
+    - `explained_variance_ratio` states how much of the data the projection captured, a check
+      UMAP and t-SNE do not provide.
 
     Pitfalls
     --------
-    - **t-SNE inter-cluster distances are meaningless.** Treating t-SNE geometry as a split criterion attributes chemical significance to an artefact of its cost function; it's common practice, but the docstring must say it's unsound as a distance.
-    - PCA on binary fingerprints puts most variance in bit frequency, which correlates with molecule size, so the first component often just tracks "how big is the molecule".
-    - `mode="grid"` produces exponentially many groups, most empty or singletons.
-    - Two components typically explain only a small fraction of fingerprint variance -- check `explained_variance_ratio` before trusting the geometry.
-    - t-SNE and MDS aren't byte-reproducible across BLAS builds even when seeded, so their golden tests use a tolerance, not an exact match.
+    - **t-SNE inter-cluster distances are meaningless.** Splitting on them reads chemical
+      significance into an artefact of its cost function. Common practice, still unsound.
+    - PCA on binary fingerprints puts most variance in bit frequency, which correlates with
+      molecule size, so the first component often just tracks how big the molecule is.
+    - `mode="grid"` produces exponentially many groups, most of them empty or singletons.
+    - Two components typically explain only a small fraction of fingerprint variance, which
+      `explained_variance_ratio` makes visible.
+    - t-SNE and MDS are not byte-reproducible across BLAS builds even when seeded, so their
+      golden tests use a tolerance rather than an exact match.
 
     Notes
     -----
@@ -363,24 +420,26 @@ class ProjectionSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitte
 
     References
     ----------
-    .. [1] ``method="pca"``: Pearson, K. On Lines and Planes of Closest Fit to Systems of Points in Space.
-       *Philos. Mag.* **1901**, 2 (11), 559-572. https://doi.org/10.1080/14786440109462720; and
-       Hotelling, H. Analysis of a Complex of Statistical Variables into Principal Components.
-       *J. Educ. Psychol.* **1933**, 24 (6), 417-441. https://doi.org/10.1037/h0071325
-    .. [2] ``method="svd"`` (randomized truncated SVD): Halko, N.; Martinsson, P. G.; Tropp, J. A. Finding
-       Structure with Randomness: Probabilistic Algorithms for Constructing Approximate Matrix
-       Decompositions. *SIAM Rev.* **2011**, 53 (2), 217-288. https://doi.org/10.1137/090771806
-    .. [3] ``method="tsne"``: van der Maaten, L.; Hinton, G. Visualizing Data Using t-SNE. *J. Mach. Learn.
-       Res.* **2008**, 9, 2579-2605. No DOI; https://jmlr.org/papers/v9/vandermaaten08a.html
+    .. [1] ``method="pca"``: Pearson, K. On Lines and Planes of Closest Fit to Systems of
+       Points in Space. *Philos. Mag.* **1901**, 2 (11), 559-572.
+       https://doi.org/10.1080/14786440109462720; and Hotelling, H. Analysis of a Complex of
+       Statistical Variables into Principal Components. *J. Educ. Psychol.* **1933**, 24 (6),
+       417-441. https://doi.org/10.1037/h0071325
+    .. [2] ``method="svd"`` (randomized truncated SVD): Halko, N.; Martinsson, P. G.;
+       Tropp, J. A. Finding Structure with Randomness: Probabilistic Algorithms for
+       Constructing Approximate Matrix Decompositions. *SIAM Rev.* **2011**, 53 (2), 217-288.
+       https://doi.org/10.1137/090771806
+    .. [3] ``method="tsne"``: van der Maaten, L.; Hinton, G. Visualizing Data Using t-SNE.
+       *J. Mach. Learn. Res.* **2008**, 9, 2579-2605. No DOI;
+       https://jmlr.org/papers/v9/vandermaaten08a.html
     .. [4] ``method="mds"``: Torgerson, W. S. Multidimensional Scaling: I. Theory and Method.
-       *Psychometrika* **1952**, 17 (4), 401-419. https://doi.org/10.1007/BF02288916; and Kruskal, J. B.
-       Multidimensional Scaling by Optimizing Goodness of Fit to a Nonmetric Hypothesis.
-       *Psychometrika* **1964**, 29 (1), 1-27. https://doi.org/10.1007/BF02289565
-    .. [5] ``method="kernel_pca"``: Schölkopf, B.; Smola, A.; Müller, K.-R. Nonlinear Component Analysis as
-       a Kernel Eigenvalue Problem. *Neural Comput.* **1998**, 10 (5), 1299-1319.
+       *Psychometrika* **1952**, 17 (4), 401-419. https://doi.org/10.1007/BF02288916; and
+       Kruskal, J. B. Multidimensional Scaling by Optimizing Goodness of Fit to a Nonmetric
+       Hypothesis. *Psychometrika* **1964**, 29 (1), 1-27. https://doi.org/10.1007/BF02289565
+    .. [5] ``method="kernel_pca"``: Schölkopf, B.; Smola, A.; Müller, K.-R. Nonlinear Component
+       Analysis as a Kernel Eigenvalue Problem. *Neural Comput.* **1998**, 10 (5), 1299-1319.
        https://doi.org/10.1162/089976698300017467
-    .. [6] The ``mode="axis_cut"``/``"grid"`` splitting rules are chemsplit's own; they have no published
-       origin.
+    .. [6] The ``mode="axis_cut"`` and ``"grid"`` splitting rules are chemsplit's own.
     """
 
     splitter_id: ClassVar[str] = "projection"
@@ -436,9 +495,17 @@ class ProjectionSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitte
             raise ParameterError(f"invalid method: {method!r}")
         if mode not in ("cluster", "axis_cut", "grid"):
             raise ParameterError(f"invalid mode: {mode!r}")
-        if isinstance(n_components, bool) or not isinstance(n_components, (int, np.integer)) or n_components < 1:
+        if (
+            isinstance(n_components, bool)
+            or not isinstance(n_components, (int, np.integer))
+            or n_components < 1
+        ):
             raise ParameterError(f"n_components must be >= 1, got {n_components!r}")
-        if isinstance(grid_bins, bool) or not isinstance(grid_bins, (int, np.integer)) or grid_bins < 2:
+        if (
+            isinstance(grid_bins, bool)
+            or not isinstance(grid_bins, (int, np.integer))
+            or grid_bins < 2
+        ):
             raise ParameterError(f"grid_bins must be >= 2, got {grid_bins!r}")
         self._validate_cluster_count_params()
         self._nondeterministic_method = method in ("tsne", "mds")
@@ -465,7 +532,12 @@ class ProjectionSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitte
         if self.method in ("pca", "svd"):
             from sklearn.decomposition import TruncatedSVD
 
-            svd = TruncatedSVD(n_components=self.n_components, random_state=seed, algorithm="randomized", n_iter=7)
+            svd = TruncatedSVD(
+                n_components=self.n_components,
+                random_state=seed,
+                algorithm="randomized",
+                n_iter=7,
+            )
             F_in = F
             if self.method == "pca" and hasattr(F, "toarray"):
                 F_in = F.toarray()
@@ -487,7 +559,12 @@ class ProjectionSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitte
             from sklearn.manifold import MDS
 
             D = compute_distance_matrix(
-                ctx, featurizer, self.metric, self.max_memory_bytes, type(self).__name__, self.n_jobs,
+                ctx,
+                featurizer,
+                self.metric,
+                self.max_memory_bytes,
+                type(self).__name__,
+                self.n_jobs,
             )
             mds = MDS(
                 n_components=self.n_components, dissimilarity="precomputed", random_state=seed,
@@ -507,7 +584,8 @@ class ProjectionSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitte
         if self.mode == "cluster":
             self._silhouette_bundle = ctx.rng_seeds
             k = self._resolve_n_clusters(n, Z, seed_for(ctx.rng_seeds, "kmeans.fit", 0))
-            labels = self._cluster(Z, k, int(seed_for(ctx.rng_seeds, "kmeans.fit", 0).integers(0, 2**31 - 1)))
+            cluster_seed = int(seed_for(ctx.rng_seeds, "kmeans.fit", 0).integers(0, 2**31 - 1))
+            labels = self._cluster(Z, k, cluster_seed)
         elif self.mode == "axis_cut":
             order = np.argsort(Z[:, self.axis], kind="stable")
             n_train, n_valid, n_test = ctx.sizes.n_train, ctx.sizes.n_valid, ctx.sizes.n_test
@@ -550,9 +628,6 @@ class ProjectionSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitte
         }
 
 
-# -
-# SelfOrganizingMapSplitter
-# -
 
 
 def _som_tanimoto_distance(som_weights: Any, x: Any) -> Any:
@@ -562,79 +637,86 @@ def _som_tanimoto_distance(som_weights: Any, x: Any) -> Any:
 
     dot = som_weights @ x.T
     denom = (som_weights * som_weights).sum(dim=1)[:, None] + (x * x).sum(dim=1)[None, :] - dot
-    sim = torch.where(denom > 0, dot / torch.where(denom > 0, denom, torch.ones_like(denom)), torch.ones_like(denom))
+    safe = torch.where(denom > 0, denom, torch.ones_like(denom))
+    sim = torch.where(denom > 0, dot / safe, torch.ones_like(denom))
     return 1.0 - sim
 
 
 class SelfOrganizingMapSplitter(SimilarityParamsMixin, GroupSplitter):
-    """Kohonen self-organizing map (``self_organizing_map``): records are mapped onto a square grid
-    of units, and the map's cells drive the split.
+    """Kohonen self-organizing map: records map onto a square grid, and its cells drive the
+    split.
 
-    The map is trained online with KSOM, one record at a time, for ``n_epochs`` passes. Each pass
-    visits the records in a permutation drawn from the ``"som.order"`` stream (or in index order).
-    The learning rate and neighbourhood radius decay linearly to zero over the whole run. The
-    initial unit weights are either laid out across the first two principal components of the
-    features (``init="pca"``, deterministic) or drawn as records from the ``"som.init"`` stream.
-    Each record's cell is its best-matching unit under ``metric``; ties go to the lowest unit index.
+    KSOM trains online, one record per update, for ``n_epochs`` passes; the learning rate and
+    neighbourhood radius decay linearly to zero. A record's cell is its best-matching unit
+    under ``metric``, ties to the lowest unit index.
 
-    - ``mode="cluster"`` treats every occupied cell as a group and assigns whole cells to
+    - ``mode="cluster"`` treats each occupied cell as a group and assigns whole cells to
       partitions: an extrapolative split over regions of the map.
-    - ``mode="stratified"`` keeps cells together only for sampling: records are ordered cell by
-      cell along a snake path over the grid (a ``"som.stratify"`` shuffle within each cell), and
-      test, then valid, are drawn by systematic sampling along that order, so every region of the
-      map contributes in proportion to its size (Guha et al. 2004). No groups are formed.
+    - ``mode="stratified"`` orders records cell by cell along a snake path over the grid, then
+      samples systematically along it, so every region contributes in proportion to its size
+      (Guha et al. 2004). No groups are formed.
 
-    :param mode: ``"cluster"`` or ``"stratified"``. Defaults to ``"cluster"``.
-    :param grid_size: Side of the square map. ``"auto"`` gives ``ceil(sqrt(5·sqrt(n)))`` units
-        per side (about ``5·sqrt(n)`` units, Vesanto & Alhoniemi), clipped to [2, 50].
-        Defaults to ``"auto"``.
-    :param n_epochs: Training passes over the data. Defaults to 10.
-    :param batch_size: Records per KSOM update call. KSOM finds every record's best-matching unit
-        against the map as it stood at the start of the call, so 1 gives the classic online map.
-        Defaults to 1.
-    :param alpha_init: Initial learning rate. Defaults to 0.5.
-    :param neighborhood_init: Initial neighbourhood radius in grid units; ``None`` uses half the
-        grid side. Defaults to ``None``.
-    :param neighborhood: Neighbourhood function, ``"gaussian"`` or ``"linear"``. Defaults to
-        ``"gaussian"``.
-    :param metric: Distance used to find each record's best-matching unit: ``"tanimoto"``
-        (continuous Tanimoto), ``"euclidean"`` or ``"cosine"``. The weight update always moves
-        units straight towards the record, whichever metric is used. Defaults to ``"tanimoto"``.
-    :param init: Initial weights, ``"pca"`` or ``"records"``. Defaults to ``"pca"``.
-    :param order: Record order within each epoch, ``"random"`` or ``"index"``. Defaults to
-        ``"random"``.
-    :param standardize: Standardise feature columns before training. ``None`` standardises
-        non-binary features unless ``metric="tanimoto"``; ``True`` with ``"tanimoto"`` is an error.
-        Defaults to ``None``.
+    :param mode: hold out whole map regions, or sample across the map.
+    :param grid_size: side of the square map, or ``"auto"`` for ``ceil(sqrt(5*sqrt(n)))``,
+        clipped to ``[2, 50]``.
+    :param n_epochs: training passes over the data.
+    :param batch_size: records per KSOM update. Each call matches against the map as it stood
+        when the call began, so ``1`` gives the classic online map.
+    :param alpha_init: initial learning rate.
+    :param neighborhood_init: initial neighbourhood radius in grid units, or ``None`` for half
+        the grid side.
+    :param neighborhood: neighbourhood function, Gaussian or linear.
+    :param metric: distance used to find best-matching units. The weight update always moves
+        units straight towards the record.
+    :param init: lay initial weights across the first two principal components, or draw them
+        as records.
+    :param order: record order within an epoch: a seeded permutation, or input order.
+    :param standardize: standardise feature columns first. ``None`` standardises non-binary
+        features unless ``metric="tanimoto"``.
     :ivar splitter_id: ``"self_organizing_map"``.
+    :param featurizer: featurizer alias or instance.
+    :param max_memory_bytes: ceiling on any pairwise matrix.
+    :param n_jobs: worker count. Results never depend on it.
+    :param size_tolerance: size drift that triggers :class:`SizeToleranceWarning`.
+    :param group_assignment: how cells are handed to partitions; see
+        :func:`chemsplit.base.assign_groups`.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises MissingDependencyError: if the ``som`` extra is not installed.
+    :raises ParameterError: if a numeric parameter is out of range, or ``mode``,
+        ``neighborhood``, ``metric``, ``init`` or ``order`` is unknown.
+    :raises ConfigurationError: if ``standardize=True`` meets ``metric="tanimoto"``.
 
     Advantages
     ----------
-    - A nonlinear map that preserves neighbourhoods: nearby cells hold similar records, so `mode="cluster"` holds out coherent regions of chemical space.
-    - `mode="stratified"` gives a representative split that covers every region of the map, the use Guha et al. describe for QSAR set design.
+    - Preserves neighbourhoods, so nearby cells hold similar records and `mode="cluster"`
+      holds out coherent regions of chemical space.
+    - `mode="stratified"` covers every region of the map, the use Guha et al. describe for
+      QSAR set design.
     - Memory grows with `n x units`, never `n x n`.
-    - `init="pca"` with `order="index"` is fully deterministic without a seed.
+    - `init="pca"` with `order="index"` is deterministic without a seed.
 
     Pitfalls
     --------
-    - Online training costs one KSOM update per record per epoch; tens of thousands of records take minutes.
-    - The grid size sets the granularity of `mode="cluster"`: a large grid leaves many singleton cells, so the split behaves more like random than extrapolative.
-    - Results depend on the seed through the record order (`order="random"`) and `init="records"`.
-    - `metric` only chooses best-matching units; on binary fingerprints the trained weights are continuous, which is why the continuous Tanimoto distance is used.
-    - Torch arithmetic follows the platform's BLAS, so splits can differ slightly across machines.
+    - One KSOM update per record per epoch, so tens of thousands of records take minutes.
+    - A large grid leaves many singleton cells, and `mode="cluster"` then behaves more like
+      random than extrapolative.
+    - Seed-dependent through `order="random"` and `init="records"`.
+    - `metric` only chooses best-matching units; the trained weights are continuous even on
+      binary fingerprints, hence the continuous Tanimoto distance.
+    - Torch follows the platform's BLAS, so splits can differ slightly across machines.
 
     Notes
     -----
-    Requires the ``som`` extra (``pip install 'chemsplit[som]'``). Torch's global random state is
-    saved and restored around map construction, so the split never touches it. Determinism
+    Torch's global random state is saved and restored around map construction. Determinism
     ``purpose`` strings: ``"som.init"``, ``"som.order"``, ``"som.stratify"``, ``"group.assign"``.
 
     References
     ----------
     .. [1] Kohonen, T. Self-Organized Formation of Topologically Correct Feature Maps.
        *Biol. Cybern.* **1982**, 43 (1), 59-69. https://doi.org/10.1007/BF00337288
-    .. [2] Guha, R.; Serra, J. R.; Jurs, P. C. Generation of QSAR Sets with a Self-Organizing Map.
-       *J. Mol. Graph. Model.* **2004**, 23 (1), 1-14. https://doi.org/10.1016/j.jmgm.2004.03.003
+    .. [2] Guha, R.; Serra, J. R.; Jurs, P. C. Generation of QSAR Sets with a Self-Organizing
+       Map. *J. Mol. Graph. Model.* **2004**, 23 (1), 1-14.
+       https://doi.org/10.1016/j.jmgm.2004.03.003
     .. [3] Vesanto, J.; Alhoniemi, E. Clustering of the Self-Organizing Map. *IEEE Trans. Neural
        Netw.* **2000**, 11 (3), 586-600. https://doi.org/10.1109/72.846731
     .. [4] d'Aquin, M. KSOM: Simple, but Kind of Fast Self-Organising Maps in PyTorch.
@@ -681,10 +763,18 @@ class SelfOrganizingMapSplitter(SimilarityParamsMixin, GroupSplitter):
         self.order = order
         self.standardize = standardize
         SimilarityParamsMixin.__init__(
-            self, featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, n_jobs=n_jobs
+            self,
+            featurizer=featurizer,
+            metric=metric,
+            max_memory_bytes=max_memory_bytes,
+            n_jobs=n_jobs,
         )
         GroupSplitter.__init__(
-            self, size_tolerance=size_tolerance, group_assignment=group_assignment, n_jobs=n_jobs, **base
+            self,
+            size_tolerance=size_tolerance,
+            group_assignment=group_assignment,
+            n_jobs=n_jobs,
+            **base,
         )
         choices = {
             "mode": ("cluster", "stratified"),
@@ -695,9 +785,14 @@ class SelfOrganizingMapSplitter(SimilarityParamsMixin, GroupSplitter):
         }
         for name, allowed in choices.items():
             if getattr(self, name) not in allowed:
-                raise ParameterError(f"invalid {name}: {getattr(self, name)!r}; expected one of {list(allowed)}")
+                raise ParameterError(
+                    f"invalid {name}: {getattr(self, name)!r}; "
+                    f"expected one of {list(allowed)}"
+                )
         if grid_size != "auto" and (
-            isinstance(grid_size, bool) or not isinstance(grid_size, (int, np.integer)) or grid_size < 2
+            isinstance(grid_size, bool)
+            or not isinstance(grid_size, (int, np.integer))
+            or grid_size < 2
         ):
             raise ParameterError(f"grid_size must be 'auto' or an int >= 2, got {grid_size!r}")
         for name in ("n_epochs", "batch_size"):
@@ -709,7 +804,9 @@ class SelfOrganizingMapSplitter(SimilarityParamsMixin, GroupSplitter):
         if neighborhood_init is not None and not (
             isinstance(neighborhood_init, (int, float)) and neighborhood_init > 0
         ):
-            raise ParameterError(f"neighborhood_init must be None or > 0, got {neighborhood_init!r}")
+            raise ParameterError(
+                f"neighborhood_init must be None or > 0, got {neighborhood_init!r}"
+            )
         if standardize not in (None, True, False):
             raise ParameterError(f"standardize must be None or a bool, got {standardize!r}")
         if standardize is True and metric == "tanimoto":
@@ -717,9 +814,18 @@ class SelfOrganizingMapSplitter(SimilarityParamsMixin, GroupSplitter):
         self._validate_similarity_params()
 
     def compute_groups(self, X: Any, y: Any = None, **kw: Any) -> IndexArray:
+        """Expose the group labels without performing a split.
+
+        :param X: the records, as for :meth:`split`.
+        :param y: labels, if the splitter needs them.
+        :param kw: per-call extras, as for :meth:`split`.
+        :raises NotImplementedError: in ``mode="stratified"``, which forms no groups.
+        :return: one dense group label per record.
+        """
         if self.mode == "stratified":
             raise ParameterError(
-                f"{type(self).__name__}(mode='stratified') forms no groups; use mode='cluster' for compute_groups()"
+                f"{type(self).__name__}(mode='stratified') forms no groups; use "
+                "mode='cluster' for compute_groups()"
             )
         return super().compute_groups(X, y, **kw)
 
@@ -775,9 +881,16 @@ class SelfOrganizingMapSplitter(SimilarityParamsMixin, GroupSplitter):
         n = X.shape[0]
         side = self._resolve_grid_size(n)
         guard_memory(max(n, side * side), self.max_memory_bytes, type(self).__name__)
-        dist = {"tanimoto": _som_tanimoto_distance, "euclidean": euclidean_distance, "cosine": cosine_distance}[self.metric]
+        dist = {
+            "tanimoto": _som_tanimoto_distance,
+            "euclidean": euclidean_distance,
+            "cosine": cosine_distance,
+        }[self.metric]
         nb_fct = nb_gaussian if self.neighborhood == "gaussian" else nb_linear
-        nb_init = float(self.neighborhood_init) if self.neighborhood_init is not None else side / 2.0
+        if self.neighborhood_init is not None:
+            nb_init = float(self.neighborhood_init)
+        else:
+            nb_init = side / 2.0
         total_steps = self.n_epochs * n + 1
         init = torch.from_numpy(self._initial_weights(X, side, ctx))
         with torch.random.fork_rng(devices=[]):
@@ -819,6 +932,8 @@ class SelfOrganizingMapSplitter(SimilarityParamsMixin, GroupSplitter):
             "topographic_error": float(1.0 - adjacent.mean()),
             "n_occupied_cells": int(occupied.size),
             "cell_sizes": sorted(counts.tolist(), reverse=True),
+            # torch.cdist is BLAS-backed, so map weights aren't bit-exact across builds
+            "nondeterministic_method": True,
         }
         return bmu, meta
 
@@ -854,7 +969,10 @@ class SelfOrganizingMapSplitter(SimilarityParamsMixin, GroupSplitter):
         def systematic(seq: list[int], k: int) -> tuple[list[int], list[int]]:
             m = len(seq)
             hit = [(p + 1) * k // m > p * k // m for p in range(m)] if m else []
-            return [r for r, h in zip(seq, hit, strict=True) if h], [r for r, h in zip(seq, hit, strict=True) if not h]
+            return (
+                [r for r, h in zip(seq, hit, strict=True) if h],
+                [r for r, h in zip(seq, hit, strict=True) if not h],
+            )
 
         test, rest = systematic(walk, ctx.sizes.n_test)
         valid, train = systematic(rest, ctx.sizes.n_valid)
@@ -867,57 +985,80 @@ class SelfOrganizingMapSplitter(SimilarityParamsMixin, GroupSplitter):
             splitter_id=self.splitter_id,
             params=self.get_params(),
             n_records=n,
-            metadata={**meta, "realised_sizes": {"train": len(train), "valid": len(valid), "test": len(test)}},
+            metadata={
+                **meta,
+                "realised_sizes": {
+                    "train": len(train),
+                    "valid": len(valid),
+                    "test": len(test),
+                },
+            },
         )
         return [result]
-
-
-# -
-# LatentSpaceSplitter
-# -
 
 
 class LatentSpaceSplitter(_ClusterCountMixin, GroupSplitter):
     """Clusters in an embedding supplied by the caller (``latent_space``) -- a ChemBERTa/GNN/VAE
     representation, not one chemsplit computes itself.
 
-    :param embedding: An ``(n, d)`` array, or a callable applied to ``X``. If ``None``, ``X``
-        itself must already be a feature matrix (``accepts=("features",)``).
-    :param normalize: Row normalisation applied to the embedding before clustering. Defaults to
-        ``"l2"``.
-    :param embedding_metric: Distance used by the clusterer. Unbounded metrics are allowed here.
-        Defaults to ``"cosine"``.
-    :param independence_declared: The caller asserts that the encoder producing the embedding is
-        not the model being evaluated. If ``False``, :class:`~chemsplit.exceptions.CircularityWarning`
-        is emitted at every call -- the flag exists to force the user to think about this, not to
-        verify it. Defaults to ``False``.
+    :param embedding: an ``(n, d)`` array, or a callable applied to ``X``. When ``None``, ``X``
+        must already be a feature matrix.
+    :param normalize: row normalisation applied before clustering: none, L2, or z-score.
+    :param embedding_metric: distance used by the clusterer. Unbounded metrics are allowed
+        here.
+    :param independence_declared: assert that the encoder behind the embedding is not the
+        model being evaluated. ``False`` emits
+        :class:`~chemsplit.exceptions.CircularityWarning` every call. Nothing verifies it.
+    :param n_clusters: how many clusters to form, or ``"auto"`` to derive it from
+        ``auto_rule``.
+    :param cluster_algorithm: k-means, agglomerative clustering, or HDBSCAN.
+    :param auto_rule: how ``n_clusters="auto"`` is derived: ``sqrt(n)``, ``n/50``, or the best
+        silhouette score over ``auto_range``.
+    :param auto_range: lower and upper clamp on the derived cluster count.
+    :param size_tolerance: how far a realised partition size may drift from its target before
+        a :class:`SizeToleranceWarning` is issued.
+    :param group_assignment: how clusters are handed to partitions; see
+        :func:`chemsplit.base.assign_groups`.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ParameterError: if ``embedding`` is neither ``None``, an array nor a callable, or a
+        mode parameter is unknown.
+    :raises InputError: at split time, if the embedding's row count does not match ``n``, or no
+        embedding is available.
 
     Advantages
     ----------
-    - Splits in the space the downstream model actually perceives -- arguably the most relevant notion of "similar" for that model.
-    - Works for modalities without fingerprints: reaction embeddings, 3-D conformer embeddings, multimodal representations.
-    - `embedding_hash` ties the split to a specific representation, making it traceable.
+    - Splits in the space the downstream model perceives, which is arguably the most relevant
+      notion of "similar" for that model.
+    - Works for modalities without fingerprints: reaction embeddings, 3-D conformer
+      embeddings, multimodal representations.
+    - `embedding_hash` ties the split to a specific representation, which keeps it traceable.
 
     Pitfalls
     --------
-    - **Circularity.** If the encoder defining the split is also the model under evaluation, or was pretrained on the same data, the split is inadvertently tuned to be easy or hard for that model, and cross-model comparison becomes meaningless. Use an independent encoder -- the `independence_declared` flag forces you to think about this, but doesn't verify it.
-    - Pretrained encoders usually saw enormous public corpora overlapping your test set, so novelty relative to your training set isn't novelty relative to the encoder's pretraining set.
-    - Latent geometry drifts with checkpoint, tokenizer, and pooling choices, so a split reproduces only against a pinned encoder artefact.
-    - Cosine distance in a latent space has no chemical units, so fingerprint-space cutoff intuitions don't transfer.
-
+    - **Circularity.** An encoder that is also the model under evaluation, or was pretrained
+      on the same data, tunes the split to be easy or hard for that model, and cross-model
+      comparison stops meaning anything. Only an independent encoder avoids it.
+    - Pretrained encoders usually saw enormous public corpora overlapping the test set, so
+      novelty relative to the training set is not novelty relative to the pretraining set.
+    - Latent geometry drifts with checkpoint, tokenizer and pooling, so a split reproduces only
+      against a pinned encoder artefact.
+    - Cosine distance in a latent space has no chemical units, so fingerprint-space cutoff
+      intuitions do not transfer.
 
     References
     ----------
-    .. [1] Clustering a caller-supplied learned embedding has no single published origin. What is documented
-       is the circularity risk this splitter warns about:
-    .. [2] Kapoor, S.; Narayanan, A. Leakage and the Reproducibility Crisis in Machine-Learning-Based
-       Science. *Patterns* **2023**, 4 (9), 100804. https://doi.org/10.1016/j.patter.2023.100804
-    .. [3] Hermann, L.; Fiedler, T.; Nguyen, H. A.; Nowicka, M.; Bartoszewicz, J. M. Beware of Data Leakage
-       from Protein LLM Pretraining. *bioRxiv* preprint, **2024** (not peer reviewed; demonstrated for
-       proteins, not small molecules). https://doi.org/10.1101/2024.07.23.604678
-    .. [4] Deng, J.; Yang, Z.; Wang, H.; Ojima, I.; Samaras, D.; Wang, F. A Systematic Study of Key Elements
-       Underlying Molecular Property Prediction. *Nat. Commun.* **2023**, 14, 6395.
-       https://doi.org/10.1038/s41467-023-41948-6
+    .. [1] Clustering a caller-supplied learned embedding is not itself a published method.
+       The circularity risk this splitter warns about is documented in [2]-[4].
+    .. [2] Kapoor, S.; Narayanan, A. Leakage and the Reproducibility Crisis in
+       Machine-Learning-Based Science. *Patterns* **2023**, 4 (9), 100804.
+       https://doi.org/10.1016/j.patter.2023.100804
+    .. [3] Hermann, L.; Fiedler, T.; Nguyen, H. A.; Nowicka, M.; Bartoszewicz, J. M. Beware of
+       Data Leakage from Protein LLM Pretraining. *bioRxiv* preprint, **2024** (not peer
+       reviewed; demonstrated for proteins, not small molecules).
+       https://doi.org/10.1101/2024.07.23.604678
+    .. [4] Deng, J.; Yang, Z.; Wang, H.; Ojima, I.; Samaras, D.; Wang, F. A Systematic Study of
+       Key Elements Underlying Molecular Property Prediction. *Nat. Commun.* **2023**, 14,
+       6395. https://doi.org/10.1038/s41467-023-41948-6
     """
 
     splitter_id: ClassVar[str] = "latent_space"
@@ -950,7 +1091,9 @@ class LatentSpaceSplitter(_ClusterCountMixin, GroupSplitter):
             self, n_clusters=n_clusters, cluster_algorithm=cluster_algorithm,
             auto_rule=auto_rule, auto_range=auto_range,
         )
-        GroupSplitter.__init__(self, size_tolerance=size_tolerance, group_assignment=group_assignment, **base)
+        GroupSplitter.__init__(
+            self, size_tolerance=size_tolerance, group_assignment=group_assignment, **base
+        )
         if normalize not in ("none", "l2", "zscore"):
             raise ParameterError(f"invalid normalize: {normalize!r}")
         self._validate_cluster_count_params()
@@ -969,8 +1112,8 @@ class LatentSpaceSplitter(_ClusterCountMixin, GroupSplitter):
         if self.embedding is None:
             Z = np.asarray(ctx.get_features(), dtype=np.float64)
         elif callable(self.embedding):
-            # accepts=("features",) guarantees X arrived as ctx.raw_features (no mols to fall
-            # back to -- LatentSpaceSplitter never featurizes molecules itself).
+            # accepts=("features",), so X is always in ctx.raw_features and there are no
+            # mols to fall back to
             Z = np.asarray(self.embedding(ctx.raw_features), dtype=np.float64)
         else:
             Z = np.asarray(self.embedding, dtype=np.float64)
@@ -996,7 +1139,8 @@ class LatentSpaceSplitter(_ClusterCountMixin, GroupSplitter):
 
         self._silhouette_bundle = ctx.rng_seeds
         k = self._resolve_n_clusters(ctx.n, Z, seed_for(ctx.rng_seeds, "kmeans.fit", 0))
-        labels = self._cluster(Z, k, int(seed_for(ctx.rng_seeds, "kmeans.fit", 0).integers(0, 2**31 - 1)))
+        cluster_seed = int(seed_for(ctx.rng_seeds, "kmeans.fit", 0).integers(0, 2**31 - 1))
+        labels = self._cluster(Z, k, cluster_seed)
 
         self._last_embedding_hash = hashlib.blake2b(
             np.ascontiguousarray(Z, dtype=np.float32).tobytes(), digest_size=8

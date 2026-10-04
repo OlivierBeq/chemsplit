@@ -9,7 +9,10 @@
     7,
     13
   ],
+  "largest_group_frac": 0.25,
   "n_discard": 0,
+  "n_groups": 8,
+  "n_records": 80,
   "n_test": 15,
   "n_train": 65,
   "n_valid": 0,

@@ -34,12 +34,10 @@ def _fixture_cache() -> dict[str, Any]:
         "all_identical": ds.make_all_identical(n=30),
         "singletons": ds.make_singletons(n=20, seed=0),
         "label_extremes": ds.make_label_extremes(n=100, seed=0),
-        # SIMPDSplitter (simpd) needs n >= 200 to meaningfully run its GA.
+        # simpd needs n >= 200 for its GA to do anything
         "simpd_series": ds.make_scaffold_families(n_scaffolds=10, per_scaffold=20, seed=1),
-        # A parallel sequences array for ComplexJointSplitter (complex_joint), which wants
-        # ctx.sequences to derive its default sequence grouper even though its own `accepts`
-        # doesn't include "sequences" (it's a second axis alongside the ligand SMILES, not the
-        # primary X).
+        # ComplexJointSplitter needs ctx.sequences for its default sequence grouper, even
+        # though "sequences" is a second axis rather than its primary X
         "aux_sequences_80": ds.make_sequences(n=80, families=4, seed=1),
     }
 
@@ -55,10 +53,15 @@ def _binary_y(y: np.ndarray) -> np.ndarray:
     return (np.asarray(y) > med).astype(np.int64)
 
 
-# Each entry: splitter_id -> a zero-arg callable returning (X, y, split_kwargs, ctor_kwargs).
-# split_kwargs are passed to split_result(X, y, **split_kwargs) (e.g. dates=, X_kind=,
-# sequences=). ctor_kwargs are passed to the splitter's constructor alongside random_state=0.
 def _build_plan(fixtures: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    """Build the golden-case plan, one entry per splitter, grouped by family.
+
+    ``split_kwargs`` go to ``split_result(X, y, **split_kwargs)``, e.g. ``dates=``, ``X_kind=``
+    or ``sequences=``; ``ctor_kwargs`` go to the constructor alongside ``random_state=0``.
+
+    :param fixtures: the shared fixture cache, keyed by fixture name.
+    :return: splitter id to its plan builder, and splitter id to the fixture it uses.
+    """
     F = fixtures
     plan: dict[str, Any] = {}
     fixture_name_of: dict[str, str] = {}
@@ -98,11 +101,28 @@ def _build_plan(fixtures: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str
     )
 
     # similarity
-    for sid in ["similarity_threshold", "butina", "sphere_exclusion", "k_means_cluster", "density_cluster", "spectral",
-                "max_min", "opti_sim", "duplex", "max_dissimilarity", "perimeter", "leave_one_cluster_out"]:
+    for sid in [
+        "similarity_threshold",
+        "butina",
+        "sphere_exclusion",
+        "k_means_cluster",
+        "density_cluster",
+        "spectral",
+        "max_min",
+        "opti_sim",
+        "duplex",
+        "max_dissimilarity",
+        "perimeter",
+        "leave_one_cluster_out",
+    ]:
         plan[sid] = smiles_case("two_clusters")
     plan["spxy"] = lambda: (F["linear_series"].smiles, F["linear_series"].y, {}, {})
-    plan["minimal_test_set_dissimilarity"] = lambda: (F["linear_series"].smiles, F["linear_series"].y, {}, {})
+    plan["minimal_test_set_dissimilarity"] = lambda: (
+        F["linear_series"].smiles,
+        F["linear_series"].y,
+        {},
+        {},
+    )
     plan["support_points"] = lambda: (F["linear_series"].smiles, F["linear_series"].y, {}, {})
     plan["d_optimal"] = smiles_case("linear_series")
     plan["balanced_multi_task"] = lambda: (
@@ -126,8 +146,18 @@ def _build_plan(fixtures: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str
     # property
     plan["property"] = smiles_case("linear_series")
     plan["label_extrapolation"] = lambda: (F["linear_series"].smiles, F["linear_series"].y, {}, {})
-    plan["distinct_label"] = lambda: (F["linear_series"].smiles, np.round(F["linear_series"].y, 1), {}, {})
-    plan["stratified_distribution"] = lambda: (F["linear_series"].smiles, F["linear_series"].y, {}, {})
+    plan["distinct_label"] = lambda: (
+        F["linear_series"].smiles,
+        np.round(F["linear_series"].y, 1),
+        {},
+        {},
+    )
+    plan["stratified_distribution"] = lambda: (
+        F["linear_series"].smiles,
+        F["linear_series"].y,
+        {},
+        {},
+    )
     def _moodsplitter_case() -> tuple[list[str], None, dict[str, Any], dict[str, Any]]:
         from chemsplit.registry import get_splitter
 
@@ -187,7 +217,9 @@ def _build_plan(fixtures: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str
         {"pharmacophore_similarity": "none"},
     )
     for sid in ["cold_drug", "cold_target", "cold_pair"]:
-        def _make(sid: str = sid) -> tuple[list[tuple[str, str]], list[float], dict[str, Any], dict[str, Any]]:
+        def _make(
+            sid: str = sid,
+        ) -> tuple[list[tuple[str, str]], list[float], dict[str, Any], dict[str, Any]]:
             X, y = _interactions_X_y(F["interactions"])
             return (X, y, {}, {})
         plan[sid] = _make
@@ -227,7 +259,13 @@ def _build_plan(fixtures: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str
         F["dated_series"].smiles,
         None,
         {"dates": F["dated_series"].dates},
-        {"cut_date": str(np.median(F["dated_series"].dates.astype("datetime64[D]").astype("int64")).astype("datetime64[D]"))},
+        {
+            "cut_date": str(
+                np.median(
+                    F["dated_series"].dates.astype("datetime64[D]").astype("int64")
+                ).astype("datetime64[D]")
+            )
+        },
     )
     plan["complex_joint"] = lambda: (
         F["two_clusters"].smiles,
@@ -262,7 +300,12 @@ def _build_plan(fixtures: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str
         {},
         {"X_external": F["two_clusters"].smiles[60:70]},
     )
-    plan["applicability_domain"] = lambda: (F["two_clusters"].smiles, None, {}, {"base_splitter": "random"})
+    plan["applicability_domain"] = lambda: (
+        F["two_clusters"].smiles,
+        None,
+        {},
+        {"base_splitter": "random"},
+    )
     plan["intersection"] = lambda: (
         F["dated_series"].smiles,
         None,
@@ -367,17 +410,28 @@ def _to_golden_payload(result: Any, ctx_extra: dict[str, Any] | None = None) -> 
         )
         return {"tier": "exact", "split_result_json": split_result_json}
 
-    # Tolerance tier: sizes exact, group-size histogram as a multiset.
+    # Tolerance tier: partition sizes and a coarse grouping summary, compared with a
+    # tolerance. The histogram is stored for inspection only, since a different BLAS build can
+    # move a few records between clusters without that being a regression.
     if result.groups is not None:
         group_sizes = np.bincount(result.groups).tolist()
+        n_groups = len(group_sizes)
+        largest_group_frac = max(group_sizes) / result.n_records
     else:
         group_sizes = None
+        n_groups = None
+        largest_group_frac = None
     return {
         "tier": "tolerance",
+        "n_records": int(result.n_records),
         "n_train": int(len(result.train)),
         "n_valid": int(len(result.valid)),
         "n_test": int(len(result.test)),
         "n_discard": int(len(result.discard)),
+        "n_groups": n_groups,
+        "largest_group_frac": (
+            None if largest_group_frac is None else float(f"{largest_group_frac:.6f}")
+        ),
         "group_size_histogram": group_sizes,
     }
 
@@ -385,6 +439,16 @@ def _to_golden_payload(result: Any, ctx_extra: dict[str, Any] | None = None) -> 
 def regenerate_goldens(
     *, confirm: bool = False, splitter_ids: list[str] | None = None
 ) -> dict[str, str]:
+    """Recompute the golden split files on disk.
+
+    Refuses to run without both the explicit flag and the environment variable, so an unrelated
+    test run can never rewrite the baselines.
+
+    :param confirm: must be ``True``.
+    :param splitter_ids: regenerate only these ids, or ``None`` for all of them.
+    :raises RuntimeError: unless ``confirm`` is set and ``CHEMSPLIT_ALLOW_GOLDEN_REGEN=1``.
+    :return: splitter id to the golden file path written.
+    """
     if not confirm or os.environ.get("CHEMSPLIT_ALLOW_GOLDEN_REGEN") != "1":
         raise RuntimeError(
             "regenerate_goldens() refuses to run: pass confirm=True AND set "
@@ -434,6 +498,11 @@ def regenerate_goldens(
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the developer-tooling command line.
+
+    :param argv: the arguments, or ``None`` to read ``sys.argv``.
+    :return: the process exit code.
+    """
     parser = argparse.ArgumentParser(prog="python -m chemsplit._devtools")
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("regenerate_goldens")

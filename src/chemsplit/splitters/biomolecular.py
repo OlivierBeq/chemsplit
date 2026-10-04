@@ -1,4 +1,5 @@
-"""Biomolecular-axis splitters: hold out on protein sequence identity, family, binding site, deposition date, or a joint ligand+sequence axis.
+"""Biomolecular-axis splitters: hold out on protein sequence identity, family, binding site,
+deposition date, or a joint ligand-and-sequence axis.
 """
 
 from __future__ import annotations
@@ -73,48 +74,64 @@ def _pairwise_identity_matrix(sequences: list[str], use_parasail: bool) -> np.nd
 class SequenceIdentitySplitter(GroupSplitter):
     """Group protein sequences by pairwise identity (single-linkage above a threshold).
 
-    :param identity_threshold: Sequences whose pairwise identity exceeds this are merged into one
-        group (single-linkage -- a chain of pairwise-similar sequences can span very different
-        sequences at the chain's ends, exactly as Butina/graph-component grouping does on the
-        ligand side). Default ``0.7``.
-    :param algorithm: ``"parasail"`` uses global alignment via the ``bio`` extra (``parasail``);
-        ``"hamming"`` is a dependency-free equal-length fractional-match fallback;
-        ``"auto"`` uses ``parasail`` if installed, else ``"hamming"``. Default ``"auto"``.
+    :param identity_threshold: sequences above this pairwise identity merge into one group.
+        Linkage is single, so a chain can span very different sequences at its ends, as
+        graph-component grouping does on the ligand side.
+    :param algorithm: global alignment via the ``bio`` extra, a dependency-free equal-length
+        fractional match, or ``"auto"`` to prefer ``parasail`` when installed.
+    :param size_tolerance: how far a realised partition size may drift from its target before
+        a :class:`SizeToleranceWarning` is issued.
+    :param group_assignment: how groups are handed to partitions; see
+        :func:`chemsplit.base.assign_groups`.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ParameterError: if ``identity_threshold`` is outside ``(0, 1)``, or ``algorithm``
+        is unknown.
+    :raises MissingDependencyError: if ``algorithm="parasail"`` and the ``bio`` extra is not
+        installed.
+    :raises InputError: at split time, if the sequences are missing, or ``algorithm="hamming"``
+        is used on sequences of unequal length.
 
     Advantages
     ----------
-    - The standard control for any model taking a protein as input -- without it, a "new target" claim isn't credible.
-    - Computes and reports `max_cross_identity`, so the claim is backed by evidence.
-    - Makes the `identity_denominator` choice explicit, removing the most common source of incomparable identity numbers between papers.
-    - Deduplicating to unique sequences first keeps it cheap even on large interaction datasets.
+    - The standard control for any model taking a protein as input. Without it a "new target"
+      claim is not credible.
+    - Computes and reports `max_cross_identity`, so the claim rests on evidence.
+    - Deduplicating to unique sequences first keeps it cheap even on large interaction
+      datasets.
 
     Pitfalls
     --------
-    - **Percent identity isn't one number.** The same alignment gives very different identities depending on the denominator and on local vs. global alignment; 30% local over the shorter sequence is far weaker than 30% global over the alignment.
-    - A poor proxy for binding-site similarity -- two proteins at 20% overall identity can share nearly identical pockets, and this split will happily separate them while leaking the pharmacology. Pair with `binding_site`.
-    - `greedy_incremental` is order-dependent by construction; longest-first fixes it here, but results won't match other tools' orderings.
-    - Multi-domain and multi-chain proteins align poorly as single strings; coverage filtering helps but doesn't solve it.
-    - `aligner="kmer"` is an approximation and must be disclosed.
-
+    - **Percent identity is not one number.** It shifts with the denominator and with local
+      against global alignment: 30% local over the shorter sequence is far weaker than 30%
+      global.
+    - A poor proxy for binding-site similarity: two proteins at 20% identity can share nearly
+      identical pockets, so the split separates them while leaking the pharmacology.
+      `binding_site` covers that axis.
+    - Single-linkage grouping is transitive, so one promiscuous sequence can chain two
+      otherwise unrelated families into a single group.
+    - Multi-domain and multi-chain proteins align poorly as single strings.
+    - `algorithm="hamming"` is a positional approximation, not an alignment, and gives
+      different groups from the `parasail` path.
 
     References
     ----------
-    .. [1] Pahikkala, T.; Airola, A.; Pietilä, S. et al. Toward More Realistic Drug-Target Interaction
-       Predictions. *Brief. Bioinform.* **2015**, 16 (2), 325-337. https://doi.org/10.1093/bib/bbu010
-       (the rationale for requiring unseen targets)
-    .. [2] Smith, T. F.; Waterman, M. S. Identification of Common Molecular Subsequences. *J. Mol. Biol.*
-       **1981**, 147 (1), 195-197. https://doi.org/10.1016/0022-2836(81)90087-5; and Needleman, S. B.;
-       Wunsch, C. D. A General Method Applicable to the Search for Similarities in the Amino Acid
-       Sequence of Two Proteins. *J. Mol. Biol.* **1970**, 48 (3), 443-453.
+    .. [1] Pahikkala, T.; Airola, A.; Pietilä, S. et al. Toward More Realistic Drug-Target
+       Interaction Predictions. *Brief. Bioinform.* **2015**, 16 (2), 325-337.
+       https://doi.org/10.1093/bib/bbu010 (the rationale for requiring unseen targets)
+    .. [2] Smith, T. F.; Waterman, M. S. Identification of Common Molecular Subsequences.
+       *J. Mol. Biol.* **1981**, 147 (1), 195-197.
+       https://doi.org/10.1016/0022-2836(81)90087-5; and Needleman, S. B.; Wunsch, C. D. A
+       General Method Applicable to the Search for Similarities in the Amino Acid Sequence of
+       Two Proteins. *J. Mol. Biol.* **1970**, 48 (3), 443-453.
        https://doi.org/10.1016/0022-2836(70)90057-4
-    .. [3] ``algorithm="parasail"``: Daily, J. Parasail: SIMD C Library for Global, Semi-Global, and Local
-       Pairwise Sequence Alignments. *BMC Bioinformatics* **2016**, 17, 81.
-       https://doi.org/10.1186/s12859-016-0930-z
-    .. [4] Established identity-clustering tools solving the same grouping problem: Li, W.; Godzik, A.
-       Cd-hit. *Bioinformatics* **2006**, 22 (13), 1658-1659.
-       https://doi.org/10.1093/bioinformatics/btl158; Steinegger, M.; Söding, J. MMseqs2 Enables
-       Sensitive Protein Sequence Searching for the Analysis of Massive Data Sets. *Nat. Biotechnol.*
-       **2017**, 35 (11), 1026-1028. https://doi.org/10.1038/nbt.3988
+    .. [3] ``algorithm="parasail"``: Daily, J. Parasail: SIMD C Library for Global,
+       Semi-Global, and Local Pairwise Sequence Alignments. *BMC Bioinformatics* **2016**, 17,
+       81. https://doi.org/10.1186/s12859-016-0930-z
+    .. [4] Established identity-clustering tools solving the same grouping problem: Li, W.;
+       Godzik, A. Cd-hit. *Bioinformatics* **2006**, 22 (13), 1658-1659.
+       https://doi.org/10.1093/bioinformatics/btl158; Steinegger, M.; Söding, J. MMseqs2
+       Enables Sensitive Protein Sequence Searching for the Analysis of Massive Data Sets.
+       *Nat. Biotechnol.* **2017**, 35 (11), 1026-1028. https://doi.org/10.1038/nbt.3988
     """
 
     splitter_id: ClassVar[str] = "sequence_identity"
@@ -141,7 +158,9 @@ class SequenceIdentitySplitter(GroupSplitter):
         self.identity_threshold = identity_threshold
         self.algorithm = algorithm
         if not (0.0 < identity_threshold <= 1.0):
-            raise ParameterError(f"identity_threshold must be in (0, 1], got {identity_threshold!r}")
+            raise ParameterError(
+                f"identity_threshold must be in (0, 1], got {identity_threshold!r}"
+            )
         if algorithm not in ("auto", "parasail", "hamming"):
             raise ParameterError(f"invalid algorithm: {algorithm!r}")
 
@@ -159,7 +178,9 @@ class SequenceIdentitySplitter(GroupSplitter):
 
     def _group_labels(self, ctx: Any) -> IndexArray:
         if ctx.sequences is None:
-            raise LabelError("SequenceIdentitySplitter requires ctx.sequences (accepts=('sequences',))")
+            raise LabelError(
+                "SequenceIdentitySplitter requires ctx.sequences (accepts=('sequences',))"
+            )
         sequences = ctx.sequences
         n = len(sequences)
         use_parasail = self._resolve_algorithm()
@@ -193,31 +214,44 @@ class ProteinFamilySplitter(GroupSplitter):
     No external database lookup -- the family label per record is supplied directly by the
     caller.
 
-    :param family_labels: One family/class label per record, aligned with ``X``. Required (no
-        default inference). Default ``None``.
+    :param family_labels: one family or class label per record, aligned with ``X``. Required;
+        nothing is inferred.
+    :param size_tolerance: how far a realised partition size may drift from its target before
+        a :class:`SizeToleranceWarning` is issued.
+    :param group_assignment: how groups are handed to partitions; see
+        :func:`chemsplit.base.assign_groups`.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ConfigurationError: if ``family_labels`` is missing.
+    :raises InputError: at split time, if ``family_labels`` is the wrong length.
 
     Advantages
     ----------
-    - Tests transfer *across target classes* -- kinases in train, GPCRs in test -- the real claim behind most proteochemometrics work, and invisible to a sequence-identity split within one family.
-    - Uses curated biological knowledge instead of a sequence heuristic, so the groups mean something to a biologist.
-    - Explicit `held_out_families` makes the experiment fully specifiable in one line.
+    - Tests transfer *across target classes* -- kinases in train, GPCRs in test -- the claim
+      behind most proteochemometrics work, and invisible to a within-family identity split.
+    - Uses curated biological knowledge instead of a sequence heuristic, so the groups mean
+      something to a biologist.
+    - `held_out_families` makes the experiment specifiable in one line.
 
     Pitfalls
     --------
-    - Family annotations are incomplete and inconsistent; unlabelled targets form a junk group whose size must be checked.
-    - Family boundaries don't imply pharmacological independence -- kinase and non-kinase ATP-binding proteins share ligand chemistry, so a "new family" can still be an easy target.
-    - Most datasets have very few families, so holding one out is high-variance; prefer leave-one-family-out via `leave_one_cluster_out`.
-    - Family sizes are extremely skewed (kinases dominate public data), so the requested ratio is usually unreachable.
-
+    - Family annotations are incomplete and inconsistent, and unlabelled targets form a junk
+      group whose size is worth checking.
+    - A family boundary is not pharmacological independence: ATP-binding proteins outside the
+      kinase family share its ligand chemistry, so a new family can still be easy.
+    - Most datasets have very few families, so holding one out is high-variance.
+      `leave_one_cluster_out` gives leave-one-family-out instead.
+    - Family sizes are very skewed, since kinases dominate public data, so the requested ratio
+      is usually unreachable.
 
     References
     ----------
-    .. [1] Holding out caller-supplied family labels is generic; the hierarchies and the leave-family-out
-       precedent are published:
-    .. [2] Mistry, J.; Chuguransky, S.; Williams, L. et al. Pfam: The Protein Families Database in 2021.
-       *Nucleic Acids Res.* **2021**, 49 (D1), D412-D419. https://doi.org/10.1093/nar/gkaa913
-    .. [3] Zdrazil, B.; Felix, E.; Hunter, F. et al. The ChEMBL Database in 2023. *Nucleic Acids Res.*
-       **2024**, 52 (D1), D1180-D1192. https://doi.org/10.1093/nar/gkad1004
+    .. [1] Holding out caller-supplied family labels is generic. The hierarchies and the
+       leave-family-out precedent are published in [2]-[4].
+    .. [2] Mistry, J.; Chuguransky, S.; Williams, L. et al. Pfam: The Protein Families
+       Database in 2021. *Nucleic Acids Res.* **2021**, 49 (D1), D412-D419.
+       https://doi.org/10.1093/nar/gkaa913
+    .. [3] Zdrazil, B.; Felix, E.; Hunter, F. et al. The ChEMBL Database in 2023. *Nucleic
+       Acids Res.* **2024**, 52 (D1), D1180-D1192. https://doi.org/10.1093/nar/gkad1004
     .. [4] Kramer, C.; Gedeck, P. Leave-Cluster-Out Cross-Validation Is Appropriate for Scoring
        Functions Derived from Diverse Protein Data Sets. *J. Chem. Inf. Model.* **2010**, 50 (11),
        1961-1969. https://doi.org/10.1021/ci100264e
@@ -247,7 +281,9 @@ class ProteinFamilySplitter(GroupSplitter):
 
     def _group_labels(self, ctx: Any) -> IndexArray:
         if self.family_labels is None:
-            raise ParameterError("ProteinFamilySplitter requires family_labels (no default inference)")
+            raise ParameterError(
+                "ProteinFamilySplitter requires family_labels (no default inference)"
+            )
         if len(self.family_labels) != ctx.n:
             raise ParameterError(
                 f"family_labels has length {len(self.family_labels)}, expected {ctx.n}"
@@ -258,41 +294,55 @@ class ProteinFamilySplitter(GroupSplitter):
 class BindingSiteSplitter(GroupSplitter):
     """Cluster on pocket residue composition/sequence, rather than global sequence identity.
 
-    :param representation: ``"composition"`` clusters a caller-supplied residue-composition
-        feature matrix (passed as ``X`` with ``accepts=("features",)``) via Butina on Euclidean
-        distance. ``"pocket_sequence"`` clusters caller-supplied short pocket sequences
-        (``accepts=("sequences",)``) via the same identity machinery as ``sequence_identity``,
-        requiring the ``bio`` extra for the accelerated path (falls back to the Hamming
-        approximation otherwise, same as ``SequenceIdentitySplitter``). Default ``"composition"``.
-    :param cutoff: Butina cutoff (distance for ``"composition"``, ``1 - identity`` for
-        ``"pocket_sequence"``). Default ``0.35``.
+    :param representation: Butina on Euclidean distance over a caller-supplied
+        residue-composition matrix, or ``sequence_identity``'s machinery over short pocket
+        sequences.
+    :param cutoff: Butina cutoff: a distance for ``"composition"``, and ``1 - identity`` for
+        ``"pocket_sequence"``.
+    :param size_tolerance: how far a realised partition size may drift from its target before
+        a :class:`SizeToleranceWarning` is issued.
+    :param group_assignment: how groups are handed to partitions; see
+        :func:`chemsplit.base.assign_groups`.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ParameterError: if ``cutoff`` is outside ``(0, 1)``, or ``representation`` is
+        unknown.
+    :raises InputKindError: at split time, if the input does not match the chosen
+        representation.
+    :raises InputError: at split time, if a pocket definition is missing for any record.
 
     Advantages
     ----------
-    - Catches the leak sequence identity misses: distant sequences with near-identical pockets, common across convergently evolved binding sites.
-    - Pocket composition is directly interpretable -- you can read off which residues drive the grouping.
+    - Catches the leak sequence identity misses: distant sequences with near-identical pockets,
+      common across convergently evolved binding sites.
+    - Pocket composition is interpretable, since the residues driving the grouping can be read
+      off directly.
     - Works from any pocket definition, including one derived from a predicted structure.
 
     Pitfalls
     --------
-    - **Needs a pocket definition the library can't produce.** Pocket detection is its own research problem, and a different detector yields a different split.
-    - `residue_composition` ignores geometry entirely -- two pockets with identical residue counts and completely different shapes look identical to it.
-    - Pocket residue lists from a single co-crystal reflect one ligand's contacts, not the pocket itself.
-    - Unavailable for targets without structures, so the method silently applies only to the structurally characterised subset unless the caller handles the rest -- which is why missing pockets raise rather than get dropped.
-
+    - **Needs a pocket definition the library cannot produce.** Pocket detection is its own
+      research problem, and a different detector yields a different split.
+    - `representation="composition"` ignores geometry, so two pockets with identical residue
+      counts and completely different shapes look the same to it.
+    - Pocket residue lists from a single co-crystal reflect one ligand's contacts rather than
+      the pocket itself.
+    - Targets without structures have no pocket, so the method covers only the structurally
+      characterised subset. Missing pockets raise rather than being dropped silently.
 
     References
     ----------
-    .. [1] No publication defines this exact splitter; the pocket representation and the clustering do:
+    .. [1] This exact splitter is not itself published; the pocket representation and the
+       clustering are, in [2]-[4].
     .. [2] Weill, N.; Rognan, D. Alignment-Free Ultra-High-Throughput Comparison of Druggable
        Protein-Ligand Binding Sites. *J. Chem. Inf. Model.* **2010**, 50 (1), 123-135.
        https://doi.org/10.1021/ci900349y (FuzCav; the residue-composition fingerprint
        ``representation="composition"`` mirrors)
-    .. [3] Ehrt, C.; Brinkjost, T.; Koch, O. Impact of Binding Site Comparisons on Medicinal Chemistry and
-       Rational Molecular Design. *J. Med. Chem.* **2016**, 59 (9), 4121-4151.
-       https://doi.org/10.1021/acs.jmedchem.6b00078 (distant sequences can share near-identical pockets)
-    .. [4] Butina, D. Unsupervised Data Base Clustering Based on Daylight's Fingerprint and Tanimoto
-       Similarity. *J. Chem. Inf. Comput. Sci.* **1999**, 39 (4), 747-750.
+    .. [3] Ehrt, C.; Brinkjost, T.; Koch, O. Impact of Binding Site Comparisons on Medicinal
+       Chemistry and Rational Molecular Design. *J. Med. Chem.* **2016**, 59 (9), 4121-4151.
+       https://doi.org/10.1021/acs.jmedchem.6b00078 (distant sequences can share
+       near-identical pockets)
+    .. [4] Butina, D. Unsupervised Data Base Clustering Based on Daylight's Fingerprint and
+       Tanimoto Similarity. *J. Chem. Inf. Comput. Sci.* **1999**, 39 (4), 747-750.
        https://doi.org/10.1021/ci9803381
     """
 
@@ -373,47 +423,55 @@ class BindingSiteSplitter(GroupSplitter):
 class DepositionDateSplitter(BaseSplitter):
     """A date-cut split for structures, additionally pruning train records too similar to test.
 
-    Specializes the ``temporal`` (``TemporalSplitter``) date-cut for
-    deposited structures: after the ordinary temporal cut, any *train* record whose ligand
-    Tanimoto similarity or sequence identity to a *test* record exceeds the given ceiling is
-    additionally removed from train (moved to ``discard``) -- a leakage-prevention step layered on
-    top of the date boundary, since a structure deposited just after the cut date can still be a
-    near-duplicate of one deposited just before it.
+    Specialises :class:`~chemsplit.splitters.lineage.TemporalSplitter`'s date cut for
+    deposited structures: after the cut, any *train* record whose ligand similarity or sequence
+    identity to a *test* record exceeds the given ceiling is discarded too. A structure
+    deposited just after the cut date can otherwise be a near-duplicate of one deposited just
+    before it.
 
-    :param cut_date: Records with ``dates <= cut_date`` are candidate train; later records are
-        candidate test.
-    :param ligand_similarity_ceiling: If given, train ligands (via ``ctx.mols``' ECFP4 Tanimoto
-        similarity) more similar than this to any test ligand are pruned from train. Default
-        ``None``.
-    :param sequence_identity_ceiling: If given, train sequences more identical than this to any
-        test sequence are pruned from train (same identity machinery as ``sequence_identity``).
-        Default ``None``.
+    :param cut_date: the boundary: records dated at or before it are candidate train, later
+        ones candidate test. ``None`` places the cut at the quantile implied by the sizes.
+    :param ligand_similarity_ceiling: prune training ligands above this ECFP4 Tanimoto
+        similarity to any test ligand, or ``None`` to skip ligand pruning.
+    :param sequence_identity_ceiling: prune training sequences above this identity to any test
+        sequence, or ``None`` to skip sequence pruning.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ParameterError: if either ceiling is outside ``(0, 1]``.
+    :raises InputError: at split time, if ``dates`` is missing, or a ceiling is set without the
+        molecules or sequences it needs.
+    :raises EmptyPartitionError: at split time, if pruning empties train.
 
     Advantages
     ----------
-    - The established protocol for evaluating docking, scoring functions, and co-folding -- and the reason several early scoring-function results failed to reproduce.
-    - The added ligand and sequence pruning closes the leak a pure date cut leaves open: the same ligand series and protein get redeposited for years, so a date cut alone separates almost nothing.
+    - The established protocol for evaluating docking, scoring functions and co-folding, and
+      the reason several early scoring-function results failed to reproduce.
+    - The pruning closes the leak a pure date cut leaves open: the same ligand series and
+      protein are redeposited for years, so the cut alone separates almost nothing.
     - Every pruning decision is counted and reported.
 
     Pitfalls
     --------
-    - A deposition-date cut alone is a weak split -- redundant re-depositions of the same complex put near-identical entries on both sides of the cut, which is why the pruning defaults exist.
-    - Deposition date isn't discovery date; structures are often deposited long after the work, and release dates differ again.
-    - Pruning by ligand similarity removes exactly the complexes most informative for testing, which depresses absolute scores intentionally -- but makes cross-study comparison unsafe unless the ceilings match.
-    - Sequence pruning is off by default because it needs sequences; leaving it off keeps homologous complexes in training, as the docstring notes.
-
+    - A deposition-date cut on its own is a weak split, since redundant re-depositions of one
+      complex put near-identical entries on both sides. That is what the pruning is for.
+    - Deposition date is not discovery date: structures are often deposited long after the
+      work, and release dates differ again.
+    - Pruning by ligand similarity removes the most informative complexes, depressing
+      absolute scores by design, so cross-study comparison needs matching ceilings.
+    - Sequence pruning is off by default because it needs sequences, and leaving it off keeps
+      homologous complexes in training.
 
     References
     ----------
     .. [1] Li, Y.; Yang, J. Structural and Sequence Similarity Makes a Significant Impact on
        Machine-Learning-Based Scoring Functions for Protein-Ligand Interactions.
-       *J. Chem. Inf. Model.* **2017**, 57 (4), 1007-1012. https://doi.org/10.1021/acs.jcim.7b00049
+       *J. Chem. Inf. Model.* **2017**, 57 (4), 1007-1012.
+       https://doi.org/10.1021/acs.jcim.7b00049
     .. [2] Li, J.; Guan, X.; Zhang, O. et al. Leak Proof PDBBind: A Reorganized Data Set of
        Protein-Ligand Complexes for More Generalizable Binding Affinity Prediction.
        *J. Phys. Chem. B* **2026**, 130 (2), 730-740. https://doi.org/10.1021/acs.jpcb.5c08598
-       (a temporal holdout combined with sequence/ligand-similarity de-leaking, as here)
-    .. [3] Su, M.; Yang, Q.; Du, Y. et al. Comparative Assessment of Scoring Functions: The CASF-2016
-       Update. *J. Chem. Inf. Model.* **2019**, 59 (2), 895-913.
+       (a temporal holdout combined with sequence and ligand-similarity de-leaking, as here)
+    .. [3] Su, M.; Yang, Q.; Du, Y. et al. Comparative Assessment of Scoring Functions: The
+       CASF-2016 Update. *J. Chem. Inf. Model.* **2019**, 59 (2), 895-913.
        https://doi.org/10.1021/acs.jcim.8b00545
     """
 
@@ -455,7 +513,8 @@ class DepositionDateSplitter(BaseSplitter):
         test = np.nonzero(test_mask)[0]
         discard: list[int] = []
 
-        if self.ligand_similarity_ceiling is not None and ctx.mols is not None and len(train) and len(test):
+        prune_ligands = self.ligand_similarity_ceiling is not None and ctx.mols is not None
+        if prune_ligands and len(train) and len(test):
             from chemsplit._fp_similarity import compute_similarity_matrix
 
             S = compute_similarity_matrix(
@@ -467,7 +526,8 @@ class DepositionDateSplitter(BaseSplitter):
             discard.extend(train[prune_mask].tolist())
             train = train[~prune_mask]
 
-        if self.sequence_identity_ceiling is not None and ctx.sequences is not None and len(train) and len(test):
+        prune_seqs = self.sequence_identity_ceiling is not None and ctx.sequences is not None
+        if prune_seqs and len(train) and len(test):
             try:
                 import parasail  # noqa: F401
 
@@ -477,7 +537,11 @@ class DepositionDateSplitter(BaseSplitter):
             seqs = ctx.sequences
             for ti in list(train):
                 m = max(
-                    (_parasail_identity(seqs[ti], seqs[tj]) if use_parasail else _hamming_identity(seqs[ti], seqs[tj]))
+                    (
+                        _parasail_identity(seqs[ti], seqs[tj])
+                        if use_parasail
+                        else _hamming_identity(seqs[ti], seqs[tj])
+                    )
                     for tj in test
                 )
                 if m > self.sequence_identity_ceiling:
@@ -498,7 +562,11 @@ class DepositionDateSplitter(BaseSplitter):
                 params=_canonicalize_params(self.get_params()),
                 n_records=ctx.n,
                 metadata={
-                    "realised_sizes": {"train": int(train.size), "valid": 0, "test": int(test.size)},
+                    "realised_sizes": {
+                        "train": int(train.size),
+                        "valid": 0,
+                        "test": int(test.size),
+                    },
                     "n_pruned": int(discard_arr.size),
                     "cut_date": str(cut),
                 },
@@ -509,48 +577,59 @@ class DepositionDateSplitter(BaseSplitter):
 class ComplexJointSplitter(BaseSplitter):
     """Jointly novel on the ligand-similarity axis AND the sequence-identity axis.
 
-    Composes two independent group axes -- ligand groups (via
-    ``ligand_grouper``) and sequence/target groups (via ``sequence_grouper``) -- through
+    Composes two independent group axes -- ligand groups from ``ligand_grouper`` and
+    sequence groups from ``sequence_grouper`` -- through
     :func:`chemsplit._pair_assign.assign_pair_groups`, so a test complex is guaranteed novel on
     both axes (``mode="both_novel"``) or at least one axis (``mode="either_novel"``), sized at
     ``sqrt(f)`` per axis (see ``chemsplit._pair_assign``'s module docstring for why).
 
-    :param ligand_grouper: Groups records by ligand similarity. ``None`` falls back to Butina
-        clustering (``chemsplit.clustering.butina``, cutoff 0.35) directly, as a stand-in for
-        this project's string default ``"butina"`` -- ``chemsplit.registry`` does not exist yet
-        to resolve that string; pass an instantiated splitter (e.g. a future ``ButinaSplitter``)
-        once available for the real behaviour. Default ``None``.
-    :param sequence_grouper: Groups records by sequence identity. ``None`` falls back to using
-        this module's own :class:`SequenceIdentitySplitter` directly (an intra-module reference,
-        not circular). Default ``None``.
-    :param mode: See :func:`chemsplit._pair_assign.assign_pair_groups`. Default ``"both_novel"``.
+    :param ligand_grouper: groups records by ligand similarity. ``None`` calls
+        :func:`chemsplit.clustering.butina` at a 0.35 cutoff directly.
+    :param sequence_grouper: groups records by sequence identity. ``None`` uses this module's
+        :class:`SequenceIdentitySplitter`.
+    :param mode: require a test complex to be novel on both axes, or on either one; see
+        :func:`chemsplit._pair_assign.assign_pair_groups`.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ParameterError: if a grouper is not a :class:`~chemsplit.base.GroupSplitter`, or
+        ``mode`` is unknown.
+    :raises InputError: at split time, if the sequences needed by ``sequence_grouper`` are
+        missing.
+    :raises ConstraintUnsatisfiableError: at split time, if too little data survives both
+        constraints.
 
     Advantages
     ----------
-    - The only defensible setting for claiming generalisation to genuinely new complexes -- both constraints are verified and reported.
-    - `mode="either_novel"` gives an intermediate, larger-data experiment when `"both_novel"` leaves too little.
+    - The only defensible setting for claiming generalisation to genuinely new complexes, with
+      both constraints verified and reported.
+    - `mode="either_novel"` gives an intermediate, larger-data experiment when `"both_novel"`
+      leaves too little.
 
     Pitfalls
     --------
-    - Leaves very little data -- on typical structural datasets the discard fraction exceeds 80%, and the surviving test set may be too small for a stable metric. Reports the fraction and refuses beyond `max_discard_frac`.
-    - Two thresholds and two groupers compound into four choices defining the experiment, none with a canonical value.
-    - A tiny test set invites over-interpreting a single number -- report per-complex results, not just an aggregate.
-    - `mode="either_novel"` is much weaker and is frequently reported as if it were `"both_novel"`.
-
+    - Leaves very little data: the discard fraction routinely exceeds 80%, and the surviving
+      test set may be too small for a stable metric. It is reported, and beyond
+      `max_discard_frac` the split refuses.
+    - Two thresholds and two groupers compound into four choices defining the experiment, none
+      with a canonical value.
+    - A tiny test set makes a single aggregate number easy to over-read; per-complex results
+      say more.
+    - `mode="either_novel"` is much weaker and is frequently reported as if it were
+      `"both_novel"`.
 
     References
     ----------
-    .. [1] Pahikkala, T.; Airola, A.; Pietilä, S. et al. Toward More Realistic Drug-Target Interaction
-       Predictions. *Brief. Bioinform.* **2015**, 16 (2), 325-337. https://doi.org/10.1093/bib/bbu010
-       (setting S4: both the compound and the target are unseen)
+    .. [1] Pahikkala, T.; Airola, A.; Pietilä, S. et al. Toward More Realistic Drug-Target
+       Interaction Predictions. *Brief. Bioinform.* **2015**, 16 (2), 325-337.
+       https://doi.org/10.1093/bib/bbu010 (setting S4: both the compound and the target are
+       unseen)
     .. [2] Li, J.; Guan, X.; Zhang, O. et al. Leak Proof PDBBind: A Reorganized Data Set of
        Protein-Ligand Complexes for More Generalizable Binding Affinity Prediction.
        *J. Phys. Chem. B* **2026**, 130 (2), 730-740. https://doi.org/10.1021/acs.jpcb.5c08598
-    .. [3] Durairaj, J.; Adeshina, Y.; Cao, Z. et al. PLINDER: The Protein-Ligand Interactions Dataset and
-       Evaluation Resource. *bioRxiv* preprint, **2024** (not peer reviewed).
+    .. [3] Durairaj, J.; Adeshina, Y.; Cao, Z. et al. PLINDER: The Protein-Ligand Interactions
+       Dataset and Evaluation Resource. *bioRxiv* preprint, **2024** (not peer reviewed).
        https://doi.org/10.1101/2024.07.17.603955
-    .. [4] The ``sqrt(f)`` sizing rule that reaches the requested test fraction on two axes at once is
-       chemsplit's own; it has no published origin.
+    .. [4] The ``sqrt(f)`` sizing rule that reaches the requested test fraction on two axes at
+       once is chemsplit's own.
     """
 
     splitter_id: ClassVar[str] = "complex_joint"
@@ -581,12 +660,17 @@ class ComplexJointSplitter(BaseSplitter):
 
     def _ligand_labels(self, ctx: Any) -> IndexArray:
         if self.ligand_grouper is not None:
-            return self.ligand_grouper.compute_groups(ctx.raw_features if ctx.raw_features is not None else ctx.smiles)
+            ligand_X = ctx.raw_features if ctx.raw_features is not None else ctx.smiles
+            return self.ligand_grouper.compute_groups(ligand_X)
         if ctx.mols is None:
-            raise ParameterError("ComplexJointSplitter needs molecules to derive a default ligand grouping")
+            raise ParameterError(
+                "ComplexJointSplitter needs molecules to derive a default ligand grouping"
+            )
         from chemsplit._fp_similarity import compute_distance_matrix
 
-        D = compute_distance_matrix(ctx, "ecfp4", "tanimoto", 2 * 1024**3, "ComplexJointSplitter", 1)
+        D = compute_distance_matrix(
+            ctx, "ecfp4", "tanimoto", 2 * 1024**3, "ComplexJointSplitter", 1
+        )
         clusters = butina(D, 0.35, reorder=False)
         labels = np.empty(ctx.n, dtype=np.int64)
         for cid, members in enumerate(clusters):
@@ -596,12 +680,14 @@ class ComplexJointSplitter(BaseSplitter):
 
     def _sequence_labels(self, ctx: Any) -> IndexArray:
         if self.sequence_grouper is not None:
-            # Without X_kind="sequences", a bare list[str] defaults to being interpreted as
-            # SMILES -- protein sequences would otherwise
-            # fail to parse as molecules.
+            # without X_kind="sequences" a bare list[str] is read as SMILES, and protein
+            # sequences don't parse as molecules
             return self.sequence_grouper.compute_groups(ctx.sequences, X_kind="sequences")
         if ctx.sequences is None:
-            raise ParameterError("ComplexJointSplitter needs ctx.sequences to derive a default sequence grouping")
+            raise ParameterError(
+                "ComplexJointSplitter needs ctx.sequences to derive a default sequence "
+                "grouping"
+            )
         use_parasail = True
         try:
             import parasail  # noqa: F401
@@ -646,6 +732,9 @@ class ComplexJointSplitter(BaseSplitter):
                     },
                     "mode": self.mode,
                     "n_discarded": int(discard.size),
+                    # the default grouper uses parasail when installed and hamming
+                    # otherwise, so the split isn't bit-exact across environments
+                    "nondeterministic_method": True,
                 },
             )
         ]
