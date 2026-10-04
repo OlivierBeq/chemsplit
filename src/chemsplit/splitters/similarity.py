@@ -33,6 +33,8 @@ from chemsplit.base import (
     Strictness,
     _Context,
     _ResolvedSizes,
+    check_group_splitter_design,
+    resolve_group_splitter,
 )
 from chemsplit.determinism import (
     argmax_tiebreak,
@@ -78,9 +80,6 @@ __all__ = [
 ]
 
 
-# -
-# Shared plumbing: featurizer/metric/max_memory_bytes/n_jobs
-# -
 
 class _SimilarityGroupBase(SimilarityParamsMixin, GroupSplitter):
     family: ClassVar[str] = "similarity"
@@ -98,7 +97,11 @@ class _SimilarityGroupBase(SimilarityParamsMixin, GroupSplitter):
     ) -> None:
         GroupSplitter.__init__(self, **kwargs)
         SimilarityParamsMixin.__init__(
-            self, featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, n_jobs=self.n_jobs
+            self,
+            featurizer=featurizer,
+            metric=metric,
+            max_memory_bytes=max_memory_bytes,
+            n_jobs=self.n_jobs,
         )
 
 
@@ -119,7 +122,11 @@ class _SimilarityBase(SimilarityParamsMixin, BaseSplitter):
     ) -> None:
         BaseSplitter.__init__(self, **kwargs)
         SimilarityParamsMixin.__init__(
-            self, featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, n_jobs=self.n_jobs
+            self,
+            featurizer=featurizer,
+            metric=metric,
+            max_memory_bytes=max_memory_bytes,
+            n_jobs=self.n_jobs,
         )
 
 
@@ -167,7 +174,8 @@ def _small_partition_check(result: SplitResult, n: int) -> None:
 
             warn_with_details(
                 SmallPartitionWarning(
-                    f"{name} partition has only {arr.size} record(s) ({arr.size / max(1, n):.2%} of n)",
+                    f"{name} partition has only {arr.size} record(s) "
+                    f"({arr.size / max(1, n):.2%} of n)",
                     details={"partition": name, "size": int(arr.size), "n": n},
                 )
             )
@@ -183,7 +191,9 @@ def _check_cluster_degeneracy(clusters: list[list[int]], n: int, owner: str, set
         )
     largest_frac = max(len(c) for c in clusters) / n if clusters else 0.0
     if largest_frac > 0.95:
-        raise DegenerateGroupingError(f"{owner}: largest cluster covers {largest_frac:.1%} of records")
+        raise DegenerateGroupingError(
+            f"{owner}: largest cluster covers {largest_frac:.1%} of records"
+        )
     if largest_frac > 0.6:
         warn_with_details(
             DegenerateClusterWarning(
@@ -213,7 +223,9 @@ _RADIUS_KINDS = ("distance", "similarity", "fraction_of_range")
 def _validate_radius(splitter: Any, radius: float, radius_is: str) -> None:
     """Eager ``radius``/``radius_is`` validation shared by sphere exclusion and OptiSim."""
     if radius_is not in _RADIUS_KINDS:
-        raise ParameterError(f"invalid radius_is: {radius_is!r}; expected one of {list(_RADIUS_KINDS)}")
+        raise ParameterError(
+            f"invalid radius_is: {radius_is!r}; expected one of {list(_RADIUS_KINDS)}"
+        )
     splitter._validate_similarity_params(bounded_metric_required=radius_is == "similarity")
     bounded = is_bounded_metric(splitter.metric)
     if radius_is == "distance" and not bounded:
@@ -232,48 +244,69 @@ def _resolve_radius(D: np.ndarray, radius: float, radius_is: str) -> float:
     if radius_is == "similarity":
         return 1.0 - float(radius)
     d_max = float(D.max())
-    # Off-diagonal minimum without an n x n mask copy: mask the zero diagonal in place, then
-    # restore it.
+    # off-diagonal minimum without copying an n x n mask: hide the diagonal, then restore it
     np.fill_diagonal(D, np.inf)
     d_min = float(D.min())
     np.fill_diagonal(D, 0.0)
     return d_min + float(radius) * (d_max - d_min)
 
 
-# -
-# SimilarityThresholdSplitter
-# -
-
-
 class SimilarityThresholdSplitter(_SimilarityGroupBase):
     """Hard constraint: no test record may exceed ``threshold`` similarity to any train record.
 
+    :param threshold: the similarity ceiling between any train and any test record.
+    :param strategy: meet the constraint by pruning offending records greedily, by keeping
+        whole similarity-graph components together, or by growing test outward from seeds.
+    :param seed_selection: which records seed ``strategy="seeded_growth"``: random, the most
+        central, or the most peripheral.
+    :param allow_discard: let the strategies that need to drop records do so.
+    :param max_discard_frac: largest fraction of records that may be discarded before the
+        splitter gives up.
+    :param featurizer: featurizer alias or instance used to build the distance matrix.
+    :param metric: distance or similarity metric; see :mod:`chemsplit.metrics`.
+    :param max_memory_bytes: ceiling on the pairwise matrix. Exceeding it raises rather than
+        allocating.
+    :param kwargs: forwarded to :class:`chemsplit.base.GroupSplitter`.
+    :raises ParameterError: if ``threshold`` or ``max_discard_frac`` is outside ``(0, 1]``, or
+        ``strategy`` or ``seed_selection`` is unknown.
+    :raises ConstraintUnsatisfiableError: at split time, if the threshold cannot be met, e.g.
+        when one connected component holds nearly every record.
+
     Advantages
     ----------
-    - The constraint is explicit, checkable, and reported -- `metadata["max_cross_similarity"]` is either below the threshold or the split is wrong. No other splitter in this family gives that guarantee.
-    - Directly parameterises what people actually mean by "novel chemistry": how dissimilar must test compounds be?
+    - The constraint is checkable and reported: `metadata["max_cross_similarity"]` is below
+      the threshold or the split is wrong. No other splitter here guarantees that.
+    - Parameterises what "novel chemistry" usually means: how dissimilar must test compounds
+      be?
     - `graph_component` never discards data, so the full dataset gets used.
 
     Pitfalls
     --------
-    - **The threshold is the experiment.** ECFP4 Tanimoto 0.4, ECFP6 Tanimoto 0.4, and MACCS 0.4 are three completely different difficulty levels -- a result reported without fingerprint, radius, bit length, metric, and cutoff isn't reproducible; `params` records all five, and so should your paper.
-    - Similarity isn't transitive, so connected components can be enormous and chemically incoherent -- a chain of pairwise-similar molecules can link two very different ends. On dense datasets one component can swallow everything, raised as `ConstraintUnsatisfiableError` rather than silently accepted.
-    - `greedy_prune` and `seeded_growth` both discard records, and exactly the ones in the interesting boundary region -- the remaining test set isn't a uniform sample of anything.
-    - Tanimoto on sparse fingerprints saturates -- for large diverse libraries most pairs sit below 0.2, so a 0.4 cutoff removes almost nothing and the split silently becomes random. Check `metadata["component_sizes"]`.
-    - All-zero fingerprints (parse failures under `on_parse_error="ignore"`, or tiny fragments) register similarity 1.0 to each other by convention and cluster together spuriously.
-
+    - **The threshold is the experiment.** ECFP4, ECFP6 and MACCS at Tanimoto 0.4 are three
+      difficulty levels, so a result quoted without fingerprint, radius, bit length, metric
+      and cutoff is not reproducible. `params` records all five.
+    - Similarity is not transitive, so a chain of pairwise-similar molecules links two very
+      different ends. On dense datasets one component swallows everything, raising
+      `ConstraintUnsatisfiableError`.
+    - `greedy_prune` and `seeded_growth` discard records from the interesting boundary
+      region, so the remaining test set is not a uniform sample of anything.
+    - Tanimoto on sparse fingerprints saturates: most pairs in a diverse library sit below
+      0.2, so a 0.4 cutoff removes almost nothing and the split becomes random.
+    - All-zero fingerprints -- parse failures under `on_parse_error="ignore"`, or tiny
+      fragments -- score similarity 1.0 to each other and cluster together spuriously.
 
     References
     ----------
-    .. [1] The three strategies are engineering compositions with no single published origin; the leakage
-       rationale for a hard cross-similarity ceiling is well established:
-    .. [2] Golbraikh, A.; Tropsha, A. Beware of q2! *J. Mol. Graph. Model.* **2002**, 20 (4), 269-276.
-       https://doi.org/10.1016/S1093-3263(01)00123-1
-    .. [3] Wallach, I.; Heifets, A. Most Ligand-Based Classification Benchmarks Reward Memorization Rather
-       than Generalization. *J. Chem. Inf. Model.* **2018**, 58 (5), 916-932.
-       https://doi.org/10.1021/acs.jcim.7b00403
-    .. [4] Kapoor, S.; Narayanan, A. Leakage and the Reproducibility Crisis in Machine-Learning-Based
-       Science. *Patterns* **2023**, 4 (9), 100804. https://doi.org/10.1016/j.patter.2023.100804
+    .. [1] The three strategies are engineering compositions rather than published methods.
+       The rationale for a hard cross-similarity ceiling is established in [2]-[4].
+    .. [2] Golbraikh, A.; Tropsha, A. Beware of q2! *J. Mol. Graph. Model.* **2002**, 20 (4),
+       269-276. https://doi.org/10.1016/S1093-3263(01)00123-1
+    .. [3] Wallach, I.; Heifets, A. Most Ligand-Based Classification Benchmarks Reward
+       Memorization Rather than Generalization. *J. Chem. Inf. Model.* **2018**, 58 (5),
+       916-932. https://doi.org/10.1021/acs.jcim.7b00403
+    .. [4] Kapoor, S.; Narayanan, A. Leakage and the Reproducibility Crisis in
+       Machine-Learning-Based Science. *Patterns* **2023**, 4 (9), 100804.
+       https://doi.org/10.1016/j.patter.2023.100804
     """
 
     splitter_id: ClassVar[str] = "similarity_threshold"
@@ -294,7 +327,9 @@ class SimilarityThresholdSplitter(_SimilarityGroupBase):
         max_memory_bytes: int = 2 * 1024**3,
         **kwargs: Any,
     ) -> None:
-        super().__init__(featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs)
+        super().__init__(
+            featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs
+        )
         self.threshold = threshold
         self.strategy = strategy
         self.seed_selection = seed_selection
@@ -362,11 +397,11 @@ class SimilarityThresholdSplitter(_SimilarityGroupBase):
             forced = sorted(discarded)
             existing = set(ctx.extra.get("forced_discard", []))
             ctx.extra["forced_discard"] = sorted(existing | set(forced))
-            # each surviving record is its own singleton "group" so assign_groups just places it
-            # in the bucket already decided above; encode via dense labels per-record.
+            # one singleton group per surviving record, so assign_groups just honours the
+            # bucket decided above
             return np.arange(n, dtype=np.int64)
 
-        # seeded_growth
+        # strategy == "seeded_growth"
         if self.seed_selection == "random":
             rng = seed_for(ctx.rng_seeds, "similarity.seed", 0)
             s = int(rng.integers(0, n))
@@ -384,7 +419,11 @@ class SimilarityThresholdSplitter(_SimilarityGroupBase):
                 break
             best = argmax_tiebreak(lambda i: float(np.max(S[i, list(test)])), cand)
             test.add(best)
-        train = [i for i in range(n) if i not in test and float(np.max(S[i, list(test)])) <= self.threshold + EPS]
+        train = [
+            i
+            for i in range(n)
+            if i not in test and float(np.max(S[i, list(test)])) <= self.threshold + EPS
+        ]
         discard = [i for i in range(n) if i not in test and i not in train]
         if not self.allow_discard and discard:
             raise ConstraintUnsatisfiableError(
@@ -396,14 +435,9 @@ class SimilarityThresholdSplitter(_SimilarityGroupBase):
         labels = np.arange(n, dtype=np.int64)
         for t in test:
             labels[t] = -1  # placeholder; overwritten below
-        # Encode: every train/test record its own singleton group, but tag test records with a
-        # label distinguishing them so assign_groups (size-based, greedy_desc) still places
-        # them sensibly. Simpler and exactly-correct: bypass assign_groups entirely via
-        # forced_discard + explicit partitioning is not available through _group_labels alone,
-        # so we approximate by giving test records a shared large "prefer-test" pseudo-group
-        # only when that materially helps; for strategy="seeded_growth" the common case is
-        # n_test_target already achieved, so singleton labels (default assign_groups behaviour)
-        # correctly separates train/test through group_assignment sizing.
+        # _group_labels can't partition explicitly, so singleton labels per record let
+        # assign_groups separate train from test by size. For seeded_growth the test target is
+        # normally already met, which makes that sufficient.
         return np.arange(n, dtype=np.int64)
 
     def _group_metadata(self, ctx: _Context, labels: IndexArray) -> dict[str, Any]:
@@ -416,35 +450,59 @@ class SimilarityThresholdSplitter(_SimilarityGroupBase):
         }
 
 
-# -
-# ButinaSplitter
-# -
-
-
 class ButinaSplitter(_SimilarityGroupBase):
     """Taylor-Butina sphere-exclusion (leader) clustering.
 
+    :param cutoff: the sphere radius, read as a distance or a similarity per ``cutoff_is``.
+    :param cutoff_is: whether ``cutoff`` is a distance or a similarity.
+    :param reorder: recompute neighbour counts after each cluster is taken, which is the
+        original formulation and gives different clusters from the single-pass variant.
+    :param singleton_policy: what becomes of one-member clusters: keep each as its own group,
+        pool them into one shared group, or fold each into its nearest real cluster.
+    :param algorithm: build the neighbour lists from a dense matrix or a sparse thresholded
+        one. Both are ``O(n^2)`` in time.
+    :param block_size: rows per block when building the matrix.
+    :param featurizer: featurizer alias or instance used to build the distance matrix.
+    :param metric: distance or similarity metric; see :mod:`chemsplit.metrics`.
+    :param max_memory_bytes: ceiling on the pairwise matrix. Exceeding it raises rather than
+        allocating.
+    :param kwargs: forwarded to :class:`chemsplit.base.GroupSplitter`.
+    :raises ParameterError: if ``cutoff`` is outside ``(0, 1)``, or ``cutoff_is`` or
+        ``singleton_policy`` is unknown.
+    :raises ScalabilityError: at split time, if the pairwise matrix would exceed
+        ``max_memory_bytes``.
+
     Advantages
     ----------
-    - A solid default: markedly harder than a scaffold split, chemically meaningful since it groups by real fingerprint proximity rather than a framework abstraction, and cheap enough for tens of thousands of molecules.
-    - Deterministic, with no seed and only one interpretable parameter to choose.
+    - A reasonable default: harder than a scaffold split, chemically meaningful since it
+      groups by fingerprint proximity, and cheap to tens of thousands of molecules.
+    - Deterministic, with no seed and one interpretable parameter.
     - Every cluster centroid is a real molecule, so clusters can be inspected and reported.
-    - Sphere exclusion guarantees any two centroids are more than `cutoff` apart, giving the split a concrete geometric meaning.
+    - Sphere exclusion puts any two centroids more than `cutoff` apart, which gives the split a
+      concrete geometric meaning.
 
     Pitfalls
     --------
-    - Membership is defined only relative to the **centroid**, not pairwise -- two members of one cluster can be up to `2 x cutoff` apart, so a cluster isn't a tight neighbourhood and a train/test boundary between clusters does **not** guarantee any minimum cross-similarity. Use `similarity_threshold` or `hi` if you need that guarantee.
-    - Produces many singletons on diverse libraries (often 30-60% of records); `singleton_policy` decides where they go and materially changes difficulty -- the default `"own_group"` scatters them randomly, softening the split.
-    - Highly sensitive to `cutoff` -- 0.35 vs. 0.4 in distance can halve or double the cluster count.
-    - The distance/similarity convention is a classic source of silent errors -- always read `metadata["cutoff_is"]`.
-    - `reorder=True` gives different clusters than `reorder=False`, and both get called "Butina" in the literature -- report which.
-    - `O(n²)` in time regardless of `algorithm` -- beyond roughly 10⁵ molecules use `k_means_cluster` with mini-batch k-means, or subsample.
-
+    - Membership is relative to the **centroid**, not pairwise, so two members can sit
+      `2 x cutoff` apart. A cluster boundary therefore guarantees no minimum cross-similarity;
+      `similarity_threshold` and `hi` do.
+    - Produces many singletons on diverse libraries, often 30-60% of records, and
+      `singleton_policy` then decides difficulty: the default `"own_group"` scatters them,
+      softening the split.
+    - Highly sensitive to `cutoff`: 0.35 against 0.4 in distance can halve or double the
+      cluster count.
+    - The distance/similarity convention is a classic source of silent errors;
+      `metadata["cutoff_is"]` records which was used.
+    - `reorder=True` gives different clusters than `reorder=False`, and both are called
+      "Butina" in the literature.
+    - `O(n^2)` in time regardless of `algorithm`. Beyond roughly 1e5 molecules,
+      `k_means_cluster` with mini-batch k-means, or subsampling, is the way out.
 
     References
     ----------
-    .. [1] Taylor, R. Simulation Analysis of Experimental Design Strategies for Screening Random Compounds
-       as Potential New Drugs and Agrochemicals. *J. Chem. Inf. Comput. Sci.* **1995**, 35 (1), 59-67.
+    .. [1] Taylor, R. Simulation Analysis of Experimental Design Strategies for Screening
+       Random Compounds as Potential New Drugs and Agrochemicals. *J. Chem. Inf. Comput. Sci.*
+       **1995**, 35 (1), 59-67.
        https://doi.org/10.1021/ci00023a009
     .. [2] Butina, D. Unsupervised Data Base Clustering Based on Daylight's Fingerprint and Tanimoto
        Similarity: A Fast and Automated Way To Cluster Small and Large Data Sets.
@@ -469,7 +527,9 @@ class ButinaSplitter(_SimilarityGroupBase):
         max_memory_bytes: int = 2 * 1024**3,
         **kwargs: Any,
     ) -> None:
-        super().__init__(featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs)
+        super().__init__(
+            featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs
+        )
         self.cutoff = cutoff
         self.cutoff_is = cutoff_is
         self.reorder = reorder
@@ -532,11 +592,6 @@ class ButinaSplitter(_SimilarityGroupBase):
         return getattr(self, "_last_meta", {})
 
 
-# -
-# SphereExclusionSplitter
-# -
-
-
 class SphereExclusionSplitter(_SimilarityGroupBase):
     """Sphere-exclusion clustering: scan records in random (or index) order; each record not yet
     claimed becomes a representative and claims every unclaimed record within ``radius`` of it.
@@ -546,19 +601,41 @@ class SphereExclusionSplitter(_SimilarityGroupBase):
     also works on raw descriptors with unbounded metrics. The scan order is drawn from the
     ``"sphere_exclusion.order"`` stream when ``order="random"``.
 
+    :param radius: the exclusion radius, read per ``radius_is``.
+    :param radius_is: whether ``radius`` is a distance, a similarity, or a fraction of the
+        observed distance range.
+    :param order: scan the records in seeded random order, or in input order.
+    :param featurizer: featurizer alias or instance used to build the distance matrix.
+    :param metric: distance or similarity metric; see :mod:`chemsplit.metrics`.
+    :param max_memory_bytes: ceiling on the pairwise matrix. Exceeding it raises rather than
+        allocating.
+    :param kwargs: forwarded to :class:`chemsplit.base.GroupSplitter`.
+    :raises ParameterError: if ``radius`` is outside its valid range for the chosen
+        ``radius_is``, or ``radius_is`` or ``order`` is unknown.
+    :raises ScalabilityError: at split time, if the pairwise matrix would exceed
+        ``max_memory_bytes``.
+
     Advantages
     ----------
-    - Clusters have a guaranteed maximum radius around their representative -- cluster tightness is a direct, interpretable parameter.
-    - Linear number of passes over the distance matrix, with no density pre-computation, so it's cheaper than Butina at the same `n`.
-    - `order="random"` gives a different but equally valid clustering per seed -- repeat over seeds to get variance from the clustering itself, not just from group assignment.
-    - `radius_is="fraction_of_range"` makes one radius meaningful across metrics and descriptor scales.
+    - Clusters have a guaranteed maximum radius around their representative, so cluster
+      tightness is a direct, interpretable parameter.
+    - A linear number of passes over the distance matrix, with no density pre-computation, so
+      it is cheaper than Butina at the same `n`.
+    - `order="random"` gives a different but equally valid clustering per seed, so repeating
+      over seeds measures variance from the clustering itself, not just from group assignment.
+    - `radius_is="fraction_of_range"` makes one radius meaningful across metrics and descriptor
+      scales.
 
     Pitfalls
     --------
-    - Random scan order means a dense region can be split among several representatives while an outlier founds its own cluster -- cluster sizes are far more uneven than Butina's.
-    - The radius bounds distance to the representative, not between clusters -- records of different clusters can be closer than `radius` to each other. Not a hard leakage constraint; use `similarity_threshold` for that.
-    - `fraction_of_range` depends on the extreme pairwise distances, so one outlier stretches the range and silently enlarges every cluster.
-    - Results depend on the seed unless `order="index"`, which in turn depends on input order.
+    - Random scan order lets a dense region split among several representatives while an
+      outlier founds its own cluster, so cluster sizes are far more uneven than Butina's.
+    - The radius bounds distance to the representative, not between clusters, so records in
+      different clusters can be closer than `radius`. `similarity_threshold` is the hard
+      constraint.
+    - `fraction_of_range` depends on the extreme pairwise distances, so one outlier stretches
+      the range and enlarges every cluster.
+    - Results depend on the seed unless `order="index"`, which depends on input order instead.
 
     References
     ----------
@@ -585,7 +662,9 @@ class SphereExclusionSplitter(_SimilarityGroupBase):
         max_memory_bytes: int = 2 * 1024**3,
         **kwargs: Any,
     ) -> None:
-        super().__init__(featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs)
+        super().__init__(
+            featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs
+        )
         self.radius = radius
         self.radius_is = radius_is
         self.order = order
@@ -622,51 +701,79 @@ class SphereExclusionSplitter(_SimilarityGroupBase):
     def _group_metadata(self, ctx: _Context, labels: IndexArray) -> dict[str, Any]:
         return getattr(self, "_last_meta", {})
 
-# -
-# KMeansClusterSplitter
-# -
-
 
 class KMeansClusterSplitter(_SimilarityGroupBase):
     """K-means (or a related partitional clusterer) over fingerprint/feature space.
 
+    :param n_clusters: how many clusters to form, or ``"auto"`` to derive it from ``auto_rule``.
+    :param algorithm: which clusterer to run: Lloyd's k-means, mini-batch k-means,
+        agglomerative clustering, or BIRCH.
+    :param linkage: linkage criterion for ``algorithm="agglomerative"``.
+    :param auto_rule: how ``n_clusters="auto"`` is derived: ``sqrt(n)`` or ``n/50``.
+    :param auto_range: lower and upper clamp applied to the derived cluster count.
+    :param batch_size: mini-batch size for ``algorithm="minibatch_kmeans"``.
+    :param reduce_dim: target dimensionality for the pre-clustering reduction, or ``None`` to
+        skip it.
+    :param reduce_method: truncated SVD, or no reduction.
+    :param featurizer: featurizer alias or instance used to build the distance matrix.
+    :param metric: distance or similarity metric; see :mod:`chemsplit.metrics`.
+    :param max_memory_bytes: ceiling on the pairwise matrix. Exceeding it raises rather than
+        allocating.
+    :param kwargs: forwarded to :class:`chemsplit.base.GroupSplitter`.
+    :raises ParameterError: if ``n_clusters`` is below 2, ``auto_range`` is not an increasing
+        pair, or ``algorithm``, ``linkage``, ``auto_rule`` or ``reduce_method`` is unknown.
+    :raises ScalabilityError: at split time, if the pairwise matrix would exceed
+        ``max_memory_bytes``.
+
     Advantages
     ----------
-    - Scales far better than any `O(n²)` method -- `minibatch_kmeans` handles millions of molecules.
-    - The cluster count is an explicit, reportable knob, and `auto_rule` makes the default reproducible rather than ad hoc.
-    - Works on any feature representation, including learned embeddings and physicochemical descriptors, making it a natural generic clusterer.
-    - `birch` and `minibatch` give a memory-bounded path where Butina and spectral clustering can't run.
+    - Scales far better than any `O(n^2)` method; `minibatch_kmeans` handles millions of
+      molecules.
+    - The cluster count is an explicit, reportable knob, and `auto_rule` makes the default
+      reproducible rather than ad hoc.
+    - Works on any feature representation, including learned embeddings and physicochemical
+      descriptors, which makes it a natural generic clusterer.
+    - `birch` and `minibatch` give a memory-bounded path where Butina and spectral clustering
+      cannot run.
 
     Pitfalls
     --------
-    - **k is arbitrary.** Nothing in the chemistry determines it, yet split difficulty depends on it strongly -- `auto_rule="sqrt_n"` is a convention, not a principle.
-    - K-means assumes isotropic, roughly equal-variance clusters in Euclidean space, which binary fingerprint space isn't -- clusters end up as much geometric artefacts as chemical families. SVD reduction mitigates but doesn't fix this.
-    - Cluster sizes come out wildly uneven, so the achieved train/test ratio drifts from the request -- expect `SizeToleranceWarning`.
-    - Euclidean distance on binary fingerprints is dominated by molecule size (bit count), so clusters partly track molecular weight rather than chemotype. Use `property` if that's actually what you want.
-    - SVD sign ambiguity makes naive implementations non-reproducible across BLAS builds; a sign fix is mandatory here, but residual cluster-assignment drift from Lloyd's-iteration floating-point noise can still survive it -- its golden test uses a size/histogram tolerance, not an exact match.
-    - `agglomerative` with `single` linkage chains badly on chemical data, typically producing one giant cluster plus dust.
-
+    - **k is arbitrary.** Nothing in the chemistry determines it, yet split difficulty depends
+      on it strongly, and `auto_rule="sqrt_n"` is a convention rather than a principle.
+    - K-means assumes isotropic equal-variance Euclidean clusters, which binary fingerprint
+      space is not, so clusters are as much geometric artefacts as chemical families. SVD
+      reduction mitigates without fixing it.
+    - Cluster sizes come out very uneven, so the achieved train/test ratio drifts from the
+      request; expect `SizeToleranceWarning`.
+    - Euclidean distance on binary fingerprints is dominated by bit count, so clusters partly
+      track molecular weight rather than chemotype. `property` splits on size deliberately.
+    - SVD sign ambiguity breaks reproducibility across BLAS builds. A sign fix is applied,
+      but Lloyd's-iteration noise can still move a few assignments, so the golden test uses a
+      size histogram.
+    - `agglomerative` with `single` linkage chains badly on chemical data, typically producing
+      one giant cluster plus dust.
 
     References
     ----------
-    .. [1] MacQueen, J. Some Methods for Classification and Analysis of Multivariate Observations. In
-       *Proceedings of the Fifth Berkeley Symposium on Mathematical Statistics and Probability*,
-       Vol. 1; University of California Press, **1967**; pp 281-297. No DOI;
+    .. [1] MacQueen, J. Some Methods for Classification and Analysis of Multivariate
+       Observations. In *Proceedings of the Fifth Berkeley Symposium on Mathematical Statistics
+       and Probability*, Vol. 1; University of California Press, **1967**; pp 281-297. No DOI;
        https://projecteuclid.org/euclid.bsmsp/1200512992
-    .. [2] Lloyd, S. P. Least Squares Quantization in PCM. *IEEE Trans. Inf. Theory* **1982**, 28 (2),
-       129-137. https://doi.org/10.1109/TIT.1982.1056489
-    .. [3] ``algorithm="minibatch_kmeans"``: Sculley, D. Web-Scale k-Means Clustering. In *Proceedings of
-       the 19th International Conference on World Wide Web (WWW '10)*, **2010**; pp 1177-1178.
-       https://doi.org/10.1145/1772690.1772862
-    .. [4] ``algorithm="agglomerative"``, Ward linkage: Ward, J. H. Hierarchical Grouping to Optimize an
-       Objective Function. *J. Am. Stat. Assoc.* **1963**, 58 (301), 236-244.
+    .. [2] Lloyd, S. P. Least Squares Quantization in PCM. *IEEE Trans. Inf. Theory* **1982**,
+       28 (2), 129-137. https://doi.org/10.1109/TIT.1982.1056489
+    .. [3] ``algorithm="minibatch_kmeans"``: Sculley, D. Web-Scale k-Means Clustering. In
+       *Proceedings of the 19th International Conference on World Wide Web (WWW '10)*,
+       **2010**; pp 1177-1178. https://doi.org/10.1145/1772690.1772862
+    .. [4] ``algorithm="agglomerative"``, Ward linkage: Ward, J. H. Hierarchical Grouping to
+       Optimize an Objective Function. *J. Am. Stat. Assoc.* **1963**, 58 (301), 236-244.
        https://doi.org/10.1080/01621459.1963.10500845
-    .. [5] ``algorithm="birch"``: Zhang, T.; Ramakrishnan, R.; Livny, M. BIRCH: An Efficient Data
-       Clustering Method for Very Large Databases. *ACM SIGMOD Rec.* **1996**, 25 (2), 103-114.
-       https://doi.org/10.1145/235968.233324
-    .. [6] Clustering as a QSAR dataset-division strategy: Golbraikh, A.; Shen, M.; Xiao, Z. et al. Rational
-       Selection of Training and Test Sets for the Development of Validated QSAR Models.
-       *J. Comput.-Aided Mol. Des.* **2003**, 17 (2-4), 241-253. https://doi.org/10.1023/A:1025386326946
+    .. [5] ``algorithm="birch"``: Zhang, T.; Ramakrishnan, R.; Livny, M. BIRCH: An Efficient
+       Data Clustering Method for Very Large Databases. *ACM SIGMOD Rec.* **1996**, 25 (2),
+       103-114. https://doi.org/10.1145/235968.233324
+    .. [6] Clustering as a QSAR dataset-division strategy: Golbraikh, A.; Shen, M.; Xiao, Z.
+       et al. Rational Selection of Training and Test Sets for the Development of Validated
+       QSAR Models. *J. Comput.-Aided Mol. Des.* **2003**, 17 (2-4), 241-253.
+       https://doi.org/10.1023/A:1025386326946
     """
 
     splitter_id: ClassVar[str] = "k_means_cluster"
@@ -689,7 +796,9 @@ class KMeansClusterSplitter(_SimilarityGroupBase):
         max_memory_bytes: int = 2 * 1024**3,
         **kwargs: Any,
     ) -> None:
-        super().__init__(featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs)
+        super().__init__(
+            featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs
+        )
         self.n_clusters = n_clusters
         self.algorithm = algorithm
         self.linkage = linkage
@@ -709,9 +818,18 @@ class KMeansClusterSplitter(_SimilarityGroupBase):
         feat = resolve_featurizer(self.featurizer)
         F = ctx.get_features(feat)
         Z = F.toarray() if sp.issparse(F) else np.asarray(F, dtype=np.float64)
-        if self.reduce_method == "svd" and self.reduce_dim is not None and Z.shape[1] > self.reduce_dim:
+        if (
+            self.reduce_method == "svd"
+            and self.reduce_dim is not None
+            and Z.shape[1] > self.reduce_dim
+        ):
             seed = int(seed_for(ctx.rng_seeds, "kmeans.svd", 0).integers(0, 2**31 - 1))
-            svd = TruncatedSVD(n_components=self.reduce_dim, random_state=seed, algorithm="randomized", n_iter=7)
+            svd = TruncatedSVD(
+                n_components=self.reduce_dim,
+                random_state=seed,
+                algorithm="randomized",
+                n_iter=7,
+            )
             Z = svd.fit_transform(Z)
             Z = _fix_svd_signs(Z)
         k = self._resolve_k(ctx.n)
@@ -719,16 +837,33 @@ class KMeansClusterSplitter(_SimilarityGroupBase):
             raise ParameterError(f"resolved n_clusters={k} must be < n={ctx.n}")
         seed = int(seed_for(ctx.rng_seeds, "kmeans.fit", 0).integers(0, 2**31 - 1))
         if self.algorithm == "kmeans":
-            labels = KMeans(n_clusters=k, n_init=10, algorithm="lloyd", max_iter=300, tol=1e-4, random_state=seed).fit_predict(Z)
+            labels = KMeans(
+                n_clusters=k,
+                n_init=10,
+                algorithm="lloyd",
+                max_iter=300,
+                tol=1e-4,
+                random_state=seed,
+            ).fit_predict(Z)
         elif self.algorithm == "minibatch_kmeans":
-            labels = MiniBatchKMeans(n_clusters=k, batch_size=self.batch_size, n_init=10, max_iter=100, random_state=seed).fit_predict(Z)
+            labels = MiniBatchKMeans(
+                n_clusters=k,
+                batch_size=self.batch_size,
+                n_init=10,
+                max_iter=100,
+                random_state=seed,
+            ).fit_predict(Z)
         elif self.algorithm == "agglomerative":
             metric_arg = "euclidean" if self.linkage == "ward" else self.metric
-            labels = AgglomerativeClustering(n_clusters=k, linkage=self.linkage, metric=metric_arg).fit_predict(Z)
+            labels = AgglomerativeClustering(
+                n_clusters=k, linkage=self.linkage, metric=metric_arg
+            ).fit_predict(Z)
         else:  # birch
             labels = Birch(n_clusters=k, threshold=0.5, branching_factor=50).fit_predict(Z)
         if len(set(labels.tolist())) == 1:
-            raise DegenerateGroupingError(f"{type(self).__name__}: all records fell into a single cluster")
+            raise DegenerateGroupingError(
+                f"{type(self).__name__}: all records fell into a single cluster"
+            )
         self._last_meta = {
             "n_clusters": int(len(set(labels.tolist()))),
             "algorithm": self.algorithm,
@@ -751,42 +886,62 @@ def _fix_svd_signs(Z: np.ndarray) -> np.ndarray:
     return Z
 
 
-# -
-# DensityClusterSplitter
-# -
-
-
 class DensityClusterSplitter(_SimilarityGroupBase):
     """DBSCAN or HDBSCAN density clustering on a precomputed distance matrix.
 
+    :param algorithm: DBSCAN, or HDBSCAN when the ``hdbscan`` extra is installed.
+    :param eps: DBSCAN neighbourhood radius, in the chosen metric.
+    :param min_samples: how many neighbours make a point a core point.
+    :param min_cluster_size: smallest cluster HDBSCAN will keep.
+    :param noise_policy: where points belonging to no cluster go: all to test, all to train,
+        one group each, discarded, or spread across the partitions.
+    :param featurizer: featurizer alias or instance used to build the distance matrix.
+    :param metric: distance or similarity metric; see :mod:`chemsplit.metrics`.
+    :param max_memory_bytes: ceiling on the pairwise matrix. Exceeding it raises rather than
+        allocating.
+    :param kwargs: forwarded to :class:`chemsplit.base.GroupSplitter`.
+    :raises ParameterError: if ``eps`` is not positive, the size parameters are below 1, or
+        ``algorithm`` or ``noise_policy`` is unknown.
+    :raises MissingDependencyError: if ``algorithm="hdbscan"`` and the extra is not installed.
+    :raises ScalabilityError: at split time, if the pairwise matrix would exceed
+        ``max_memory_bytes``.
+
     Advantages
     ----------
-    - No `k` to choose, and clusters can take any shape -- a better match for chemical space than k-means's spherical assumption.
-    - Explicitly models "this molecule belongs to no family", which is chemically real and which every other clusterer forces into some cluster.
-    - `noise_policy="test"` produces a clean, defensible "singletons and oddities" test set for applicability-domain work.
+    - No `k` to choose, and clusters can take any shape, which fits chemical space better than
+      k-means's spherical assumption.
+    - Models "this molecule belongs to no family" explicitly. That case is chemically real, and
+      every other clusterer forces it into some cluster.
+    - `noise_policy="test"` produces a defensible "singletons and oddities" test set for
+      applicability-domain work.
 
     Pitfalls
     --------
-    - The noise bucket can swallow a large fraction of a diverse library -- 40% or more at sensible `eps` -- and `noise_policy` then decides most of the split; the default `"own_groups"` quietly makes it much easier, since noise points scatter.
-    - `eps` interacts with fingerprint density in a way with no cross-dataset meaning -- a value tuned on one dataset doesn't transfer.
-    - DBSCAN on a precomputed matrix needs `O(n²)` memory, capping `n` around 20,000 at the default guard.
-    - HDBSCAN's `min_cluster_size` and `min_samples` interact non-obviously -- changing one changes the cluster count non-monotonically.
-    - Density clustering on binary fingerprints suffers from the concentration of Tanimoto distances in high dimensions -- most pairs sit in a narrow band, so density contrast is weak.
-
+    - The noise bucket can swallow 40% or more of a diverse library at sensible `eps`, so
+      `noise_policy` decides most of the split; the default `"own_groups"` scatters those
+      points and makes it much easier.
+    - `eps` interacts with fingerprint density in a way that carries no cross-dataset meaning,
+      so a value tuned on one dataset does not transfer.
+    - DBSCAN on a precomputed matrix needs `O(n^2)` memory, which caps `n` around 20,000 at the
+      default guard.
+    - HDBSCAN's `min_cluster_size` and `min_samples` interact non-obviously: changing one moves
+      the cluster count non-monotonically.
+    - Tanimoto distances concentrate in high dimensions, so most pairs sit in a narrow band and
+      the density contrast density clustering relies on is weak.
 
     References
     ----------
-    .. [1] Ester, M.; Kriegel, H.-P.; Sander, J.; Xu, X. A Density-Based Algorithm for Discovering Clusters
-       in Large Spatial Databases with Noise. In *Proceedings of the 2nd International Conference on
-       Knowledge Discovery and Data Mining (KDD-96)*; AAAI Press, **1996**; pp 226-231. No DOI;
-       https://cdn.aaai.org/KDD/1996/KDD96-037.pdf
-    .. [2] Campello, R. J. G. B.; Moulavi, D.; Sander, J. Density-Based Clustering Based on Hierarchical
-       Density Estimates. In *Advances in Knowledge Discovery and Data Mining (PAKDD 2013)*; Lecture
-       Notes in Computer Science 7819; Springer, **2013**; pp 160-172.
+    .. [1] Ester, M.; Kriegel, H.-P.; Sander, J.; Xu, X. A Density-Based Algorithm for
+       Discovering Clusters in Large Spatial Databases with Noise. In *Proceedings of the 2nd
+       International Conference on Knowledge Discovery and Data Mining (KDD-96)*; AAAI Press,
+       **1996**; pp 226-231. No DOI; https://cdn.aaai.org/KDD/1996/KDD96-037.pdf
+    .. [2] Campello, R. J. G. B.; Moulavi, D.; Sander, J. Density-Based Clustering Based on
+       Hierarchical Density Estimates. In *Advances in Knowledge Discovery and Data Mining
+       (PAKDD 2013)*; Lecture Notes in Computer Science 7819; Springer, **2013**; pp 160-172.
        https://doi.org/10.1007/978-3-642-37456-2_14
-    .. [3] Campello, R. J. G. B.; Moulavi, D.; Zimek, A.; Sander, J. Hierarchical Density Estimates for Data
-       Clustering, Visualization, and Outlier Detection. *ACM Trans. Knowl. Discov. Data* **2015**,
-       10 (1), 1-51. https://doi.org/10.1145/2733381
+    .. [3] Campello, R. J. G. B.; Moulavi, D.; Zimek, A.; Sander, J. Hierarchical Density
+       Estimates for Data Clustering, Visualization, and Outlier Detection. *ACM Trans. Knowl.
+       Discov. Data* **2015**, 10 (1), 1-51. https://doi.org/10.1145/2733381
     """
 
     splitter_id: ClassVar[str] = "density_cluster"
@@ -801,13 +956,17 @@ class DensityClusterSplitter(_SimilarityGroupBase):
         eps: float = 0.3,
         min_samples: int = 5,
         min_cluster_size: int = 5,
-        noise_policy: Literal["test", "train", "own_groups", "discard", "distribute"] = "own_groups",
+        noise_policy: Literal[
+            "test", "train", "own_groups", "discard", "distribute"
+        ] = "own_groups",
         featurizer: str | Any = "ecfp4",
         metric: str = "tanimoto",
         max_memory_bytes: int = 2 * 1024**3,
         **kwargs: Any,
     ) -> None:
-        super().__init__(featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs)
+        super().__init__(
+            featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs
+        )
         self.algorithm = algorithm
         self.eps = eps
         self.min_samples = min_samples
@@ -820,13 +979,19 @@ class DensityClusterSplitter(_SimilarityGroupBase):
     def _group_labels(self, ctx: _Context) -> IndexArray:
         D = _dist_matrix(self, ctx)
         if self.algorithm == "dbscan":
-            labels = DBSCAN(eps=self.eps, min_samples=self.min_samples, metric="precomputed").fit_predict(D)
+            labels = DBSCAN(
+                eps=self.eps, min_samples=self.min_samples, metric="precomputed"
+            ).fit_predict(D)
         else:
             try:
                 from sklearn.cluster import HDBSCAN
             except ImportError as exc:  # pragma: no cover - sklearn>=1.3 always has this
                 raise MissingDependencyError(type(self).__name__, "hdbscan") from exc
-            labels = HDBSCAN(min_cluster_size=self.min_cluster_size, min_samples=self.min_samples, metric="precomputed").fit_predict(D)
+            labels = HDBSCAN(
+                min_cluster_size=self.min_cluster_size,
+                min_samples=self.min_samples,
+                metric="precomputed",
+            ).fit_predict(D)
         n = ctx.n
         noise = np.nonzero(labels == -1)[0]
         forced: list[int] = []
@@ -834,16 +999,15 @@ class DensityClusterSplitter(_SimilarityGroupBase):
             if self.noise_policy == "discard":
                 forced = noise.tolist()
             elif self.noise_policy in ("test", "train"):
-                # Cluster labels alone can't force a group into a *specific* partition (assign_groups
-                # only balances by size); record the noise indices here so _partition can move them
-                # into the target partition after the normal group-based assignment runs.
+                # assign_groups only balances by size, so stash the noise indices for
+                # _partition to move afterwards
                 self._last_noise_idx = noise.copy()
             elif self.noise_policy == "distribute" and (labels != -1).any():
                 core_idx = np.nonzero(labels != -1)[0]
                 for i in noise:
                     nearest = argmin_tiebreak(lambda c: float(D[i, c]), core_idx.tolist())
                     labels[i] = labels[nearest]
-            # "own_groups": leave as -1; converted to singleton labels below.
+            # own_groups: leave at -1 and convert to singleton labels below
         if noise.size == n:
             if self.noise_policy == "own_groups":
                 raise DegenerateGroupingError(f"{type(self).__name__}: every record is noise")
@@ -896,38 +1060,66 @@ class DensityClusterSplitter(_SimilarityGroupBase):
         return fixed
 
 
-# -
-# SpectralSplitter
-# -
-
-
 class SpectralSplitter(_SimilarityGroupBase):
     """Laplacian-eigenmap spectral clustering on an affinity graph.
 
-    ``graph="landmark"`` is landmark-based spectral clustering (Chen & Cai 2011) and never builds
-    an ``n x n`` matrix. It selects ``n_landmarks`` landmark records, by default with OptiSim
-    (``"spectral.landmarks"`` stream; subsample of ``ceil(n/20)``, no exclusion radius), so the
-    landmarks are both spread out and representative. Each record is then represented by Gaussian
-    weights to its ``landmark_neighbors`` nearest landmarks (bandwidth = mean distance to those
-    landmarks), normalised to sum to one. The top ``n_clusters`` left singular vectors of that
-    ``n x p`` matrix, scaled by the inverse square root of the landmark degrees, are clustered
-    with k-means. As in Chen & Cai, the leading singular vector is kept (``drop_first`` does not
-    apply).
+    ``graph="landmark"`` is landmark-based spectral clustering (Chen & Cai 2011) and never
+    builds an ``n x n`` matrix. It picks ``n_landmarks`` records, by default with OptiSim off
+    the ``"spectral.landmarks"`` stream at a ``ceil(n/20)`` subsample and no exclusion radius,
+    so they come out spread and representative. Each record is then Gaussian weights to its
+    ``landmark_neighbors`` nearest landmarks, bandwidth the mean distance to them, normalised
+    to sum to one. The top ``n_clusters`` left singular vectors of that ``n x p`` matrix,
+    scaled by the inverse square root of the landmark degrees, go to k-means. As in Chen & Cai
+    the leading singular vector is kept, so ``drop_first`` does not apply.
+
+    :param n_clusters: how many clusters to cut the spectral embedding into.
+    :param graph: how the affinity graph is built: thresholded, k-nearest-neighbour, fully
+        connected, or the landmark approximation described above.
+    :param knn_k: neighbours per record for ``graph="knn"``.
+    :param threshold: similarity floor for ``graph="threshold"``.
+    :param laplacian: symmetric, random-walk, or unnormalized Laplacian.
+    :param assign: cluster the embedding with k-means, or with the discretize rule.
+    :param drop_first: drop the trivial leading eigenvector. Ignored for
+        ``graph="landmark"``.
+    :param n_landmarks: number of landmarks for ``graph="landmark"``, or ``None`` for the
+        default of ``ceil(sqrt(n))``.
+    :param landmark_selection: pick landmarks with OptiSim, or at random.
+    :param landmark_neighbors: how many nearest landmarks represent each record.
+    :param featurizer: featurizer alias or instance used to build the distance matrix.
+    :param metric: distance or similarity metric; see :mod:`chemsplit.metrics`.
+    :param max_memory_bytes: ceiling on the pairwise matrix. Exceeding it raises rather than
+        allocating.
+    :param kwargs: forwarded to :class:`chemsplit.base.GroupSplitter`.
+    :raises ParameterError: if ``n_clusters``, ``knn_k``, ``n_landmarks`` or
+        ``landmark_neighbors`` is out of range, or any of the mode parameters is unknown.
+    :raises DegenerateGroupingError: at split time, if the affinity graph is disconnected, so
+        that spectral clustering would degenerate into one cluster per component.
+    :raises ScalabilityError: at split time, if the pairwise matrix would exceed
+        ``max_memory_bytes``.
 
     Advantages
     ----------
-    - Minimises inter-cluster similarity by construction, reliably yielding the least train/test overlap among routine structure-based splits.
-    - Handles non-convex, elongated regions of chemical space that k-means cuts straight through.
-    - The eigenvalue spectrum is a free diagnostic -- the spectral gap shows whether the dataset genuinely has that many separable families.
+    - Minimises inter-cluster similarity by construction, which gives the least train/test
+      overlap among routine structure-based splits.
+    - Handles non-convex, elongated regions of chemical space that k-means cuts straight
+      through.
+    - The eigenvalue spectrum comes for free as a diagnostic: the spectral gap shows whether
+      the dataset really has that many separable families.
 
     Pitfalls
     --------
-    - `O(n²)` affinity construction and a dense-ish eigenproblem cap it near 50,000 molecules -- subsample above that and say so.
-    - Depends on three coupled choices -- graph construction, Laplacian normalisation, and `n_clusters` -- none with a chemically principled default.
-    - Degenerate eigenvalues (common on symmetric chemical graphs, e.g. many identical singleton components) make eigenvectors non-unique up to rotation, so cluster labels can differ between runs and platforms despite identical eigenvalues. The implementation warns but can't fix this -- its golden test uses a size/histogram tolerance, not an exact match.
-    - A disconnected affinity graph silently turns spectral clustering into "one cluster per component", usually not what was wanted -- hence the hard error.
-    - Being the hardest split isn't the same as being the right one -- a model evaluated only under spectral splitting looks worse than it will perform on a realistic screening library.
-    - `graph="landmark"` approximates the full graph through `p` landmarks: too few landmarks blur small families together, and the result depends on the landmark draw.
+    - `O(n^2)` affinity construction and a dense eigenproblem cap it near 50,000 molecules.
+    - Depends on three coupled choices -- graph construction, Laplacian normalisation and
+      `n_clusters` -- none of which has a chemically principled default.
+    - Degenerate eigenvalues, common where many singleton components are identical, leave
+      eigenvectors non-unique up to rotation, so labels can differ between runs and platforms
+      at identical eigenvalues. It warns, and its golden test uses a size histogram.
+    - A disconnected affinity graph would turn spectral clustering into one cluster per
+      component, which is why that case is a hard error.
+    - The hardest split is not the right split. A model evaluated only under spectral splitting
+      looks worse than it will perform on a realistic screening library.
+    - `graph="landmark"` approximates the full graph through `p` landmarks: too few blur small
+      families together, and the result depends on the landmark draw.
 
     References
     ----------
@@ -961,7 +1153,9 @@ class SpectralSplitter(_SimilarityGroupBase):
         max_memory_bytes: int = 2 * 1024**3,
         **kwargs: Any,
     ) -> None:
-        super().__init__(featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs)
+        super().__init__(
+            featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs
+        )
         self.n_clusters = n_clusters
         self.graph = graph
         self.knn_k = knn_k
@@ -978,15 +1172,26 @@ class SpectralSplitter(_SimilarityGroupBase):
         if landmark_selection not in ("optisim", "random"):
             raise ParameterError(f"invalid landmark_selection: {landmark_selection!r}")
         if n_landmarks is not None and (
-            isinstance(n_landmarks, bool) or not isinstance(n_landmarks, (int, np.integer)) or n_landmarks < 2
+            isinstance(n_landmarks, bool)
+            or not isinstance(n_landmarks, (int, np.integer))
+            or n_landmarks < 2
         ):
             raise ParameterError(f"n_landmarks must be None or an int >= 2, got {n_landmarks!r}")
-        if isinstance(landmark_neighbors, bool) or not isinstance(landmark_neighbors, (int, np.integer)) or landmark_neighbors < 1:
-            raise ParameterError(f"landmark_neighbors must be an int >= 1, got {landmark_neighbors!r}")
+        if (
+            isinstance(landmark_neighbors, bool)
+            or not isinstance(landmark_neighbors, (int, np.integer))
+            or landmark_neighbors < 1
+        ):
+            raise ParameterError(
+                f"landmark_neighbors must be an int >= 1, got {landmark_neighbors!r}"
+            )
 
     def _landmark_labels(self, ctx: _Context) -> IndexArray:
         n = ctx.n
-        p = self.n_landmarks if self.n_landmarks is not None else min(n - 1, max(50, math.ceil(math.sqrt(n)) * 5))
+        if self.n_landmarks is not None:
+            p = self.n_landmarks
+        else:
+            p = min(n - 1, max(50, math.ceil(math.sqrt(n)) * 5))
         if not (self.n_clusters <= p < n):
             raise ParameterError(f"n_landmarks={p} must satisfy n_clusters <= n_landmarks < n={n}")
         r = min(self.landmark_neighbors, p)
@@ -998,12 +1203,15 @@ class SpectralSplitter(_SimilarityGroupBase):
             def column(j: int) -> np.ndarray:
                 return pairwise_distances(F, F[j:j + 1], metric=self.metric)[:, 0]
 
-            landmarks = _clustering.optisim_pick_columns(n, column, p, max(1, -(-n // 20)), 0.0, rng)
+            landmarks = _clustering.optisim_pick_columns(
+                n, column, p, max(1, -(-n // 20)), 0.0, rng
+            )
         else:
             landmarks = sorted(int(j) for j in rng.choice(n, size=p, replace=False))
         if len(landmarks) < self.n_clusters:
             raise DegenerateGroupingError(
-                f"{type(self).__name__}: only {len(landmarks)} distinct landmarks for n_clusters={self.n_clusters}"
+                f"{type(self).__name__}: only {len(landmarks)} distinct landmarks for "
+                f"n_clusters={self.n_clusters}"
             )
         Dl = pairwise_distances(F, F[np.asarray(landmarks)], metric=self.metric).astype(np.float64)
         nearest = np.argsort(Dl, axis=1, kind="stable")[:, :r]
@@ -1070,38 +1278,62 @@ class SpectralSplitter(_SimilarityGroupBase):
         return getattr(self, "_last_meta", {})
 
 
-# -
-# MaxMinSplitter
-# -
-
-
 class MaxMinSplitter(_SimilarityBase):
     """Greedy maximally-diverse selection (MaxMin / Kennard-Stone).
 
     The selected set may go to **train** (maximise coverage) or **test** (probe breadth) -- opposite
     experiments sharing one algorithm; never compare numbers across ``picked_goes_to`` values.
 
-    With ``swap_fraction > 0`` the selection is then perturbed: that fraction of the picked records
-    (rounded half up, capped at the number of unpicked records) is swapped for as many unpicked
-    records, both drawn from the ``"maxmin.swap"`` stream. ``init="kennard_stone"`` with
-    ``swap_fraction=0.1`` is the Morais-Lima-Martin (MLM) random-mutation Kennard-Stone method.
+    ``swap_fraction > 0`` then perturbs the selection, exchanging that fraction of the picked
+    records -- rounded half up, capped at the unpicked count -- off the ``"maxmin.swap"``
+    stream. ``init="kennard_stone"`` at ``swap_fraction=0.1`` is the Morais-Lima-Martin
+    random-mutation Kennard-Stone method.
+
+    :param picked_goes_to: whether the diverse selection becomes train (maximise coverage) or
+        test (probe breadth).
+    :param init: how the first record is chosen: at random, by the Kennard-Stone rule, the most
+        peripheral record, or index 0.
+    :param n_picks: how many records to select, or ``None`` to take it from the resolved sizes.
+    :param swap_fraction: fraction of the selection to exchange for unpicked records after the
+        greedy pass, which makes the result seed-dependent.
+    :param featurizer: featurizer alias or instance used to build the distance matrix.
+    :param metric: distance or similarity metric; see :mod:`chemsplit.metrics`.
+    :param max_memory_bytes: ceiling on the pairwise matrix. Exceeding it raises rather than
+        allocating.
+    :param kwargs: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ParameterError: if ``swap_fraction`` is outside ``[0, 1]``, ``n_picks`` is not
+        positive, or ``picked_goes_to`` or ``init`` is unknown.
+    :raises ScalabilityError: at split time, if the pairwise matrix would exceed
+        ``max_memory_bytes``.
 
     Advantages
     ----------
-    - With `picked_goes_to="train"`, builds the most informative training set for a fixed budget -- the standard answer to "which 500 compounds should I actually assay?".
-    - `coverage_radius` is a directly interpretable guarantee -- no record sits further than that from a training example.
-    - Memory-light in its lazy form, running on datasets where Butina and spectral clustering can't.
-    - Deterministic apart from a single initial pick, and fully deterministic with `init="kennard_stone"`.
-    - `init="kennard_stone"` with `metric="mahalanobis"` on a descriptor matrix is the MDKS variant; for label-aware selection see :class:`SPXYSplitter`.
+    - With `picked_goes_to="train"`, builds the most informative training set for a fixed
+      budget, which is the standard answer to "which 500 compounds should I assay?".
+    - `coverage_radius` is a directly interpretable guarantee: no record sits further than that
+      from a training example.
+    - Memory-light in its lazy form, so it runs on datasets where Butina and spectral
+      clustering cannot.
+    - Deterministic apart from a single initial pick, and fully deterministic with
+      `init="kennard_stone"`.
+    - `init="kennard_stone"` with `metric="mahalanobis"` on a descriptor matrix is the MDKS
+      variant; :class:`SPXYSplitter` is the label-aware one.
 
     Pitfalls
     --------
-    - **The two directions are different experiments and are routinely confused.** Diverse-in-train gives an optimistic, well-covered test set; diverse-in-test gives a hard extrapolation test. Never compare numbers across `picked_goes_to` values.
-    - Greedy MaxMin chases outliers -- the first picks are typically the weirdest molecules in the set, including parse artefacts, salts, and fragments. Clean the data first, or the "diverse" set is a junk set.
-    - Strongly depends on the initial pick when `init="random"` -- report the seed, or use `"kennard_stone"` for a seed-free run.
-    - Optimises coverage, not group separation -- nothing stops a near-duplicate of a picked molecule from landing in the other partition. Not a leakage-control split, and shouldn't be described as one.
-    - `coverage_radius` is only meaningful in the chosen metric -- comparing it across fingerprints is meaningless.
-    - `swap_fraction` trades coverage for a less systematically optimistic test set; the swapped records make the split seed-dependent even with `init="kennard_stone"`.
+    - **The two directions are different experiments and are routinely confused.**
+      Diverse-in-train gives a well-covered, optimistic test set; diverse-in-test gives a hard
+      extrapolation. The numbers do not compare across `picked_goes_to`.
+    - Greedy MaxMin chases outliers, so the first picks are the strangest molecules present:
+      parse artefacts, salts, fragments. On uncleaned data the "diverse" set is a junk set.
+    - Depends strongly on the initial pick when `init="random"`; `"kennard_stone"` is
+      seed-free.
+    - Optimises coverage, not group separation: nothing stops a near-duplicate of a picked
+      molecule from landing in the other partition. It is not a leakage control.
+    - `coverage_radius` is meaningful only in the chosen metric, so it does not compare across
+      fingerprints.
+    - `swap_fraction` trades coverage for a less systematically optimistic test set, and makes
+      the split seed-dependent even with `init="kennard_stone"`.
 
     References
     ----------
@@ -1133,7 +1365,9 @@ class MaxMinSplitter(_SimilarityBase):
         max_memory_bytes: int = 2 * 1024**3,
         **kwargs: Any,
     ) -> None:
-        super().__init__(featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs)
+        super().__init__(
+            featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs
+        )
         self.picked_goes_to = picked_goes_to
         self.init = init
         self.n_picks = n_picks
@@ -1141,7 +1375,11 @@ class MaxMinSplitter(_SimilarityBase):
         self._validate_similarity_params()
         if picked_goes_to not in ("train", "test"):
             raise ParameterError(f"invalid picked_goes_to: {picked_goes_to!r}")
-        if isinstance(swap_fraction, bool) or not isinstance(swap_fraction, (int, float)) or not (0.0 <= swap_fraction <= 0.5):
+        if (
+            isinstance(swap_fraction, bool)
+            or not isinstance(swap_fraction, (int, float))
+            or not (0.0 <= swap_fraction <= 0.5)
+        ):
             raise ParameterError(f"swap_fraction must be in [0, 0.5], got {swap_fraction!r}")
 
     def _partition(self, ctx: _Context) -> list[SplitResult]:
@@ -1160,8 +1398,16 @@ class MaxMinSplitter(_SimilarityBase):
             unpicked = [i for i in range(n) if i not in picked_set]
             k = min(floor_round(self.swap_fraction * len(picked)), len(unpicked))
             swap_rng = seed_for(ctx.rng_seeds, "maxmin.swap", 0)
-            swapped_out = sorted(int(i) for i in swap_rng.choice(picked, size=k, replace=False)) if k else []
-            swapped_in = sorted(int(i) for i in swap_rng.choice(unpicked, size=k, replace=False)) if k else []
+            swapped_out = (
+                sorted(int(i) for i in swap_rng.choice(picked, size=k, replace=False))
+                if k
+                else []
+            )
+            swapped_in = (
+                sorted(int(i) for i in swap_rng.choice(unpicked, size=k, replace=False))
+                if k
+                else []
+            )
             out_set = set(swapped_out)
             picked = [i for i in picked if i not in out_set] + swapped_in
             swap_meta = {"swapped_out": swapped_out, "swapped_in": swapped_in}
@@ -1195,34 +1441,43 @@ class MaxMinSplitter(_SimilarityBase):
         return [result]
 
 
-# -
-# SPXYSplitter
-# -
-
-
 class SPXYSplitter(_SimilarityBase):
     """Kennard-Stone selection over a joint feature-and-label distance (SPXY).
 
-    The feature distance matrix and the pairwise Euclidean distance between labels (across all
-    columns for multi-task ``y``) are each divided by their own maximum and summed; Kennard-Stone
-    then picks ``n_train`` records from that joint matrix into **train**. The remainder fills
-    valid/test through a shuffle drawn from the ``"spxy.remainder"`` stream, so the split is
-    seed-free whenever no validation set is requested. With ``metric="mahalanobis"`` this is
-    M-SPXY (Apinantanakon et al. 2019, eq. 9): Mahalanobis distance on the features and Euclidean
-    distance on the labels, each scaled by its maximum.
+    The feature distance matrix and the pairwise Euclidean label distance, over all columns for
+    a multi-task ``y``, are each divided by their own maximum and summed; Kennard-Stone then
+    picks ``n_train`` records from that joint matrix into **train**. The remainder fills
+    valid and test off the ``"spxy.remainder"`` stream, so a two-way split is seed-free.
+    ``metric="mahalanobis"`` gives M-SPXY (Apinantanakon et al. 2019, eq. 9).
+
+    :param featurizer: featurizer alias or instance used to build the distance matrix.
+    :param metric: distance or similarity metric; see :mod:`chemsplit.metrics`.
+    :param max_memory_bytes: ceiling on the pairwise matrix. Exceeding it raises rather than
+        allocating.
+    :param kwargs: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises LabelError: at split time, if ``y`` is missing.
+    :raises ScalabilityError: at split time, if the pairwise matrix would exceed
+        ``max_memory_bytes``.
 
     Advantages
     ----------
-    - Covers the label range as well as chemical space, so the training set spans the response surface rather than only the descriptor space -- the standard fix for Kennard-Stone leaving extreme activities out of train.
-    - Fully deterministic without a seed for two-way splits: no random initial pick, ties broken by smallest index.
-    - Each term is scaled to `[0, 1]` before summing, so neither the fingerprint distance nor the label units dominate.
+    - Covers the label range as well as chemical space, so train spans the response surface.
+      This is the standard fix for Kennard-Stone leaving extreme activities out of train.
+    - Deterministic without a seed for two-way splits: no random initial pick, and ties broken
+      by smallest index.
+    - Each term is scaled to `[0, 1]` before summing, so neither the fingerprint distance nor
+      the label units dominate.
 
     Pitfalls
     --------
-    - The split depends on `y`, so the training set is chosen with knowledge of the labels -- fine for calibration-set design, but results aren't comparable with label-blind splits.
-    - Like Kennard-Stone, the first picks are the most extreme records, including outliers and label errors; clean data first.
-    - Optimises coverage, not separation -- test records can have near-duplicates in train. Not a leakage-control split.
-    - Label distances are Euclidean over the raw `y` columns, so in multi-task data a task with a wider range weighs more; standardise `y` first if that matters.
+    - The split depends on `y`, so the training set is chosen knowing the labels. That suits
+      calibration-set design, but the results are not comparable with label-blind splits.
+    - As with Kennard-Stone, the first picks are the most extreme records, including outliers
+      and label errors.
+    - Optimises coverage, not separation, so test records can have near-duplicates in train. It
+      is not a leakage control.
+    - Label distances are Euclidean over the raw `y` columns, so in multi-task data a task with
+      a wider range weighs more unless `y` is standardised first.
     - Builds two dense `n x n` matrices.
 
     References
@@ -1296,40 +1551,61 @@ class SPXYSplitter(_SimilarityBase):
         return [result]
 
 
-# -
-# OptiSimSplitter
-# -
-
-
 class OptiSimSplitter(_SimilarityGroupBase):
     """OptiSim diversity selection, used either as cluster centres or as a picked set.
 
-    Each round draws random candidates (``"optisim.draw"`` stream) until ``subsample_size`` of
-    them lie further than ``radius`` from everything already selected, then selects the one with
-    the largest minimum distance to the selection. ``subsample_size=1`` is random selection with
-    sphere exclusion; a subsample covering every record is MaxMin -- the parameter trades
+    Each round draws candidates off the ``"optisim.draw"`` stream until ``subsample_size`` of
+    them lie further than ``radius`` from everything selected, then takes the one with the
+    largest minimum distance to the selection. ``subsample_size`` therefore trades
     representativeness against diversity.
 
-    ``mode="cluster"`` treats the ``n_picks`` selected records (default: the ``"auto"`` rule of
-    :class:`KMeansClusterSplitter`) as centres, groups every record with its nearest centre (ties
-    -> earliest-selected centre) and assigns whole groups to partitions. ``mode="pick"`` sends the
-    selected set to ``picked_goes_to`` like :class:`MaxMinSplitter` (default ``n_picks``: that
-    partition's size), shuffles the rest into the other partitions (``"optisim.remainder"``
-    stream), and forms no groups.
+    ``mode="cluster"`` treats the selected records as centres, groups every record with its
+    nearest centre -- ties to the earliest selected -- and assigns whole groups to partitions;
+    ``n_picks`` defaults to :class:`KMeansClusterSplitter`'s ``"auto"`` rule. ``mode="pick"``
+    sends the selection to ``picked_goes_to`` as :class:`MaxMinSplitter` does, defaulting
+    ``n_picks`` to that partition's size, shuffles the rest in off the
+    ``"optisim.remainder"`` stream, and forms no groups.
+
+    :param mode: use the selection as cluster centres, or as a picked partition.
+    :param n_picks: how many records to select, or ``None`` for the per-mode default described
+        above.
+    :param subsample_size: candidates that must clear ``radius`` before one is selected, or
+        ``None``. ``1`` is random selection with sphere exclusion; covering every record is
+        MaxMin.
+    :param radius: exclusion radius around each selected record, read per ``radius_is``.
+    :param radius_is: whether ``radius`` is a distance, a similarity, or a fraction of the
+        observed distance range.
+    :param picked_goes_to: for ``mode="pick"``, which partition the selection becomes.
+    :param featurizer: featurizer alias or instance used to build the distance matrix.
+    :param metric: distance or similarity metric; see :mod:`chemsplit.metrics`.
+    :param max_memory_bytes: ceiling on the pairwise matrix. Exceeding it raises rather than
+        allocating.
+    :param kwargs: forwarded to :class:`chemsplit.base.GroupSplitter`.
+    :raises ParameterError: if ``n_picks`` or ``subsample_size`` is not positive, ``radius`` is
+        out of range, or any mode parameter is unknown.
+    :raises ScalabilityError: at split time, if the pairwise matrix would exceed
+        ``max_memory_bytes``.
 
     Advantages
     ----------
-    - One knob, `subsample_size`, spans random sampling to MaxMin, so a selection can be diverse without being dominated by outliers the way pure MaxMin is.
-    - `radius` guarantees a minimum spacing between selected records (and hence between cluster centres).
-    - Cluster mode keeps near-duplicates of a centre in that centre's group, so they can't straddle train and test.
-    - Selection costs `O(n · n_picks)` on top of the distance matrix -- cheap next to Butina or spectral clustering.
+    - One knob, `subsample_size`, spans random sampling to MaxMin, so a selection can be
+      diverse without being dominated by outliers the way pure MaxMin is.
+    - `radius` guarantees a minimum spacing between selected records, and so between cluster
+      centres.
+    - Cluster mode keeps near-duplicates of a centre in that centre's group, so they cannot
+      straddle train and test.
+    - Selection costs `O(n * n_picks)` on top of the distance matrix, which is cheap next to
+      Butina or spectral clustering.
 
     Pitfalls
     --------
-    - Results depend on the seed at every round, not just the first pick -- report it, and repeat over seeds.
-    - Cluster mode's groups are Voronoi cells around the centres, not density clusters; with a small `n_picks` they are large and chemically mixed.
-    - If `radius` excludes every remaining candidate, fewer than `n_picks` records are selected (a `DegenerateClusterWarning` names how many). In pick mode, records the smaller picked set can't absorb are **discarded**.
-    - Pick mode optimises coverage, not separation -- like MaxMin, it's not a leakage-control split. Only cluster mode is group-forming.
+    - Results depend on the seed at every round, not just the first pick.
+    - Cluster mode's groups are Voronoi cells around the centres rather than density clusters,
+      and with a small `n_picks` they are large and chemically mixed.
+    - If `radius` excludes every candidate, fewer than `n_picks` are selected and a
+      `DegenerateClusterWarning` says how many. In pick mode the surplus is **discarded**.
+    - Pick mode optimises coverage, not separation, so like MaxMin it is not a leakage control.
+      Only cluster mode is group-forming.
     - `radius` is in the chosen metric's units unless `radius_is="fraction_of_range"`.
 
     References
@@ -1358,7 +1634,9 @@ class OptiSimSplitter(_SimilarityGroupBase):
         max_memory_bytes: int = 2 * 1024**3,
         **kwargs: Any,
     ) -> None:
-        super().__init__(featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs)
+        super().__init__(
+            featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs
+        )
         self.mode = mode
         self.n_picks = n_picks
         self.subsample_size = subsample_size
@@ -1371,16 +1649,28 @@ class OptiSimSplitter(_SimilarityGroupBase):
         if picked_goes_to not in ("train", "test"):
             raise ParameterError(f"invalid picked_goes_to: {picked_goes_to!r}")
         min_picks = 2 if mode == "cluster" else 1
-        for name, value, lo in (("n_picks", n_picks, min_picks), ("subsample_size", subsample_size, 1)):
+        for name, value, lo in (
+            ("n_picks", n_picks, min_picks),
+            ("subsample_size", subsample_size, 1),
+        ):
             if value is None:
                 continue
             if isinstance(value, bool) or not isinstance(value, (int, np.integer)) or value < lo:
                 raise ParameterError(f"{name} must be None or an int >= {lo}, got {value!r}")
 
     def compute_groups(self, X: Any, y: Any = None, **kw: Any) -> IndexArray:
+        """Expose the group labels without performing a split.
+
+        :param X: the records, as for :meth:`split`.
+        :param y: labels, if the splitter needs them.
+        :param kw: per-call extras, as for :meth:`split`.
+        :raises NotImplementedError: in ``mode="pick"``, which forms no groups.
+        :return: one dense group label per record.
+        """
         if self.mode == "pick":
             raise ParameterError(
-                f"{type(self).__name__}(mode='pick') forms no groups; use mode='cluster' for compute_groups()"
+                f"{type(self).__name__}(mode='pick') forms no groups; use mode='cluster' "
+                "for compute_groups()"
             )
         return super().compute_groups(X, y, **kw)
 
@@ -1409,7 +1699,8 @@ class OptiSimSplitter(_SimilarityGroupBase):
         D, centres, threshold, k = self._select(ctx, n_picks)
         slot = list(range(len(centres)))
         labels = np.asarray(
-            [argmin_tiebreak(lambda c: float(D[i, centres[c]]), slot) for i in range(n)], dtype=np.int64
+            [argmin_tiebreak(lambda c: float(D[i, centres[c]]), slot) for i in range(n)],
+            dtype=np.int64,
         )
         clusters = [np.flatnonzero(labels == c).tolist() for c in slot]
         self._last_meta = {
@@ -1422,7 +1713,10 @@ class OptiSimSplitter(_SimilarityGroupBase):
             "cluster_sizes": sorted((len(c) for c in clusters), reverse=True),
         }
         _check_cluster_degeneracy(
-            clusters, n, type(self).__name__, f"n_picks={n_picks}, radius={self.radius} ({self.radius_is})"
+            clusters,
+            n,
+            type(self).__name__,
+            f"n_picks={n_picks}, radius={self.radius} ({self.radius_is})",
         )
         return dense_label_encode(labels.tolist())
 
@@ -1458,20 +1752,23 @@ class OptiSimSplitter(_SimilarityGroupBase):
                 "subsample_size": k,
                 "distance_threshold": threshold,
                 "coverage_radius": coverage,
-                "realised_sizes": {name: int(v.size) for name, v in buckets.items() if name != "discard"},
+                "realised_sizes": {
+                    name: int(v.size) for name, v in buckets.items() if name != "discard"
+                },
             },
         )
         _small_partition_check(result, n)
         return [result]
 
 
-# -
-# MinimalTestSetDissimilaritySplitter
-# -
 
 
 def _check_task_index(task_index: Any) -> None:
-    if isinstance(task_index, bool) or not isinstance(task_index, (int, np.integer)) or task_index < 0:
+    if (
+        isinstance(task_index, bool)
+        or not isinstance(task_index, (int, np.integer))
+        or task_index < 0
+    ):
         raise ParameterError(f"task_index must be an int >= 0, got {task_index!r}")
 
 
@@ -1498,29 +1795,46 @@ def _label_column(splitter: Any, ctx: _Context) -> np.ndarray:
 class MinimalTestSetDissimilaritySplitter(_SimilarityBase):
     """Minimal test set dissimilarity (MTSD): one typical record per activity bin goes to test.
 
-    Each record's total dissimilarity is the sum of its distances to every other record. Records
-    are sorted by label, most active first (ties by index), and cut into ``n_test`` contiguous bins
-    whose sizes differ by at most one; the record with the smallest total dissimilarity in each bin
-    (ties -> smallest index) goes to **test**. A validation set, if requested, is chosen the same way
-    from the remaining records, with total dissimilarities recomputed over that remainder; the rest
-    is train. For a 20% test set the bins hold 5 records each, as in Martin et al. (2012), who used
-    Euclidean distance on preselected descriptors (``featurizer=..., metric="euclidean"``).
-    Fully deterministic: no random draws at all.
+    A record's total dissimilarity is the sum of its distances to every other record. Records
+    sort by label, most active first with ties by index, and cut into ``n_test`` contiguous bins
+    of near-equal size; each bin's least dissimilar record, ties to the smallest index, goes to
+    **test**. A validation set is chosen the same way from the remainder, with total
+    dissimilarities recomputed over it; the rest is train. At a 20% test set the bins hold 5
+    records each, as in Martin et al. (2012), who used Euclidean distance on preselected
+    descriptors. Fully deterministic.
+
+    :param task_index: which column of a multi-task ``y`` to bin on. The others are ignored.
+    :param featurizer: featurizer alias or instance used to build the distance matrix.
+    :param metric: distance or similarity metric; see :mod:`chemsplit.metrics`.
+    :param max_memory_bytes: ceiling on the pairwise matrix. Exceeding it raises rather than
+        allocating.
+    :param kwargs: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ParameterError: if ``task_index`` is negative.
+    :raises LabelError: at split time, if ``y`` is missing or ``task_index`` is out of range.
+    :raises ScalabilityError: at split time, if the pairwise matrix would exceed
+        ``max_memory_bytes``.
 
     Advantages
     ----------
-    - The test set spans the full label range by construction -- one record per activity bin -- so no part of the response is left unevaluated.
-    - Each test record is the most typical member of its bin, so test compounds always have close analogues in train: a clean check of interpolation quality.
-    - No seed, no free parameter beyond the featurizer and metric -- easy to reproduce and describe.
-    - Follows criterion 2 of rational division (test compounds close to training compounds) directly.
+    - The test set spans the full label range by construction, one record per activity bin, so
+      no part of the response is left unevaluated.
+    - Each test record is the most typical member of its bin, so test compounds always have
+      close analogues in train, which makes this a clean check of interpolation quality.
+    - No seed and no free parameter beyond the featurizer and metric.
+    - Follows criterion 2 of rational division -- test compounds close to training compounds --
+      directly.
 
     Pitfalls
     --------
-    - **Deliberately optimistic.** Test records are the least unusual compounds, so test scores overstate performance on new chemistry; Martin et al. found rational test sets beat random ones on test but not on an external set.
-    - Selection uses `y`, so the split is not label-blind and isn't comparable with label-free splits.
-    - Total dissimilarity is dominated by global position: a dense region's centre wins every bin it touches, so test can concentrate in one region of chemical space.
+    - **Deliberately optimistic.** Test holds the least unusual compounds, so scores overstate
+      performance on new chemistry; Martin et al. found such test sets beat random ones on
+      test but not externally.
+    - Selection uses `y`, so the split is not label-blind and does not compare with label-free
+      splits.
+    - Total dissimilarity is dominated by global position: a dense region's centre wins every
+      bin it touches, so test can concentrate in one region of chemical space.
     - Builds the full `n x n` distance matrix.
-    - Multi-task `y` uses one column (`task_index`); the other tasks are ignored.
+    - Multi-task `y` uses one column, `task_index`, and ignores the rest.
 
     References
     ----------
@@ -1531,7 +1845,8 @@ class MinimalTestSetDissimilaritySplitter(_SimilarityBase):
     .. [2] Kuz'min, V. E.; Artemenko, A. G.; Muratov, E. N.; Volineckaya, I. L.; Makarov, V. A.;
        Riabova, O. B.; Wutzler, P.; Schmidtke, M. Quantitative Structure−Activity Relationship
        Studies of [(Biphenyloxy)propyl]isoxazole Derivatives. Inhibitors of Human Rhinovirus 2
-       Replication. *J. Med. Chem.* **2007**, 50 (17), 4205-4213. https://doi.org/10.1021/jm0704806
+       Replication. *J. Med. Chem.* **2007**, 50 (17), 4205-4213.
+       https://doi.org/10.1021/jm0704806
     """
 
     splitter_id: ClassVar[str] = "minimal_test_set_dissimilarity"
@@ -1549,7 +1864,9 @@ class MinimalTestSetDissimilaritySplitter(_SimilarityBase):
         max_memory_bytes: int = 2 * 1024**3,
         **kwargs: Any,
     ) -> None:
-        super().__init__(featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs)
+        super().__init__(
+            featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs
+        )
         self.task_index = task_index
         self._validate_similarity_params()
         _check_task_index(task_index)
@@ -1558,8 +1875,17 @@ class MinimalTestSetDissimilaritySplitter(_SimilarityBase):
         _label_column(self, ctx)
 
     @staticmethod
-    def _select(D: np.ndarray, y: np.ndarray, pool: list[int], k: int) -> tuple[list[int], list[list[int]]]:
-        """Pick ``k`` records from ``pool``: one minimal-total-dissimilarity record per activity bin."""
+    def _select(
+        D: np.ndarray, y: np.ndarray, pool: list[int], k: int
+    ) -> tuple[list[int], list[list[int]]]:
+        """Pick one minimal-total-dissimilarity record per activity bin.
+
+        :param D: the pairwise distance matrix.
+        :param y: the label column to bin on.
+        :param pool: candidate record indices.
+        :param k: how many records to pick, i.e. how many bins to cut.
+        :return: the picked indices and the bin memberships they came from.
+        """
         if k <= 0:
             return [], []
         idx = np.asarray(pool, dtype=np.int64)
@@ -1609,9 +1935,6 @@ class MinimalTestSetDissimilaritySplitter(_SimilarityBase):
         return [result]
 
 
-# -
-# SupportPointsSplitter
-# -
 
 
 def _helmert(codes: np.ndarray, n_levels: int) -> np.ndarray:
@@ -1643,7 +1966,9 @@ def _encode_label_columns(y: Any, label_kind: str, owner: str) -> np.ndarray:
             if any(v is None or (isinstance(v, float) and np.isnan(v)) for v in col.tolist()):
                 raise LabelError(f"{owner}: y contains missing categorical labels")
             levels: dict[Any, int] = {}
-            codes = np.asarray([levels.setdefault(v, len(levels)) for v in col.tolist()], dtype=np.int64)
+            codes = np.asarray(
+                [levels.setdefault(v, len(levels)) for v in col.tolist()], dtype=np.int64
+            )
             blocks.append(_helmert(codes, len(levels)))
         else:
             try:
@@ -1662,7 +1987,8 @@ def _support_points(
     Z: np.ndarray, n_points: int, rng: np.random.Generator, max_iter: int, tol: float
 ) -> tuple[np.ndarray, int, bool, float]:
     """Support points of the rows of ``Z`` (Mak & Joseph 2018) by the convex-concave fixed point
-    ``x_i <- [ (N/n) sum_k (x_i - x_k)/|x_i - x_k| + sum_m z_m/|x_i - z_m| ] / sum_m 1/|x_i - z_m|``,
+    ``x_i <- [ (N/n) sum_k (x_i - x_k)/|x_i - x_k| + sum_m z_m/|x_i - z_m| ]
+    / sum_m 1/|x_i - z_m|``,
     updated for all points at once from distinct data rows plus a small jitter, and clipped to the
     data's bounding box. Stops once the energy criterion ``2·mean|x - z| - mean|x - x'|`` improves
     by less than ``tol`` (relative) in one iteration; returns ``(points, iterations, converged,
@@ -1692,43 +2018,49 @@ def _support_points(
 class SupportPointsSplitter(BaseSplitter):
     """SPlit: the smaller subset is the set of records nearest to the data's support points.
 
-    Features (plus the labels, when given and ``use_labels=True``) form one design matrix:
-    categorical label columns become Helmert contrasts, constant columns are dropped and every
-    column is standardised. Support points -- the ``k`` points minimising the energy distance to the
-    data -- are computed for the smaller side of the cut (``k = n_test``, or ``n - n_test`` when test
-    is the larger side) by the convex-concave fixed point of Mak & Joseph, started from ``k``
-    distinct records drawn from the ``"support_points.init"`` stream. Each support point in turn
-    then takes its nearest still-unassigned record. A validation set, if requested, is selected the
-    same way from the remaining records (stream index 1). Joseph's optimal-ratio result suggests a
-    test fraction of about ``1 / (sqrt(p) + 1)`` for ``p`` model parameters; chemsplit leaves the
-    sizes to the caller.
+    Features, plus the labels under ``use_labels=True``, form one design matrix: categorical
+    columns become Helmert contrasts, constant columns are dropped, and the rest are
+    standardised. The ``k`` support points minimising energy distance to the data are computed
+    for the smaller side of the cut by Mak & Joseph's convex-concave fixed point, started from
+    ``k`` distinct records off the ``"support_points.init"`` stream. Each support point then
+    takes its nearest unassigned record, and a validation set is selected the same way from the
+    remainder. Joseph's optimal-ratio result suggests a test fraction near
+    ``1 / (sqrt(p) + 1)`` for ``p`` model parameters; the sizes are left to the caller.
 
-    :param featurizer: Feature representation. Defaults to ``"physchem"``: the method works in
-        standardised Euclidean space, which suits continuous descriptors.
-    :param use_labels: Append ``y`` to the design matrix when it is given, as in the original
-        method. Defaults to True.
-    :param label_kind: How to encode ``y``: ``"continuous"``, ``"categorical"`` (Helmert
-        contrasts) or ``"auto"`` (categorical for non-numeric or boolean columns). Defaults to
-        ``"auto"``.
-    :param max_iter: Maximum fixed-point iterations. Defaults to 500.
-    :param tol: Stop once the energy criterion improves by less than this fraction in one
-        iteration. Defaults to 1e-6.
-    :param max_memory_bytes: Ceiling on the support-point/record distance blocks. Defaults to 2 GiB.
-    :param base: See :class:`chemsplit.base.BaseSplitter`.
+    :param featurizer: feature representation. The default ``"physchem"`` suits the method,
+        which works in standardised Euclidean space.
+    :param use_labels: append ``y`` to the design matrix when it is given, as in the original
+        method.
+    :param label_kind: how to encode ``y``: as continuous, as categorical through Helmert
+        contrasts, or decided per column from its dtype.
+    :param max_iter: cap on fixed-point iterations.
+    :param tol: stop once the energy criterion improves by less than this fraction in one
+        iteration.
+    :param max_memory_bytes: ceiling on the support-point/record distance blocks.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ParameterError: if ``max_iter`` is below 1, ``tol`` is not positive, or
+        ``label_kind`` is unknown.
+    :raises ScalabilityError: at split time, if the distance blocks would exceed
+        ``max_memory_bytes``.
 
     Advantages
     ----------
-    - Both subsets follow the joint distribution of features and labels as closely as a subset of that size can -- an optimal version of what a random split only achieves on average.
+    - Both subsets follow the joint feature-and-label distribution as closely as a subset of
+      that size can: an optimal version of what a random split achieves only on average.
     - Far less variance between seeds than a random split, so one split is representative.
     - Handles mixed continuous and categorical labels through Helmert coding.
     - Never builds an `n x n` matrix: memory grows with `n x k`.
 
     Pitfalls
     --------
-    - **An interpolation split.** Test records sit where the training data is densest, so scores are as optimistic as a good random split -- not a test of generalisation to new chemistry.
-    - With `use_labels=True` the split depends on `y`; set it to False for a label-blind split.
-    - Each fixed-point iteration costs `O(k · n · p)`; for large `n` and `k` this is the slowest splitter in the family.
-    - Standardisation gives every column equal weight, so hundreds of noisy descriptors can drown out the labels; select descriptors first.
+    - **An interpolation split.** Test sits where training data is densest, so scores are as
+      optimistic as a good random split, not a test of new chemistry.
+    - With `use_labels=True` the split depends on `y`; `use_labels=False` keeps it
+      label-blind.
+    - Each fixed-point iteration costs `O(k * n * p)`, which makes this the slowest splitter in
+      the family at large `n` and `k`.
+    - Standardisation gives every column equal weight, so hundreds of noisy descriptors can
+      drown out the labels.
     - Results depend on BLAS-level floating point, so splits can differ across platforms.
 
     References
@@ -1770,11 +2102,19 @@ class SupportPointsSplitter(BaseSplitter):
             raise ParameterError(f"use_labels must be a bool, got {use_labels!r}")
         if label_kind not in ("auto", "continuous", "categorical"):
             raise ParameterError(f"invalid label_kind: {label_kind!r}")
-        if isinstance(max_iter, bool) or not isinstance(max_iter, (int, np.integer)) or max_iter < 1:
+        if (
+            isinstance(max_iter, bool)
+            or not isinstance(max_iter, (int, np.integer))
+            or max_iter < 1
+        ):
             raise ParameterError(f"max_iter must be an int >= 1, got {max_iter!r}")
         if not (isinstance(tol, (int, float)) and tol > 0):
             raise ParameterError(f"tol must be > 0, got {tol!r}")
-        if isinstance(max_memory_bytes, bool) or not isinstance(max_memory_bytes, (int, np.integer)) or max_memory_bytes <= 0:
+        if (
+            isinstance(max_memory_bytes, bool)
+            or not isinstance(max_memory_bytes, (int, np.integer))
+            or max_memory_bytes <= 0
+        ):
             raise ParameterError(f"max_memory_bytes must be an int > 0, got {max_memory_bytes!r}")
 
     def _design_matrix(self, ctx: _Context) -> tuple[np.ndarray, int]:
@@ -1792,7 +2132,9 @@ class SupportPointsSplitter(BaseSplitter):
         sd = Z.std(axis=0, ddof=1) if Z.shape[0] > 1 else np.zeros(Z.shape[1])
         keep = sd > 0
         if not keep.any():
-            raise DegenerateGroupingError(f"{type(self).__name__}: every feature and label column is constant")
+            raise DegenerateGroupingError(
+                f"{type(self).__name__}: every feature and label column is constant"
+            )
         Z = (Z[:, keep] - Z[:, keep].mean(axis=0)) / sd[keep]
         return Z, n_label_cols
 
@@ -1806,7 +2148,9 @@ class SupportPointsSplitter(BaseSplitter):
                 "(c) raise max_memory_bytes."
             )
 
-    def _select(self, Z: np.ndarray, pool: list[int], k: int, ctx: _Context, stage: int) -> tuple[list[int], dict[str, Any]]:
+    def _select(
+        self, Z: np.ndarray, pool: list[int], k: int, ctx: _Context, stage: int
+    ) -> tuple[list[int], dict[str, Any]]:
         m = len(pool)
         if k <= 0:
             return [], {}
@@ -1816,7 +2160,9 @@ class SupportPointsSplitter(BaseSplitter):
         self._guard(n_points, m)
         sub = Z[np.asarray(pool, dtype=np.int64)]
         rng = seed_for(ctx.rng_seeds, "support_points.init", stage)
-        points, n_iter, converged, criterion = _support_points(sub, n_points, rng, self.max_iter, self.tol)
+        points, n_iter, converged, criterion = _support_points(
+            sub, n_points, rng, self.max_iter, self.tol
+        )
         D = cdist(points, sub)
         taken = np.zeros(m, dtype=bool)
         nearest: list[int] = []
@@ -1859,8 +2205,7 @@ class SupportPointsSplitter(BaseSplitter):
                 "used_label_columns": n_label_cols,
                 "test_selection": test_meta,
                 "valid_selection": valid_meta,
-                # The fixed-point update is a chain of BLAS matrix products; not bit-exact across
-                # BLAS builds.
+                # a chain of BLAS matrix products, so not bit-exact across BLAS builds
                 "nondeterministic_method": True,
                 "realised_sizes": {"train": len(train), "valid": len(valid), "test": len(test)},
             },
@@ -1869,34 +2214,41 @@ class SupportPointsSplitter(BaseSplitter):
         return [result]
 
 
-# -
-# DuplexSplitter
-# -
-
-
 class DuplexSplitter(_SimilarityBase):
     """DUPLEX: train, test and valid each grow as a maximally spread-out set, taking turns.
 
-    Train is seeded with the farthest-apart pair of records, test with the farthest-apart pair of
-    the rest, then valid likewise (ties -> lexicographically smallest pair). The partitions then
-    take turns adding the unassigned record farthest (by minimum distance) from their own members
-    -- ties -> smallest index -- and drop out of the rotation once they reach their size. Snee
-    described two sets; this generalises the rotation to three and to unequal sizes, so every size
-    is met exactly. Fully deterministic: no random draws.
+    Train is seeded with the farthest-apart pair, test with the farthest-apart pair of the
+    rest, then valid likewise, ties to the lexicographically smallest pair. The partitions take
+    turns adding the unassigned record farthest by minimum distance from their own members,
+    ties to the smallest index, and leave the rotation once full. Snee described two sets; the
+    rotation here generalises to three and to unequal sizes, so every size is met exactly.
+    Fully deterministic.
+
+    :param featurizer: featurizer alias or instance used to build the distance matrix.
+    :param metric: distance or similarity metric; see :mod:`chemsplit.metrics`.
+    :param max_memory_bytes: ceiling on the pairwise matrix. Exceeding it raises rather than
+        allocating.
+    :param kwargs: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ScalabilityError: at split time, if the pairwise matrix would exceed
+        ``max_memory_bytes``.
 
     Advantages
     ----------
-    - Every partition spans the whole data space, so test covers the same range as train -- unlike Kennard-Stone, which puts all the extremes in train.
-    - The alternation makes the partitions statistically similar in spread, which suits model validation in the sense Snee intended.
-    - Exact sizes and fully deterministic without a seed.
+    - Every partition spans the whole data space, so test covers the same range as train,
+      unlike Kennard-Stone, which puts the extremes in train.
+    - The alternation makes the partitions statistically similar in spread, which is the sense
+      in which Snee meant them to validate a model.
+    - Exact sizes, and deterministic without a seed.
     - `metadata["coverage_radius"]` reports how far any record is from each partition.
 
     Pitfalls
     --------
-    - **An interpolation split.** Test records are spread through the same space as train, so scores are optimistic for genuinely new chemistry.
-    - Seeding by the farthest pairs puts outliers into every partition first; clean the data before splitting.
-    - Builds the full `n x n` distance matrix, and each step is `O(n)`, so the whole split is `O(n²)`.
-    - Not a leakage-control split: near-duplicates can land in different partitions.
+    - **An interpolation split.** Test records are spread through the same space as train, so
+      scores are optimistic for genuinely new chemistry.
+    - Seeding by the farthest pairs puts outliers into every partition first.
+    - Builds the full `n x n` distance matrix, and each step is `O(n)`, so the whole split is
+      `O(n^2)`.
+    - Not a leakage control: near-duplicates can land in different partitions.
 
     References
     ----------
@@ -1917,7 +2269,9 @@ class DuplexSplitter(_SimilarityBase):
         max_memory_bytes: int = 2 * 1024**3,
         **kwargs: Any,
     ) -> None:
-        super().__init__(featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs)
+        super().__init__(
+            featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs
+        )
         self._validate_similarity_params()
 
     def _partition(self, ctx: _Context) -> list[SplitResult]:
@@ -1926,7 +2280,10 @@ class DuplexSplitter(_SimilarityBase):
         names = ("train", "test", "valid")
         targets = (ctx.sizes.n_train, ctx.sizes.n_test, ctx.sizes.n_valid)
         parts = _clustering.duplex_order(D, targets)
-        buckets = {name: np.sort(np.asarray(part, dtype=np.int64)) for name, part in zip(names, parts, strict=True)}
+        buckets = {
+            name: np.sort(np.asarray(part, dtype=np.int64))
+            for name, part in zip(names, parts, strict=True)
+        }
         coverage = {
             name: float(np.max(np.min(D[:, buckets[name]], axis=1)))
             for name in names
@@ -1942,7 +2299,9 @@ class DuplexSplitter(_SimilarityBase):
             params=self.get_params(),
             n_records=n,
             metadata={
-                "seed_pairs": {name: part[:2] for name, part in zip(names, parts, strict=True) if part},
+                "seed_pairs": {
+                    name: part[:2] for name, part in zip(names, parts, strict=True) if part
+                },
                 "coverage_radius": coverage,
                 "realised_sizes": {name: int(buckets[name].size) for name in names},
             },
@@ -1951,9 +2310,6 @@ class DuplexSplitter(_SimilarityBase):
         return [result]
 
 
-# -
-# DOptimalSplitter
-# -
 
 
 def _d_optimal_exchange(
@@ -2003,42 +2359,48 @@ def _d_optimal_exchange(
 class DOptimalSplitter(BaseSplitter):
     """D-optimal design: the training set is the subset that maximises ``det(XᵀX)``.
 
-    Features are standardised (constant columns dropped) and projected onto their leading
-    ``n_components`` principal components (signs fixed); the design matrix is those scores plus an
-    intercept column. Starting from a Kennard-Stone selection on the scores (or, with
-    ``init="random"``, a draw from the ``"d_optimal.init"`` stream), a modified Fedorov exchange
-    visits the design points in index order and swaps each one for the non-design record that most
-    increases the determinant -- ``Δ(i, j) = d(j) − d(i) − [d(i)·d(j) − d(i, j)²]`` with
-    ``d(a, b) = x_aᵀ (XᵀX)⁻¹ x_b``, ties to the smallest index -- until a full pass makes no swap.
-    A validation set, if requested, is the D-optimal subset of the remaining records; the rest is
-    test.
+    Features are standardised, constant columns dropped, and projected onto their leading
+    ``n_components`` sign-fixed principal components; the design matrix is those scores plus an
+    intercept. From a Kennard-Stone start on the scores, or a ``"d_optimal.init"`` draw, a
+    modified Fedorov exchange visits design points in index order and swaps each for the
+    non-design record that most increases the determinant --
+    ``Δ(i, j) = d(j) − d(i) − [d(i)·d(j) − d(i, j)²]`` with ``d(a, b) = x_aᵀ (XᵀX)⁻¹ x_b``,
+    ties to the smallest index -- until a pass makes no swap. A validation set is the D-optimal
+    subset of what remains; the rest is test.
 
-    :param featurizer: Feature representation. Defaults to ``"physchem"``: D-optimality is
-        defined on continuous design variables.
-    :param n_components: Principal components in the design matrix; ``None`` uses
-        ``min(10, n_train - 2, n_features)``. Defaults to ``None``.
-    :param init: Starting design, ``"kennard_stone"`` (deterministic) or ``"random"``. Defaults
-        to ``"kennard_stone"``.
-    :param ridge: Added to the diagonal of ``XᵀX`` so near-singular designs stay invertible.
-        Defaults to 1e-8.
-    :param max_passes: Maximum exchange passes over the design. Defaults to 100.
-    :param max_memory_bytes: Ceiling for the Kennard-Stone distance matrix. Defaults to 2 GiB.
-    :param base: See :class:`chemsplit.base.BaseSplitter`.
+    :param featurizer: feature representation. The default ``"physchem"`` suits D-optimality,
+        which is defined on continuous design variables.
+    :param n_components: principal components in the design matrix, or ``None`` for
+        ``min(10, n_train - 2, n_features)``.
+    :param init: starting design: the deterministic Kennard-Stone selection, or a random draw.
+    :param ridge: added to the diagonal of ``X'X`` so near-singular designs stay invertible.
+    :param max_passes: cap on exchange passes over the design.
+    :param max_memory_bytes: ceiling for the Kennard-Stone distance matrix.
+    :param base: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ParameterError: if ``n_components`` or ``max_passes`` is below 1, ``ridge`` is
+        negative, or ``init`` is unknown.
+    :raises ScalabilityError: at split time, if the distance matrix would exceed
+        ``max_memory_bytes``.
 
     Advantages
     ----------
-    - The training set gives the most precise estimates of a linear model's coefficients in the chosen descriptor space -- the classical optimal-design criterion.
+    - The training set gives the most precise estimates of a linear model's coefficients in the
+      chosen descriptor space, which is the classical optimal-design criterion.
     - Deterministic without a seed under the default Kennard-Stone start.
-    - `metadata["train_design"]["log_det"]` reports the achieved criterion, so designs can be compared.
+    - `metadata["train_design"]["log_det"]` reports the achieved criterion, so designs can be
+      compared.
     - Works on PCA scores, so it stays well-posed with many correlated descriptors.
 
     Pitfalls
     --------
-    - **Picks the edges of descriptor space.** D-optimal training sets concentrate on extreme records, so test holds the interior -- test scores can overestimate predictive power, as Gramatica and co-workers noted.
-    - Optimal for a linear model in the chosen components; a nonlinear model or different descriptors would want a different design.
+    - **Picks the edges of descriptor space.** Train concentrates on extreme records and test
+      holds the interior, so scores can overestimate predictive power, as Gramatica and
+      co-workers noted.
+    - Optimal for a linear model in the chosen components. A nonlinear model, or different
+      descriptors, would want a different design.
     - The exchange finds a local optimum, which depends on the starting design.
-    - Each pass costs `O(n_train · n · p²)`; large sets with many components are slow.
-    - Selection ignores `y`; label imbalance between train and test is not controlled.
+    - Each pass costs `O(n_train * n * p^2)`, so large sets with many components are slow.
+    - Selection ignores `y`, so label imbalance between train and test is not controlled.
 
     References
     ----------
@@ -2077,14 +2439,20 @@ class DOptimalSplitter(BaseSplitter):
         self.max_passes = max_passes
         self.max_memory_bytes = max_memory_bytes
         if n_components is not None and (
-            isinstance(n_components, bool) or not isinstance(n_components, (int, np.integer)) or n_components < 1
+            isinstance(n_components, bool)
+            or not isinstance(n_components, (int, np.integer))
+            or n_components < 1
         ):
             raise ParameterError(f"n_components must be None or an int >= 1, got {n_components!r}")
         if init not in ("kennard_stone", "random"):
             raise ParameterError(f"invalid init: {init!r}")
         if not (isinstance(ridge, (int, float)) and ridge >= 0):
             raise ParameterError(f"ridge must be >= 0, got {ridge!r}")
-        if isinstance(max_passes, bool) or not isinstance(max_passes, (int, np.integer)) or max_passes < 1:
+        if (
+            isinstance(max_passes, bool)
+            or not isinstance(max_passes, (int, np.integer))
+            or max_passes < 1
+        ):
             raise ParameterError(f"max_passes must be an int >= 1, got {max_passes!r}")
 
     def _design(self, ctx: _Context, n_select: int) -> np.ndarray:
@@ -2095,7 +2463,9 @@ class DOptimalSplitter(BaseSplitter):
         sd = X.std(axis=0)
         keep = sd > 0
         if not keep.any():
-            raise DegenerateGroupingError(f"{type(self).__name__}: every feature column is constant")
+            raise DegenerateGroupingError(
+                f"{type(self).__name__}: every feature column is constant"
+            )
         Xs = (X[:, keep] - X[:, keep].mean(axis=0)) / sd[keep]
         limit = min(Xs.shape[1], n_select - 2)
         p = self.n_components if self.n_components is not None else min(10, limit)
@@ -2108,7 +2478,9 @@ class DOptimalSplitter(BaseSplitter):
         scores = _fix_svd_signs(U[:, :p] * S[:p])
         return np.hstack([np.ones((ctx.n, 1)), scores])
 
-    def _select(self, X: np.ndarray, pool: list[int], k: int, ctx: _Context, stage: int) -> tuple[list[int], dict[str, Any]]:
+    def _select(
+        self, X: np.ndarray, pool: list[int], k: int, ctx: _Context, stage: int
+    ) -> tuple[list[int], dict[str, Any]]:
         if k <= 0:
             return [], {}
         if k >= len(pool):
@@ -2153,41 +2525,55 @@ class DOptimalSplitter(BaseSplitter):
         return [result]
 
 
-# -
-# MaxDissimilaritySplitter
-# -
-
-
 class MaxDissimilaritySplitter(_SimilarityBase):
     """Pushes train and test to opposite regions of chemical space.
 
+    :param seed_pair: start from the farthest-apart pair of records, or from a seeded random
+        pair.
+    :param grow: add each record to the partition whose seed it is nearest, or to the partition
+        whose current members it is nearest.
+    :param featurizer: featurizer alias or instance used to build the distance matrix.
+    :param metric: distance or similarity metric; see :mod:`chemsplit.metrics`.
+    :param max_memory_bytes: ceiling on the pairwise matrix. Exceeding it raises rather than
+        allocating.
+    :param kwargs: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ParameterError: if ``seed_pair`` or ``grow`` is unknown.
+    :raises ScalabilityError: at split time, if the pairwise matrix would exceed
+        ``max_memory_bytes``.
+
     Advantages
     ----------
-    - Produces a clean, reproducible large extrapolation -- exactly the right test for "can this model reach a region it's never seen?".
-    - Only two records are chosen by any rule; everything else follows deterministically, keeping the split easy to describe and audit.
-    - `metadata["min_cross_distance"]` quantifies how far apart the two sets actually ended up.
+    - Produces a clean, reproducible large extrapolation, which is the right test for whether a
+      model can reach a region it has never seen.
+    - Only two records are chosen by any rule, and everything else follows deterministically,
+      so the split is easy to describe and audit.
+    - `metadata["min_cross_distance"]` quantifies how far apart the two sets ended up.
 
     Pitfalls
     --------
-    - Deliberately worst-case -- it estimates performance on **one specific** extrapolation, not average prospective performance, so a single number here carries a very wide implicit confidence interval.
-    - The whole split hinges on two seed molecules, usually outliers -- one badly standardised salt can define the entire experiment.
-    - Test and train are contiguous regions, so the test set is chemically homogeneous with strongly correlated errors, and the effective sample size is far below `n_test`.
-    - Not a leakage constraint -- nothing bounds the minimum train-to-test distance except whatever geometry results. Read `min_cross_distance` before claiming novelty.
-    - `grow="nearest_to_set"` can chain and walk the test set back toward the train seed; `"nearest_to_seed"` keeps it compact -- the two give materially different splits.
-
+    - Deliberately worst-case: it estimates **one specific** extrapolation, not average
+      prospective performance, so a single number carries a very wide implicit interval.
+    - The whole split hinges on two seed molecules, usually outliers, so one badly standardised
+      salt can define the entire experiment.
+    - Test and train are contiguous regions, so the test set is chemically homogeneous with
+      strongly correlated errors, and its effective sample size is far below `n_test`.
+    - Not a leakage constraint: nothing bounds the minimum train-to-test distance beyond
+      whatever geometry results. `min_cross_distance` is the number to check.
+    - `grow="nearest_to_set"` can chain and walk the test set back toward the train seed, while
+      `"nearest_to_seed"` keeps it compact. The two give materially different splits.
 
     References
     ----------
-    .. [1] The two-seed grow-apart construction is a composition with no single published origin; the
-       diverse-selection root and the comparative evidence are:
-    .. [2] Kennard, R. W.; Stone, L. A. Computer Aided Design of Experiments. *Technometrics* **1969**,
-       11 (1), 137-148. https://doi.org/10.1080/00401706.1969.10490666
-    .. [3] Martin, T. M.; Harten, P.; Young, D. M. et al. Does Rational Selection of Training and Test Sets
-       Improve the Outcome of QSAR Modeling? *J. Chem. Inf. Model.* **2012**, 52 (10), 2570-2578.
-       https://doi.org/10.1021/ci300338w
+    .. [1] The two-seed grow-apart construction is a composition rather than a published
+       method. Its diverse-selection root is [2]; the comparative evidence is [3] and [4].
+    .. [2] Kennard, R. W.; Stone, L. A. Computer Aided Design of Experiments. *Technometrics*
+       **1969**, 11 (1), 137-148. https://doi.org/10.1080/00401706.1969.10490666
+    .. [3] Martin, T. M.; Harten, P.; Young, D. M. et al. Does Rational Selection of Training
+       and Test Sets Improve the Outcome of QSAR Modeling? *J. Chem. Inf. Model.* **2012**,
+       52 (10), 2570-2578. https://doi.org/10.1021/ci300338w
     .. [4] Tossou, P.; Wognum, C.; Craig, M.; Mary, H.; Noutahi, E. Real-World Molecular
-       Out-Of-Distribution: Specification and Investigation. *J. Chem. Inf. Model.* **2024**, 64 (3),
-       697-711. https://doi.org/10.1021/acs.jcim.3c01774
+       Out-Of-Distribution: Specification and Investigation. *J. Chem. Inf. Model.* **2024**,
+       64 (3), 697-711. https://doi.org/10.1021/acs.jcim.3c01774
     """
 
     splitter_id: ClassVar[str] = "max_dissimilarity"
@@ -2205,7 +2591,9 @@ class MaxDissimilaritySplitter(_SimilarityBase):
         max_memory_bytes: int = 2 * 1024**3,
         **kwargs: Any,
     ) -> None:
-        super().__init__(featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs)
+        super().__init__(
+            featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs
+        )
         self.seed_pair = seed_pair
         self.grow = grow
         self._validate_similarity_params()
@@ -2218,7 +2606,11 @@ class MaxDissimilaritySplitter(_SimilarityBase):
             iu = np.triu_indices(n, k=1)
             dvals = D[iu]
             max_d = dvals.max()
-            cand = [(int(iu[0][k]), int(iu[1][k])) for k in range(len(dvals)) if dvals[k] >= max_d - EPS]
+            cand = [
+                (int(iu[0][k]), int(iu[1][k]))
+                for k in range(len(dvals))
+                if dvals[k] >= max_d - EPS
+            ]
             a, b = min(cand)
             n_tied = len(cand)
         else:
@@ -2260,7 +2652,11 @@ class MaxDissimilaritySplitter(_SimilarityBase):
                 "seed_test": b,
                 "seed_distance": float(D[a, b]),
                 "n_tied_seed_pairs": n_tied,
-                "min_cross_distance": float(min(D[t, tr] for t in test for tr in train)) if train and test else float("nan"),
+                "min_cross_distance": (
+                    float(min(D[t, tr] for t in test for tr in train))
+                    if train and test
+                    else float("nan")
+                ),
                 "realised_sizes": {"train": len(train), "valid": len(valid), "test": len(test)},
             },
         )
@@ -2268,37 +2664,48 @@ class MaxDissimilaritySplitter(_SimilarityBase):
         return [result]
 
 
-# -
-# PerimeterSplitter
-# -
-
-
 class PerimeterSplitter(_SimilarityBase):
     """Holds out the outskirts of the distribution; trains on the dense core.
 
+    :param pair_rule: how peripherality is turned into a partition: repeatedly take the
+        farthest-apart remaining pair, or rank every record by an outlier score.
+    :param featurizer: featurizer alias or instance used to build the distance matrix.
+    :param metric: distance or similarity metric; see :mod:`chemsplit.metrics`.
+    :param max_memory_bytes: ceiling on the pairwise matrix. Exceeding it raises rather than
+        allocating.
+    :param kwargs: forwarded to :class:`chemsplit.base.BaseSplitter`.
+    :raises ParameterError: if ``pair_rule`` is unknown.
+    :raises ScalabilityError: at split time, if the pairwise matrix would exceed
+        ``max_memory_bytes``.
+
     Advantages
     ----------
-    - Directly tests the applicability-domain edge -- the held-out molecules are the ones a deployed model would be least confident about, exactly where failures cost money.
-    - Completely deterministic, with no seed and no free parameter beyond the metric -- unusually easy to reproduce and describe.
-    - The training set stays dense and representative, so training stays stable even though evaluation is hard.
+    - Tests the applicability-domain edge directly: the held-out molecules are the ones a
+      deployed model would be least confident about.
+    - Deterministic, with no seed and no free parameter beyond the metric.
+    - The training set stays dense and representative, so training is stable even though
+      evaluation is hard.
 
     Pitfalls
     --------
-    - The test set is enriched in oddities -- fragments, salts, dyes, very large or small molecules, standardisation failures. A poor score may reflect data quality rather than model quality -- inspect `test` before trusting the number.
+    - Test is enriched in oddities -- fragments, salts, dyes, extreme sizes, standardisation
+      failures -- so a poor score can be a data-quality result rather than a model one.
     - Error bars run large, since the test set is heterogeneous and small in effective size.
-    - `greedy_pairs` is `O(n²)` in memory for the pair sort and doesn't scale past a few tens of thousands of records.
-    - Not a chemical-novelty guarantee -- an outlier can still sit near a training molecule if that's its only near neighbour. Check with `audit.nn_similarity_profile`.
-    - Because peripherality is defined by mean distance, the split partly encodes molecular size and fingerprint density.
-
+    - `greedy_pairs` needs `O(n^2)` memory for the pair sort, so it does not scale past a few
+      tens of thousands of records.
+    - Not a chemical-novelty guarantee: an outlier can still sit near a training molecule if
+      that is its only near neighbour. `audit.nn_similarity_profile` shows whether it does.
+    - Peripherality is defined by mean distance, so the split partly encodes molecular size and
+      fingerprint density.
 
     References
     ----------
-    .. [1] Szántai-Kis, C.; Kövesdi, I.; Kéri, G.; Örfi, L. Validation Subset Selections for Extrapolation
-       Oriented QSPAR Models. *Mol. Divers.* **2003**, 7 (1), 37-43.
+    .. [1] Szántai-Kis, C.; Kövesdi, I.; Kéri, G.; Örfi, L. Validation Subset Selections for
+       Extrapolation Oriented QSPAR Models. *Mol. Divers.* **2003**, 7 (1), 37-43.
        https://doi.org/10.1023/B:MODI.0000006538.99122.00
     .. [2] Tossou, P.; Wognum, C.; Craig, M.; Mary, H.; Noutahi, E. Real-World Molecular
-       Out-Of-Distribution: Specification and Investigation. *J. Chem. Inf. Model.* **2024**, 64 (3),
-       697-711. https://doi.org/10.1021/acs.jcim.3c01774
+       Out-Of-Distribution: Specification and Investigation. *J. Chem. Inf. Model.* **2024**,
+       64 (3), 697-711. https://doi.org/10.1021/acs.jcim.3c01774
     """
 
     splitter_id: ClassVar[str] = "perimeter"
@@ -2315,7 +2722,9 @@ class PerimeterSplitter(_SimilarityBase):
         max_memory_bytes: int = 2 * 1024**3,
         **kwargs: Any,
     ) -> None:
-        super().__init__(featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs)
+        super().__init__(
+            featurizer=featurizer, metric=metric, max_memory_bytes=max_memory_bytes, **kwargs
+        )
         self.pair_rule = pair_rule
         self._validate_similarity_params()
 
@@ -2334,7 +2743,9 @@ class PerimeterSplitter(_SimilarityBase):
         else:
             iu = np.triu_indices(n, k=1)
             dvals = D[iu]
-            pair_order = sorted(range(len(dvals)), key=lambda k: (-dvals[k], int(iu[0][k]), int(iu[1][k])))
+            pair_order = sorted(
+                range(len(dvals)), key=lambda k: (-dvals[k], int(iu[0][k]), int(iu[1][k]))
+            )
             test: list[int] = []
             assigned: set[int] = set()
             n_pairs_used = 0
@@ -2359,7 +2770,11 @@ class PerimeterSplitter(_SimilarityBase):
         test_set = set(test)
         rest = [i for i in range(n) if i not in test_set]
         n_valid = ctx.sizes.n_valid
-        valid = stable_sort(rest, key=lambda i: outlier_score[i], desc=True)[:n_valid] if n_valid else []
+        valid = (
+            stable_sort(rest, key=lambda i: outlier_score[i], desc=True)[:n_valid]
+            if n_valid
+            else []
+        )
         train = [i for i in rest if i not in set(valid)]
         result = SplitResult(
             train=np.sort(np.asarray(train, dtype=np.int64)),
@@ -2375,8 +2790,12 @@ class PerimeterSplitter(_SimilarityBase):
                 "n_pairs_used": n_pairs_used,
                 "odd_pair_trim": odd_trim,
                 "fallback_filled": fallback_filled,
-                "test_mean_outlier_score": float(np.mean(outlier_score[test])) if test else float("nan"),
-                "train_mean_outlier_score": float(np.mean(outlier_score[train])) if train else float("nan"),
+                "test_mean_outlier_score": (
+                    float(np.mean(outlier_score[test])) if test else float("nan")
+                ),
+                "train_mean_outlier_score": (
+                    float(np.mean(outlier_score[train])) if train else float("nan")
+                ),
                 "realised_sizes": {"train": len(train), "valid": len(valid), "test": len(test)},
             },
         )
@@ -2384,33 +2803,59 @@ class PerimeterSplitter(_SimilarityBase):
         return [result]
 
 
-# -
-# LeaveOneClusterOutSplitter
-# -
-
-
 class LeaveOneClusterOutSplitter(GroupSplitter):
     """Each cluster (from a caller-supplied ``clusterer``) takes a turn as the test fold.
 
+    :param clusterer: supplies the grouping, as a group-forming
+        :class:`~chemsplit.base.GroupSplitter` or a registry id resolved at split time.
+        ``None`` means Butina at a 0.35 ECFP4/Tanimoto cutoff.
+    :param min_cluster_size: clusters smaller than this are handled by
+        ``small_cluster_policy``.
+    :param small_cluster_policy: fold undersized clusters into train, let each be its own fold
+        anyway, or pool them into one fold.
+    :param max_folds: cap on the number of folds, or ``None`` for one per cluster. Capping
+        leaves some clusters untested.
+    :param fold_order: visit clusters largest-first, smallest-first, or by cluster id.
+    :param kwargs: forwarded to :class:`chemsplit.base.GroupSplitter`.
+    :raises ParameterError: if ``clusterer`` is not ``None``, a string or a
+        :class:`GroupSplitter`, a size parameter is below 1, or a mode parameter is unknown.
+    :raises DegenerateGroupingError: at split time, if the clusterer yields a single cluster,
+        leaving nothing to hold out.
+
+    Notes
+    -----
+    A string ``clusterer`` is instantiated with a seed derived from this splitter's own
+    ``random_state`` (``purpose="leave_one_cluster_out.clusterer"``), so the grouping stays
+    reproducible; an instance keeps whatever ``random_state`` the caller gave it.
+
     Advantages
     ----------
-    - Yields a **per-cluster error distribution** instead of one number -- you learn which regions of chemical space the model fails in, not just that it fails.
-    - Every record is tested exactly once (when `max_folds` is `None` and no small-cluster pooling happens), so the aggregate is an honest whole-dataset estimate under cluster-level extrapolation.
-    - Composes with every scaffold/similarity/embedding grouping, so the same protocol answers "generalise across scaffolds?", "across Butina clusters?", "across UMAP regions?".
+    - Yields a **per-cluster error distribution** instead of one number, so it shows which
+      regions of chemical space the model fails in rather than only that it fails.
+    - With `max_folds=None` and no small-cluster pooling, every record is tested exactly
+      once, so the aggregate is a whole-dataset estimate.
+    - Composes with every scaffold, similarity and embedding grouping, so one protocol covers
+      generalisation across scaffolds, across Butina clusters and across UMAP regions.
+    - Takes the grouping as a registry id, so a leave-one-group-out protocol is one string away
+      -- `clusterer="source"` -- with no splitter class to import.
 
     Pitfalls
     --------
-    - Cluster sizes are uneven, so per-fold scores come from wildly different sample sizes -- a macro-average over folds and a micro-average over records can disagree sharply. Report both, and report `cluster_size` alongside every fold score.
-    - Many small clusters make the fold count explode and the run expensive; `max_folds` caps it, but then some clusters are never tested, biasing the aggregate.
-    - Training-set size varies across folds, so fold-to-fold differences partly measure training-set size rather than chemical difficulty.
-    - A single-cluster test fold with 3 records can't support ROC-AUC or a meaningful R² -- the splitter warns but can't stop the caller from computing them anyway.
-
+    - Uneven cluster sizes make per-fold scores come from very different samples, so a
+      macro-average can disagree sharply with a micro-average. `cluster_size` accompanies
+      every fold.
+    - Many small clusters make the fold count explode and the run expensive. `max_folds` caps
+      it, at the cost of leaving some clusters untested and biasing the aggregate.
+    - Training-set size varies across folds, so fold-to-fold differences partly measure
+      training-set size rather than chemical difficulty.
+    - A three-record test fold cannot support ROC-AUC or a meaningful R². The splitter warns,
+      but the metric is the caller's to compute.
 
     References
     ----------
-    .. [1] Kramer, C.; Gedeck, P. Leave-Cluster-Out Cross-Validation Is Appropriate for Scoring Functions
-       Derived from Diverse Protein Data Sets. *J. Chem. Inf. Model.* **2010**, 50 (11), 1961-1969.
-       https://doi.org/10.1021/ci100264e
+    .. [1] Kramer, C.; Gedeck, P. Leave-Cluster-Out Cross-Validation Is Appropriate for
+       Scoring Functions Derived from Diverse Protein Data Sets. *J. Chem. Inf. Model.*
+       **2010**, 50 (11), 1961-1969. https://doi.org/10.1021/ci100264e
     """
 
     splitter_id: ClassVar[str] = "leave_one_cluster_out"
@@ -2422,7 +2867,7 @@ class LeaveOneClusterOutSplitter(GroupSplitter):
     def __init__(
         self,
         *,
-        clusterer: GroupSplitter | None = None,
+        clusterer: str | GroupSplitter | None = None,
         min_cluster_size: int = 1,
         small_cluster_policy: Literal["merge_into_train", "own_fold", "pool"] = "merge_into_train",
         max_folds: int | None = 50,
@@ -2430,22 +2875,28 @@ class LeaveOneClusterOutSplitter(GroupSplitter):
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
-        if isinstance(clusterer, str):
-            raise ParameterError(
-                "clusterer must be an instantiated GroupSplitter -- string-based registry lookup "
-                "('butina') is not available until chemsplit.registry lands"
-            )
+        check_group_splitter_design(clusterer, "clusterer", owner=type(self).__name__)
         self.clusterer = clusterer
         self.min_cluster_size = min_cluster_size
         self.small_cluster_policy = small_cluster_policy
         self.max_folds = max_folds
         self.fold_order = fold_order
         if self.n_splits != 1:
-            raise ConfigurationError("n_splits is derived from the cluster count and must not be set")
+            raise ConfigurationError(
+                "n_splits is derived from the cluster count and must not be set"
+            )
 
     def _group_labels(self, ctx: _Context) -> IndexArray:
-        if self.clusterer is not None:
-            return self.clusterer._group_labels(ctx)
+        clusterer = resolve_group_splitter(
+            self.clusterer,
+            "clusterer",
+            owner=type(self).__name__,
+            random_state=int(
+                seed_for(ctx.rng_seeds, "leave_one_cluster_out.clusterer", 0).integers(0, 2**31 - 1)
+            ),
+        )
+        if clusterer is not None:
+            return clusterer._group_labels(ctx)
         D = compute_distance_matrix(ctx, "ecfp4", "tanimoto", 2 * 1024**3, type(self).__name__, 1)
         clusters = _clustering.butina(D, 0.35, reorder=False)
         labels = np.empty(ctx.n, dtype=np.int64)
@@ -2455,10 +2906,11 @@ class LeaveOneClusterOutSplitter(GroupSplitter):
         return dense_label_encode(labels.tolist())
 
     def get_n_splits(self, X: Any = None, y: Any = None, groups: Any = None) -> int:
-        """The real fold count depends on the data (cluster count after ``small_cluster_policy``
-        and ``max_folds``), so this can only be computed exactly when ``X`` is supplied -- matching
-        every other data-dependent ``n_splits`` in the library (e.g. ``GroupKFoldSplitter``'s
-        ``n_splits="auto"``). Without ``X``, ``1`` is a documented lower-bound placeholder."""
+        """Report how many splits will be yielded.
+
+        :param X: ignored, as are ``y`` and ``groups``; the signature is sklearn\'s.
+        :return: the fold count, which is only known once the clusters are formed.
+        """
         if X is None:
             return 1
         labels = self.compute_groups(X, y)
@@ -2477,7 +2929,9 @@ class LeaveOneClusterOutSplitter(GroupSplitter):
         for i in range(n):
             members.setdefault(int(labels[i]), []).append(i)
         if len(members) == 1:
-            raise DegenerateGroupingError(f"{type(self).__name__}: clusterer produced a single cluster")
+            raise DegenerateGroupingError(
+                f"{type(self).__name__}: clusterer produced a single cluster"
+            )
         small = [g for g, m in members.items() if len(m) < self.min_cluster_size]
         pooled: list[int] = []
         eligible = dict(members)
@@ -2549,11 +3003,6 @@ class LeaveOneClusterOutSplitter(GroupSplitter):
         return results
 
 
-# -
-# BalancedMultiTaskSplitter
-# -
-
-
 class BalancedMultiTaskSplitter(GroupSplitter):
     """Balanced multi-task cluster assignment: assigns whole clusters to folds so
     every task gets an acceptable train/test ratio and label balance.
@@ -2563,27 +3012,68 @@ class BalancedMultiTaskSplitter(GroupSplitter):
     architectures across problem sizes. The ``solver`` parameter accepts
     ``"auto"``/``"milp"``/``"heuristic"``.
 
+    :param clusterer: supplies the grouping, as a group-forming
+        :class:`~chemsplit.base.GroupSplitter` or a registry id resolved at split time.
+        ``None`` means Butina at a 0.35 ECFP4/Tanimoto cutoff.
+    :param clusterer_kwargs: constructor kwargs for a string ``clusterer``. Passing them
+        alongside an already-built ``clusterer`` raises
+        :class:`~chemsplit.exceptions.ConfigurationError` rather than being ignored.
+    :param task_weights: per-task weights on the balance objective, or ``None`` for equal
+        weights.
+    :param balance: balance record counts per task only, or record counts and active counts.
+    :param tolerance: how far a task's realised ratio may sit from its target.
+    :param solver: ``"milp"`` for the exact formulation, ``"heuristic"`` for local search, or
+        ``"auto"`` to dispatch on problem size.
+    :param time_limit_s: wall-clock limit on the solve.
+    :param mip_gap: relative optimality gap at which the MILP backend stops.
+    :param on_infeasible: raise when the requested balance cannot be met, or retry with
+        progressively looser tolerances.
+    :param relax_steps: the tolerances tried in turn by ``on_infeasible="relax"``.
+    :param kwargs: forwarded to :class:`chemsplit.base.GroupSplitter`.
+    :raises ParameterError: if a numeric parameter is out of range, or ``balance``, ``solver``
+        or ``on_infeasible`` is unknown.
+    :raises ConfigurationError: if ``clusterer_kwargs`` accompanies a ``clusterer`` instance.
+    :raises ConstraintUnsatisfiableError: at split time, if the balance cannot be met and
+        ``on_infeasible="raise"``.
+
+    Notes
+    -----
+    A string ``clusterer`` is instantiated with a seed derived from this splitter's own
+    ``random_state`` (``purpose="balanced_multi_task.clusterer"``) unless ``clusterer_kwargs``
+    sets ``random_state`` itself, so the grouping stays reproducible; an instance keeps whatever
+    ``random_state`` the caller gave it.
+
     Advantages
     ----------
-    - The practical answer to sparse multi-task matrices, where naive cluster splitting can leave some targets with zero test actives and undefined metrics.
-    - Balance is a *constraint*, not a hope -- if the requested balance is impossible, the splitter says so and names the binding task instead of silently producing a useless fold.
-    - `per_task_fold_counts` gives a complete audit of what every task got -- exactly the table reviewers ask for.
-    - Works with any clusterer, cleanly separating the chemical criterion from the balancing.
+    - The practical answer to sparse multi-task matrices, where naive cluster splitting can
+      leave some targets with zero test actives and undefined metrics.
+    - Balance is a *constraint*, not a hope: when the requested balance is impossible the
+      splitter says so and names the binding task instead of producing a useless fold.
+    - `per_task_fold_counts` audits what every task got.
+    - Works with any clusterer, instance or registry id, configured through
+      `clusterer_kwargs`, which keeps the chemical criterion separate from the balancing.
 
     Pitfalls
     --------
-    - Infeasibility is common on real sparse matrices -- a task with three actives in one cluster simply can't be balanced. `on_infeasible="relax"` is the pragmatic escape, but a relaxed tolerance means the balance requested isn't the balance achieved; read `metadata["tolerance_used"]`.
-    - Solve time grows quickly with cluster count, and every backend is wall-clock time-limited by `time_limit_s` (default 300 s), so a solve that hits the limit depends on machine speed rather than on the data alone.
-    - `solver="auto"` dispatches purely on problem size -- exact branch-and-bound for tiny problems, local search above that -- so a dataset crossing the threshold is balanced by a different algorithm; read `metadata["solver"]`. The heuristic backends always report `solver_status="time_limit_feasible"` whether or not the limit bit, so only branch-and-bound and MILP can say the assignment was proven optimal.
-    - Balancing on label statistics chooses the split partly using the labels, a mild form of information leakage into the experimental design -- usually the lesser evil versus undefined metrics, but it should be disclosed.
-
+    - Infeasibility is common: a task with three actives in one cluster cannot be balanced.
+      `on_infeasible="relax"` proceeds, but then the balance achieved is not the one
+      requested, and `metadata["tolerance_used"]` says which held.
+    - Solve time grows quickly with cluster count, and every backend stops at `time_limit_s`,
+      so a solve that hits the limit depends on machine speed too.
+    - `solver="auto"` dispatches on problem size alone -- branch-and-bound for tiny problems,
+      local search above -- so crossing the threshold changes algorithm, recorded in
+      `metadata["solver"]`. The heuristics always report
+      `solver_status="time_limit_feasible"`, so only branch-and-bound and MILP prove
+      optimality.
+    - Balancing on label statistics chooses the split partly from the labels, a mild leak
+      into the design, and usually the lesser evil against undefined metrics.
 
     References
     ----------
-    .. [1] Tricarico, G. A.; Hofmans, J.; Lenselink, E. B.; López-Ramos, M.; Dréanic, M.-P.; Stouten, P. F. W.
-       Construction of Balanced, Chemically Dissimilar Training, Validation and Test Sets for Machine
-       Learning on Molecular Datasets. *ChemRxiv* preprint, **2024** (not peer reviewed).
-       https://doi.org/10.26434/chemrxiv-2022-m8l33-v3
+    .. [1] Tricarico, G. A.; Hofmans, J.; Lenselink, E. B.; López-Ramos, M.; Dréanic, M.-P.;
+       Stouten, P. F. W. Construction of Balanced, Chemically Dissimilar Training, Validation
+       and Test Sets for Machine Learning on Molecular Datasets. *ChemRxiv* preprint, **2024**
+       (not peer reviewed). https://doi.org/10.26434/chemrxiv-2022-m8l33-v3
     .. [2] The cluster-to-fold assignment here is solved by chemsplit's own optimizer
        (:mod:`chemsplit._optimize`), not by the formulation used in that work.
     """
@@ -2599,7 +3089,7 @@ class BalancedMultiTaskSplitter(GroupSplitter):
     def __init__(
         self,
         *,
-        clusterer: GroupSplitter | None = None,
+        clusterer: str | GroupSplitter | None = None,
         clusterer_kwargs: dict | None = None,
         task_weights: list[float] | None = None,
         balance: Literal["counts", "counts_and_actives"] = "counts_and_actives",
@@ -2612,11 +3102,13 @@ class BalancedMultiTaskSplitter(GroupSplitter):
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
-        if isinstance(clusterer, str):
-            raise ParameterError(
-                "clusterer must be an instantiated GroupSplitter -- string-based registry lookup "
-                "is not available until chemsplit.registry lands"
-            )
+        check_group_splitter_design(
+            clusterer,
+            "clusterer",
+            owner=type(self).__name__,
+            design_kwargs=clusterer_kwargs,
+            design_kwargs_name="clusterer_kwargs",
+        )
         self.clusterer = clusterer
         self.clusterer_kwargs = clusterer_kwargs
         self.task_weights = task_weights
@@ -2635,8 +3127,17 @@ class BalancedMultiTaskSplitter(GroupSplitter):
             raise LabelError(f"{type(self).__name__} requires a 2-D (n, n_tasks) label matrix")
 
     def _group_labels(self, ctx: _Context) -> IndexArray:
-        if self.clusterer is not None:
-            return self.clusterer._group_labels(ctx)
+        clusterer = resolve_group_splitter(
+            self.clusterer,
+            "clusterer",
+            owner=type(self).__name__,
+            design_kwargs=self.clusterer_kwargs,
+            random_state=int(
+                seed_for(ctx.rng_seeds, "balanced_multi_task.clusterer", 0).integers(0, 2**31 - 1)
+            ),
+        )
+        if clusterer is not None:
+            return clusterer._group_labels(ctx)
         D = compute_distance_matrix(ctx, "ecfp4", "tanimoto", 2 * 1024**3, type(self).__name__, 1)
         clusters = _clustering.butina(D, 0.35, reorder=False)
         labels = np.empty(ctx.n, dtype=np.int64)
@@ -2655,7 +3156,11 @@ class BalancedMultiTaskSplitter(GroupSplitter):
         n_tasks = y.shape[1]
         item_size = np.bincount(labels, minlength=n_clusters).astype(np.int64)
         item_task_counts = np.zeros((n_clusters, n_tasks), dtype=np.float64)
-        item_task_actives = np.zeros((n_clusters, n_tasks), dtype=np.float64) if self.balance == "counts_and_actives" else None
+        item_task_actives = (
+            np.zeros((n_clusters, n_tasks), dtype=np.float64)
+            if self.balance == "counts_and_actives"
+            else None
+        )
         for c in range(n_clusters):
             rows = y[labels == c]
             mask = ~np.isnan(rows)
@@ -2663,15 +3168,26 @@ class BalancedMultiTaskSplitter(GroupSplitter):
             if item_task_actives is not None:
                 item_task_actives[c] = np.nansum(np.where(mask, rows, 0.0), axis=0)
 
-        buckets = [("train", ctx.sizes.n_train), ("valid", ctx.sizes.n_valid), ("test", ctx.sizes.n_test)]
+        buckets = [
+            ("train", ctx.sizes.n_train),
+            ("valid", ctx.sizes.n_valid),
+            ("test", ctx.sizes.n_test),
+        ]
         active_buckets = [(name, cap) for name, cap in buckets if cap > 0]
         n_buckets = len(active_buckets)
         bucket_target = np.asarray([cap for _, cap in active_buckets], dtype=np.float64)
 
-        task_weight = np.ones(n_tasks) if self.task_weights is None else np.asarray(self.task_weights, dtype=np.float64)
+        task_weight = (
+            np.ones(n_tasks)
+            if self.task_weights is None
+            else np.asarray(self.task_weights, dtype=np.float64)
+        )
 
         tolerance = self.tolerance
-        architecture = "auto" if self.solver == "auto" else ("milp" if self.solver == "milp" else "local_search")
+        if self.solver == "auto":
+            architecture = "auto"
+        else:
+            architecture = "milp" if self.solver == "milp" else "local_search"
         rng = seed_for(ctx.rng_seeds, "balanced_multi_task.solver", 0)
         attempts = [tolerance] + (list(self.relax_steps) if self.on_infeasible == "relax" else [])
         solution = None
@@ -2688,7 +3204,13 @@ class BalancedMultiTaskSplitter(GroupSplitter):
                 task_weight=task_weight,
                 task_tolerance=t,
             )
-            solution = solve_balance(problem, rng=rng, time_limit_s=self.time_limit_s, architecture=architecture, mip_gap=self.mip_gap)
+            solution = solve_balance(
+                problem,
+                rng=rng,
+                time_limit_s=self.time_limit_s,
+                architecture=architecture,
+                mip_gap=self.mip_gap,
+            )
             used_tolerance = t
             if solution.solver_status != "infeasible":
                 break
@@ -2726,7 +3248,13 @@ class BalancedMultiTaskSplitter(GroupSplitter):
             for t in range(n_tasks)
         ]
         per_task_fold_actives = (
-            [[float(item_task_actives[solution.assignment == b, t].sum()) for b in range(n_buckets)] for t in range(n_tasks)]
+            [
+                [
+                    float(item_task_actives[solution.assignment == b, t].sum())
+                    for b in range(n_buckets)
+                ]
+                for t in range(n_tasks)
+            ]
             if item_task_actives is not None
             else None
         )

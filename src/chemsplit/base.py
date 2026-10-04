@@ -1,8 +1,8 @@
-"""Core types and the splitter API: ``SplitResult``, ``BaseSplitter``, ``GroupSplitter``, plus the
-canonical group-to-partition routine (``assign_groups``) and its k-fold-over-groups variant.
+"""Core types and the splitter API: ``SplitResult``, ``BaseSplitter``, ``GroupSplitter``, and
+the shared group-to-partition routines.
 
-Splitter ids are the snake_case form of the class name (e.g. ``"butina"``), validated by
-invariant I5.
+A splitter id is the snake_case form of its class name, e.g. ``"butina"``, which
+``SplitResult`` validates on construction.
 """
 
 from __future__ import annotations
@@ -40,10 +40,12 @@ __all__ = [
     "SplitResult",
     "BaseSplitter",
     "GroupSplitter",
+    "check_group_splitter_design",
+    "resolve_group_splitter",
     "resolve_sizes",
 ]
 
-#: The fixed 9-name family enum used for splitter ids.
+#: The nine family names splitter ids are grouped under.
 FAMILY_NAMES: frozenset[str] = frozenset(
     {
         "baseline",
@@ -62,18 +64,15 @@ _SPLITTER_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 class Strictness(str, __import__("enum").Enum):
-    """Ordinal metadata describing expected train-to-test distance. Descriptive only -- it
-    never affects computation."""
+    """Ordinal metadata describing expected train-to-test distance.
+
+    Descriptive only; it never affects computation.
+    """
 
     OPTIMISTIC = "optimistic"
     MODERATE = "moderate"
     STRICT = "strict"
     EXTRAPOLATIVE = "extrapolative"
-
-
-# -
-# Run-length index encoding
-# -
 
 
 def _encode_index_array(arr: IndexArray) -> list[int | list[int]]:
@@ -108,20 +107,19 @@ def _decode_index_array(encoded: list[int | list[int]]) -> IndexArray:
 
 
 def _canonicalize_params(value: Any) -> Any:
-    """Recursively coerce a ``get_params()`` value tree into JSON-native shapes (I4): tuples ->
-    lists, numpy scalars -> native ``int``/``float``. Many splitters have ``tuple[int, int]``
-    constructor parameters (e.g. ``auto_range``); JSON has no tuple type, so
-    ``SplitResult.params`` must be canonicalized once here rather than every splitter author
-    remembering to avoid tuples.
+    """Coerce a ``get_params()`` value tree into JSON-native shapes.
 
-    ``SplitResult.params`` is meant to be "JSON-serialisable, fully resolved" -- it is an audit
-    record, not a reconstruction mechanism (``get_params()``/``clone()`` serve that role
-    separately, and are left untouched by this function). So a constructor argument that
-    json.dumps cannot represent natively (a live :class:`~chemsplit.featurizers.Featurizer`
-    instance passed instead of its string alias, a callable ``embedding=`` function, an array) is
-    stringified rather than left to fail I4 -- e.g. ``"<function...>"``/``"<Featurizer...>"`` is
-    still useful provenance, and silently raising for every splitter with a non-trivial parameter
-    type would make I4 impractical to satisfy.
+    Tuples become lists and numpy scalars native ``int``/``float``, so splitters with
+    ``tuple[int, int]`` parameters need not avoid tuples by hand.
+
+    ``SplitResult.params`` is an audit record, not a reconstruction mechanism --
+    ``get_params()`` and ``clone()`` serve that and are untouched here -- so a value
+    json.dumps cannot represent, such as a live
+    :class:`~chemsplit.featurizers.Featurizer`, a callable ``embedding=`` or an array, is
+    stringified. ``"<function...>"`` is still useful provenance.
+
+    :param value: any node of a parameter value tree.
+    :return: the same tree with every node replaced by a JSON-native equivalent.
     """
     if isinstance(value, (type(None), bool, int, float, str)):
         return value
@@ -144,15 +142,30 @@ def _canonicalize_params(value: Any) -> Any:
     return value
 
 
-# -
-# SplitResult
-# -
-
-
 @dataclasses.dataclass(frozen=True, slots=True)
 class SplitResult:
     """One ``(train, test)`` -- or ``(train, valid, test)`` -- outcome of a splitter, plus full
-    provenance."""
+    provenance.
+
+    Every partition is a sorted, strictly ascending int64 index array into the records passed to
+    the splitter, and the four of them together cover ``range(n_records)`` exactly once.
+
+    :param train: indices of the training records.
+    :param test: indices of the test records.
+    :param valid: indices of the validation records; empty when no validation set was asked for.
+    :param discard: indices the splitter deliberately dropped, e.g. records straddling a
+        boundary or belonging to a fold other than this one.
+    :param groups: dense ``0..n_groups-1`` group label per record, in order of first appearance,
+        or ``None`` for splitters that form no groups.
+    :param splitter_id: snake_case id of the splitter that produced this result.
+    :param params: the producing splitter's fully resolved ``get_params()``, canonicalized to
+        JSON-native values.
+    :param n_records: number of records the split was computed over.
+    :param metadata: splitter-specific diagnostics, always including ``"realised_sizes"``.
+    :raises InvariantError: if the partitions are malformed, miss or repeat a record, carry
+        non-canonical group labels, hold params that do not round-trip through JSON, or name a
+        non-snake_case ``splitter_id``.
+    """
 
     train: IndexArray
     test: IndexArray
@@ -165,15 +178,9 @@ class SplitResult:
     metadata: dict[str, Any]
 
     def __post_init__(self) -> None:
-        # Canonicalize params AND metadata (tuples -> lists, numpy scalars -> native) before I4
-        # checks params for JSON round-trip and before to_json() serializes both -- universal
-        # regardless of which code path constructed this SplitResult (frozen dataclass, so this
-        # is the one place that can normalize every construction site). metadata isn't covered by
-        # invariant I4 itself (only params is), but to_json() serializes metadata raw, so a
-        # splitter that puts a numpy scalar (e.g. a float32 threshold) into metadata would
-        # otherwise crash to_json() with "Object of type float32 is not JSON serializable" --
-        # canonicalizing it here, at construction, catches that at the source rather than at
-        # serialization time.
+        # Frozen dataclass, so this is the only hook every construction site passes through.
+        # metadata is canonicalized too: only params is checked below, but to_json() writes
+        # both, and a float32 there would fail at serialisation instead of here.
         object.__setattr__(self, "params", _canonicalize_params(self.params))
         object.__setattr__(self, "metadata", _canonicalize_params(self.metadata))
         self._check_index_arrays()
@@ -182,9 +189,12 @@ class SplitResult:
         self._check_params_json()
         self._check_splitter_id()
 
-    # invariants
-
     def _fail(self, message: str) -> None:
+        """Raise :class:`InvariantError` with this result's provenance attached.
+
+        :param message: what went wrong.
+        :raises InvariantError: always.
+        """
         raise InvariantError(
             message,
             splitter_id=self.splitter_id,
@@ -255,15 +265,26 @@ class SplitResult:
                 f"{_SPLITTER_ID_RE.pattern!r}"
             )
 
-    # accessors
-
     def as_tuple(self) -> tuple[IndexArray, IndexArray]:
+        """Return the sklearn-shaped pair.
+
+        :return: ``(train, test)``.
+        """
         return self.train, self.test
 
     def as_triple(self) -> tuple[IndexArray, IndexArray, IndexArray]:
+        """Return all three model-fitting partitions.
+
+        :return: ``(train, valid, test)``.
+        """
         return self.train, self.valid, self.test
 
     def to_frame(self) -> pd.DataFrame:
+        """Flatten the split into one row per record.
+
+        :return: a frame indexed 0..n-1 with columns ``index``, ``partition`` and ``group``
+            (``None`` throughout when the splitter formed no groups).
+        """
         rows: list[tuple[int, str, int | None]] = []
         groups = self.groups
         for partition_name in ("train", "valid", "test", "discard"):
@@ -273,6 +294,10 @@ class SplitResult:
         return frame.sort_values("index").reset_index(drop=True)
 
     def to_json(self) -> str:
+        """Serialise the result, with index arrays run-length encoded.
+
+        :return: a compact, key-sorted JSON string tagged ``schema="chemsplit/split/1"``.
+        """
         payload = {
             "schema": "chemsplit/split/1",
             "splitter_id": self.splitter_id,
@@ -289,6 +314,12 @@ class SplitResult:
 
     @classmethod
     def from_json(cls, s: str) -> SplitResult:
+        """Rebuild a result from :meth:`to_json` output.
+
+        :param s: a JSON string produced by :meth:`to_json`.
+        :raises InvariantError: if the payload does not satisfy the usual checks.
+        :return: the reconstructed :class:`SplitResult`.
+        """
         payload = json.loads(s)
         groups = payload["groups"]
         return cls(
@@ -304,11 +335,6 @@ class SplitResult:
         )
 
 
-# -
-# resolve_sizes
-# -
-
-
 @dataclasses.dataclass(frozen=True, slots=True)
 class _ResolvedSizes:
     n_train: int
@@ -320,7 +346,14 @@ _UNSET = object()
 
 
 def _resolve_one(value: Any, n: int, field_name: str) -> Any:
-    """Resolve a single ``*_size`` value to ``_UNSET``, an int count, or a rounded fraction of ``n``."""
+    """Resolve one ``*_size`` value to ``_UNSET``, an int count, or a rounded fraction of ``n``.
+
+    :param value: ``None``, an int count, or a float fraction in ``[0, 1]``.
+    :param n: number of records.
+    :param field_name: parameter name, used in error messages.
+    :raises ParameterError: if ``value`` is a bool, an out-of-range number, or another type.
+    :return: ``_UNSET`` for ``None``, otherwise a record count.
+    """
     if value is None:
         return _UNSET
     if isinstance(value, bool):
@@ -350,9 +383,16 @@ def resolve_sizes(
 ) -> _ResolvedSizes:
     """Resolve ``train_size``/``valid_size``/``test_size`` into concrete record counts.
 
-    Note: an integer size of ``0`` is rejected (the int branch requires ``1 <= value <= n``).
-    Callers wanting an explicitly-empty partition should pass ``0.0`` or ``None``, not the int
-    ``0``.
+    At most one of the three may be left unset, in which case it absorbs the remainder. An
+    integer ``0`` is rejected; pass ``0.0`` or ``None`` for a deliberately empty partition.
+
+    :param n: number of records.
+    :param train_size: int count, float fraction, or ``None`` to infer.
+    :param valid_size: int count, float fraction, or ``None`` to infer.
+    :param test_size: int count, float fraction, or ``None`` to infer.
+    :raises ParameterError: if the sizes are ambiguous, exceed ``n``, or resolve to an empty
+        train or test partition.
+    :return: the resolved ``n_train``/``n_valid``/``n_test`` counts.
     """
     resolved = {
         "train": _resolve_one(train_size, n, "train_size"),
@@ -400,11 +440,6 @@ def resolve_sizes(
     return _ResolvedSizes(n_train=count_tr, n_valid=count_va, n_test=count_te)
 
 
-# -
-# _Context
-# -
-
-
 @dataclasses.dataclass(frozen=True, slots=True)
 class _Context:
     n: int
@@ -427,12 +462,15 @@ class _Context:
     )
 
     def get_features(self, featurizer: Any = None) -> Any:
-        """Memoised featurization: cached on
-        ``(id(mols), featurizer.name, sorted(featurizer.get_params().items()))`` within one
-        ``_run`` call. Takes an already-constructed ``Featurizer`` instance -- this module does not
-        import ``chemsplit.featurizers`` itself, keeping core infra decoupled from it. If ``X`` was
-        already a feature matrix, ``featurizer`` may be omitted (or is ignored) and
-        :attr:`raw_features` is returned directly.
+        """Featurize the context's molecules, memoised for the lifetime of one ``_run`` call.
+
+        Takes an already-constructed featurizer rather than an alias, so that this module need
+        not import :mod:`chemsplit.featurizers`.
+
+        :param featurizer: a ``Featurizer`` instance; optional, and ignored, when ``X`` was
+            already a feature matrix, in which case :attr:`raw_features` is returned directly.
+        :raises ValueError: if ``X`` was not a feature matrix and no featurizer was given.
+        :return: the feature matrix.
         """
         if self.raw_features is not None:
             return self.raw_features
@@ -448,12 +486,27 @@ class _Context:
         return self._feature_cache[key]
 
 
-# -
-# BaseSplitter
-# -
-
-
 class BaseSplitter(sklearn.base.BaseEstimator, abc.ABC):
+    """Base class for every splitter: parameter handling, preprocessing and the sklearn API.
+
+    Subclasses declare their identity through the class attributes above and implement
+    :meth:`_partition`. These constructor parameters are accepted by every splitter in the
+    library and are forwarded up from each subclass's ``**kwargs``.
+
+    :param n_splits: number of splits to yield. Splitters that produce a single holdout ignore
+        anything but ``1``; CV splitters accept an int, and some also ``"auto"`` or ``"loo"``.
+    :param train_size: training partition size, as an int count or a float fraction of ``n``.
+        ``None`` means "whatever is left over".
+    :param valid_size: validation partition size, same forms as ``train_size``.
+    :param test_size: test partition size, same forms as ``train_size``.
+    :param random_state: seed for every stochastic choice. An int reproduces, ``None`` draws
+        OS entropy, and a ``numpy.random.Generator`` leaves the split unreproducible from
+        ``params`` alone.
+    :param n_jobs: worker count for parallelisable internals. Results do not depend on it.
+    :param verbose: verbosity level; ``0`` is silent.
+    :raises ParameterError: if any size spec, ``n_splits`` or ``n_jobs`` is invalid.
+    """
+
     splitter_id: ClassVar[str]
     family: ClassVar[str]
     strictness: ClassVar[Strictness]
@@ -489,23 +542,14 @@ class BaseSplitter(sklearn.base.BaseEstimator, abc.ABC):
 
     @classmethod
     def _get_param_names(cls) -> list[str]:
-        """Collect constructor parameter names across the FULL MRO, not just ``cls.__init__``.
+        """Collect constructor parameter names across the whole MRO, not just ``cls.__init__``.
 
-        Every splitter's ``__init__`` in this codebase is ``def __init__(self, *, <own params>,
-        **base)``, forwarding ``**base`` up to ``BaseSplitter.__init__`` (and, for
-        ``GroupSplitter`` subclasses, through an intermediate ``size_tolerance``/
-        ``group_assignment`` layer too). ``sklearn.base.BaseEstimator``'s default
-        ``_get_param_names`` only introspects ``cls.__init__``'s own signature -- it does not know
-        the ``**base`` kwarg is absorbed by a parent ``__init__`` -- so it silently drops every
-        inherited parameter (``train_size``, ``test_size``, ``random_state``,...). That breaks
-        both real sklearn compatibility (``clone()``, ``GridSearchCV(cv=...)``) and
-        ``SplitResult``'s I4 invariant, since a caller who only sees ``{"shuffle": True}``
-        cannot reconstruct the estimator, and a raw ``random_state=Generator`` slipping through
-        undetected elsewhere is exactly the kind of gap this is meant to close.
+        Splitters forward ``**base`` upwards, and sklearn's ``_get_param_names`` introspects
+        only ``cls.__init__``, so it drops every inherited parameter and breaks ``clone()``.
+        Every class defining its own ``__init__`` is walked, so mixins such as
+        ``SimilarityParamsMixin`` contribute their parameters too.
 
-        Walk ``cls.__mro__`` and, for every class that defines its own ``__init__`` (i.e.
-        ``"__init__" in klass.__dict__``, so mixins like ``SimilarityParamsMixin`` are included
-        too), collect every parameter that is not ``self``, ``*args``, or ``**kwargs``.
+        :return: the sorted parameter names, excluding ``self``, ``*args`` and ``**kwargs``.
         """
         names: set[str] = set()
         for klass in cls.__mro__:
@@ -522,20 +566,21 @@ class BaseSplitter(sklearn.base.BaseEstimator, abc.ABC):
 
     @staticmethod
     def _sanitize_params(raw: dict[str, Any]) -> dict[str, Any]:
-        """Coerce a ``get_params()`` dict into the JSON-serialisable, round-trip-safe form
-        ``SplitResult``'s I4 invariant requires.
+        """Coerce a ``get_params()`` dict into the round-trip-safe form ``params`` needs.
 
-        Thin wrapper around the module-level :func:`_canonicalize_params` (which
-        ``SplitResult.__post_init__`` already applies to ``params`` unconditionally, so calling
-        this explicitly before constructing a ``SplitResult`` is optional belt-and-suspenders, not
-        required) -- kept as a distinct method, rather than merged away, only so existing call
-        sites that reference ``self._sanitize_params(...)`` don't need touching. New splitter code
-        should generally just pass raw ``get_params()`` output straight into ``SplitResult`` and
-        rely on ``__post_init__``'s automatic canonicalization instead of calling this explicitly.
+        Thin wrapper around :func:`_canonicalize_params`. ``SplitResult.__post_init__`` applies
+        the same thing unconditionally, so calling this first is optional.
+
+        :param raw: a ``get_params()`` dict.
+        :return: the same mapping with JSON-native values.
         """
         return {k: _canonicalize_params(v) for k, v in raw.items()}
 
     def _validate_base_params(self) -> None:
+        """Check the parameters shared by every splitter.
+
+        :raises ParameterError: if ``n_splits``, a size spec or ``n_jobs`` is invalid.
+        """
         if isinstance(self.n_splits, bool) or not isinstance(self.n_splits, (int, np.integer)):
             if self.n_splits not in ("auto", "loo"):  # subclasses may special-case these
                 raise ParameterError(f"n_splits must be a positive int, got {self.n_splits!r}")
@@ -554,11 +599,22 @@ class BaseSplitter(sklearn.base.BaseEstimator, abc.ABC):
         if isinstance(self.n_jobs, bool) or not isinstance(self.n_jobs, (int, np.integer)):
             raise ParameterError(f"n_jobs must be an int, got {self.n_jobs!r}")
 
-    # public API
-
     def split(
         self, X: Any, y: Any = None, groups: Any = None, **kw: Any
     ) -> Iterator[tuple[IndexArray, IndexArray]]:
+        """Yield ``(train, test)`` index pairs, as sklearn cross-validators do.
+
+        :param X: the records: SMILES strings, RDKit molecules, a feature matrix, sequences or
+            interaction tuples, depending on the splitter's ``accepts``.
+        :param y: labels, required by splitters with ``requires_labels``.
+        :param groups: precomputed group labels, for splitters that consume rather than form
+            them.
+        :param kw: per-call extras such as ``X_kind``, ``dates``, ``targets``, ``sequences``,
+            ``standardize``, ``on_parse_error`` and ``on_duplicates``.
+        :raises ConfigurationError: if ``valid_size`` is non-empty, since those records have
+            nowhere to go in a two-way contract.
+        :return: an iterator over ``(train_indices, test_indices)``.
+        """
         if self._resolved_valid_size_nonzero():
             raise ConfigurationError(
                 "split() cannot be used when valid_size is non-empty -- records assigned to "
@@ -571,18 +627,49 @@ class BaseSplitter(sklearn.base.BaseEstimator, abc.ABC):
     def split_with_validation(
         self, X: Any, y: Any = None, groups: Any = None, **kw: Any
     ) -> Iterator[tuple[IndexArray, IndexArray, IndexArray]]:
+        """Yield ``(train, valid, test)`` index triples.
+
+        :param X: the records, as for :meth:`split`.
+        :param y: labels, if the splitter needs them.
+        :param groups: precomputed group labels.
+        :param kw: per-call extras, as for :meth:`split`.
+        :return: an iterator over ``(train_indices, valid_indices, test_indices)``.
+        """
         for result in self._run(X, y, groups, **kw):
             yield result.as_triple()
 
-    def split_result(self, X: Any, y: Any = None, groups: Any = None, **kw: Any) -> list[SplitResult]:
+    def split_result(
+        self, X: Any, y: Any = None, groups: Any = None, **kw: Any
+    ) -> list[SplitResult]:
+        """Split, keeping the discard pile, group labels, params and metadata.
+
+        :param X: the records, as for :meth:`split`.
+        :param y: labels, if the splitter needs them.
+        :param groups: precomputed group labels.
+        :param kw: per-call extras, as for :meth:`split`.
+        :return: one :class:`SplitResult` per split, in fold order.
+        """
         return self._run(X, y, groups, **kw)
 
     def get_n_splits(self, X: Any = None, y: Any = None, groups: Any = None) -> int:
+        """Report how many splits will be yielded, for sklearn's cross-validator protocol.
+
+        :param X: ignored, as are ``y`` and ``groups``; the signature is sklearn\'s.
+        :return: ``n_splits`` when it is an int, else ``1``.
+        """
         if isinstance(self.n_splits, (int, np.integer)) and not isinstance(self.n_splits, bool):
             return int(self.n_splits)
         return 1
 
     def compute_groups(self, X: Any, y: Any = None, **kw: Any) -> IndexArray:
+        """Expose the group labels without performing a split.
+
+        :param X: the records, as for :meth:`split`.
+        :param y: labels, if the splitter needs them.
+        :param kw: per-call extras, as for :meth:`split`.
+        :raises NotImplementedError: on splitters that form no groups.
+        :return: one dense group label per record.
+        """
         if not self.group_forming:
             raise NotImplementedError(
                 f"{type(self).__name__} is not group-forming; compute_groups() is only "
@@ -591,14 +678,16 @@ class BaseSplitter(sklearn.base.BaseEstimator, abc.ABC):
         raise NotImplementedError  # overridden by GroupSplitter
 
     def _resolved_valid_size_nonzero(self) -> bool:
+        """Report whether ``valid_size`` asks for a non-empty validation partition.
+
+        :return: ``True`` when records would be routed to ``valid``.
+        """
         vs = self.valid_size
         if vs is None:
             return False
         if isinstance(vs, bool):
             return False
         return bool(vs)
-
-    # template method
 
     def _run(self, X: Any, y: Any, groups: Any, **kw: Any) -> list[SplitResult]:
         from chemsplit import preprocess  # local import: avoids a hard import-time coupling
@@ -656,14 +745,9 @@ class BaseSplitter(sklearn.base.BaseEstimator, abc.ABC):
                 "resolved_seed": bundle.resolved_seed,
                 "forced_discard": pipeline_result.forced_discard,
                 "dedup_group_labels": pipeline_result.dedup_group_labels,
-                # Minimal, additive core-infra gap-fill (documented, not a design deviation): the
-                # "interactions" input kind (Sequence[tuple[compound_key, target_key]]) is
-                # correctly *detected* by preprocess.detect_input_kind but has no dedicated
-                # parsing/standardisation path in run_pipeline (mols/smiles stay None for it, by
-                # design -- interaction records identify entities by opaque key, not by molecule).
-                # Splitters that accept "interactions" need the raw tuples themselves, which
-                # nothing else on _Context otherwise carries; stash them here rather than adding a
-                # new _Context field, to keep this a one-line, backward-compatible addition.
+                # Interaction records name entities by key, not by molecule, so run_pipeline
+                # leaves mols/smiles None for them and nothing else on _Context carries the
+                # tuples. Stash them here.
                 "raw_interactions": list(X) if x_kind == "interactions" else None,
             },
             raw_features=X if x_kind == "features" else None,
@@ -682,16 +766,20 @@ class BaseSplitter(sklearn.base.BaseEstimator, abc.ABC):
         return results
 
     def _check_preconditions(self, ctx: _Context) -> None:
-        """Splitter-specific precondition hook. No-op by default."""
+        """Splitter-specific precondition hook; no-op by default.
+
+        :param ctx: the prepared split context.
+        :raises ChemSplitError: in subclasses, if the inputs cannot support this splitter.
+        """
 
     @abc.abstractmethod
     def _partition(self, ctx: _Context) -> list[SplitResult]:
+        """Produce the splits. The one method every splitter must implement.
+
+        :param ctx: the prepared split context.
+        :return: one :class:`SplitResult` per split.
+        """
         raise NotImplementedError
-
-
-# -
-# GroupSplitter and the canonical assign_groups routine
-# -
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -706,12 +794,18 @@ def assign_groups(
     mode: Literal["greedy_desc", "balanced", "random"],
     rng: np.random.Generator,
 ) -> dict[str, IndexArray]:
-    """The canonical group -> partition assignment routine, implemented once and shared
-    by every group-forming splitter.
+    """Assign whole groups to partitions. Shared by every group-forming splitter.
 
-    ``labels`` is a dense ``0..g-1`` int64 array (one label per record still under consideration --
-    callers must remove any ``forced_discard`` records from ``labels``/their own bookkeeping
-    *before* calling this function; this routine never discards).
+    Groups are visited largest-first, or in seeded random order, and each goes to the partition
+    with the most room, so no group is ever split.
+
+    :param labels: dense ``0..g-1`` label per record. Callers must drop their ``forced_discard``
+        records beforehand, since this routine never discards.
+    :param sizes: the target record counts.
+    :param mode: ``"greedy_desc"`` fills the emptiest partition, ``"balanced"`` minimises
+        relative overflow, ``"random"`` shuffles the visit order.
+    :param rng: generator used by ``mode="random"``.
+    :return: a mapping from partition name to member indices, omitting zero-capacity partitions.
     """
     n = len(labels)
     members: dict[int, list[int]] = {}
@@ -759,8 +853,15 @@ def assign_groups_kfold(
     n_splits: int,
     rng: np.random.Generator,
 ) -> list[IndexArray]:
-    """distribute groups over ``n_splits`` buckets of near-equal size (deficit-first, same
-    tie rules as :func:`assign_groups`). Returns one IndexArray of member indices per fold."""
+    """Distribute whole groups over ``n_splits`` folds of near-equal size.
+
+    Deficit-first, with the same tie rules as :func:`assign_groups`.
+
+    :param labels: dense ``0..g-1`` label per record.
+    :param n_splits: number of folds.
+    :param rng: unused; the fold order is deterministic.
+    :return: one array of member indices per fold.
+    """
     n = len(labels)
     members: dict[int, list[int]] = {}
     for i in range(n):
@@ -782,6 +883,20 @@ def assign_groups_kfold(
 
 
 class GroupSplitter(BaseSplitter):
+    """Base class for splitters that form groups and assign them whole to partitions.
+
+    Subclasses implement :meth:`_group_labels` and inherit the rest: the group-to-partition
+    assignment, the k-fold-over-groups path, metadata and the size-tolerance check.
+
+    :param size_tolerance: drift from a target size, as a fraction of ``n``, that triggers
+        :class:`SizeToleranceWarning`. Whole-group assignment cannot hit an arbitrary ratio, so
+        some drift is normal.
+    :param group_assignment: how groups are handed to partitions; see :func:`assign_groups`.
+    :param kw: forwarded to :class:`BaseSplitter`.
+    :raises ParameterError: if ``size_tolerance`` is negative or ``group_assignment`` is
+        unknown.
+    """
+
     group_forming: ClassVar[bool] = True
 
     def __init__(
@@ -801,9 +916,21 @@ class GroupSplitter(BaseSplitter):
 
     @abc.abstractmethod
     def _group_labels(self, ctx: _Context) -> IndexArray:
+        """Compute the grouping. The one method a group splitter must implement.
+
+        :param ctx: the prepared split context.
+        :return: a dense ``0..g-1`` label per record, numbered by first appearance.
+        """
         raise NotImplementedError
 
     def compute_groups(self, X: Any, y: Any = None, **kw: Any) -> IndexArray:
+        """Compute the grouping without performing a split.
+
+        :param X: the records, as for :meth:`split`.
+        :param y: labels, if the splitter needs them.
+        :param kw: per-call extras, as for :meth:`split`.
+        :return: one dense group label per record, numbered by first appearance.
+        """
         from chemsplit import preprocess
 
         x_kind = preprocess.detect_input_kind(X, kw.get("X_kind"))
@@ -836,13 +963,15 @@ class GroupSplitter(BaseSplitter):
         return self._group_labels(ctx)
 
     def _group_metadata(self, ctx: _Context, labels: IndexArray) -> dict[str, Any]:
-        """Splitter-specific ``SplitResult.metadata`` contributions (e.g. ``n_clusters``,
-        ``cluster_sizes``, algorithm diagnostics).
+        """Splitter-specific metadata, e.g. ``n_clusters`` or algorithm diagnostics.
 
-        Called once per :meth:`_partition` with the FULL (pre-discard) group-label array
-        ``_group_labels`` returned. No-op by default; concrete splitters override. Merged under
-        ``extra_metadata`` -- do not use the keys ``"fold_index"``, ``"n_splits"``, or
-        ``"realised_sizes"``, which :meth:`_build_result`/the k-fold path already own.
+        Called once per :meth:`_partition`, before any record is discarded. The keys
+        ``"fold_index"``, ``"n_splits"`` and ``"realised_sizes"`` belong to
+        :meth:`_build_result` and the k-fold path.
+
+        :param ctx: the prepared split context.
+        :param labels: the full, pre-discard group labels.
+        :return: entries to merge into ``SplitResult.metadata``; empty by default.
         """
         return {}
 
@@ -914,6 +1043,11 @@ class GroupSplitter(BaseSplitter):
         return [result]
 
     def _rng_for_group_assignment(self, ctx: _Context) -> np.random.Generator:
+        """Draw the generator used for group-to-partition assignment.
+
+        :param ctx: the prepared split context.
+        :return: a generator from the ``"group.assign"`` stream.
+        """
         from chemsplit.determinism import seed_for
 
         return seed_for(ctx.rng_seeds, "group.assign", 0)
@@ -929,6 +1063,17 @@ class GroupSplitter(BaseSplitter):
         groups: IndexArray,
         extra_metadata: dict[str, Any],
     ) -> SplitResult:
+        """Assemble a :class:`SplitResult` with realised sizes recorded.
+
+        :param ctx: the prepared split context.
+        :param train: training indices.
+        :param valid: validation indices.
+        :param test: test indices.
+        :param discard: discarded indices.
+        :param groups: the group label per record.
+        :param extra_metadata: splitter-specific metadata to merge in.
+        :return: the validated result.
+        """
         metadata = {
             "realised_sizes": {
                 "train": int(train.size),
@@ -950,6 +1095,11 @@ class GroupSplitter(BaseSplitter):
         )
 
     def _check_size_tolerance(self, result: SplitResult, ctx: _Context) -> None:
+        """Warn when a realised partition size drifts past ``size_tolerance``.
+
+        :param result: the result to check.
+        :param ctx: the prepared split context, holding the targets.
+        """
         from chemsplit.exceptions import SizeToleranceWarning, warn_with_details
 
         targets = {
@@ -975,3 +1125,83 @@ class GroupSplitter(BaseSplitter):
                         },
                     )
                 )
+
+
+def check_group_splitter_design(
+    design: Any,
+    param_name: str,
+    *,
+    owner: str,
+    design_kwargs: Any = None,
+    design_kwargs_name: str = "",
+) -> None:
+    """Validate a ``clusterer=``-style parameter without touching the registry.
+
+    Called from ``__init__``, so a wrong type fails at construction. Whether a registry id
+    exists, and is group-forming, is only settled when :func:`resolve_group_splitter` resolves
+    it at split time, since resolving needs :mod:`chemsplit.registry`, which imports every
+    splitter module in turn.
+
+    :param design: the value passed for ``param_name``.
+    :param param_name: the parameter's name, for error messages.
+    :param owner: the owning class name, for error messages.
+    :param design_kwargs: kwargs intended for a string-resolved splitter, if any.
+    :param design_kwargs_name: that parameter's name, for error messages.
+    :raises ParameterError: if ``design`` is neither ``None``, a string, nor a
+        :class:`GroupSplitter`.
+    :raises ConfigurationError: if kwargs are supplied alongside an already-built instance.
+    """
+    if design is not None and not isinstance(design, (str, GroupSplitter)):
+        raise ParameterError(
+            f"{owner}: {param_name} must be None, a registry id/class-name string "
+            f"(e.g. 'butina'), or a group-forming GroupSplitter instance; got "
+            f"{type(design).__name__}"
+        )
+    if design_kwargs is not None and not isinstance(design, str):
+        raise ConfigurationError(
+            f"{owner}: {design_kwargs_name} only applies when {param_name} is a string to "
+            f"instantiate; pass an already-configured splitter instead"
+        )
+
+
+def resolve_group_splitter(
+    design: str | GroupSplitter | None,
+    param_name: str,
+    *,
+    owner: str,
+    design_kwargs: dict[str, Any] | None = None,
+    random_state: int | None = None,
+) -> GroupSplitter | None:
+    """Resolve ``design`` to a group-forming splitter, or ``None`` for "use my own default".
+
+    An instance passes through unchanged; a string goes through
+    :func:`chemsplit.registry.get_splitter`. Resolving at split time rather than in ``__init__``
+    keeps ``get_params()`` reporting the string the caller passed, and keeps splitter modules
+    from importing the registry.
+
+    :param design: ``None``, a registry id, or a :class:`GroupSplitter` instance.
+    :param param_name: the parameter's name, for error messages.
+    :param owner: the owning class name, for error messages.
+    :param design_kwargs: kwargs for a string-resolved splitter.
+    :param random_state: seed for a string-resolved splitter, needed because ``get_splitter``
+        otherwise draws OS entropy. Ignored for an instance, or if ``design_kwargs`` seeds it.
+    :raises ParameterError: if ``design`` resolves to something that is not group-forming.
+    :return: the resolved splitter, or ``None``.
+    """
+    if design is None:
+        return None
+    if isinstance(design, str):
+        from chemsplit.registry import get_splitter  # local: avoids a module-scope import cycle
+
+        kwargs = dict(design_kwargs or {})
+        if random_state is not None:
+            kwargs.setdefault("random_state", random_state)
+        resolved = get_splitter(design, **kwargs)
+    else:
+        resolved = design
+    if not isinstance(resolved, GroupSplitter) or not resolved.group_forming:
+        raise ParameterError(
+            f"{owner}: {param_name}={design!r} resolves to {type(resolved).__name__}, which is "
+            f"not group-forming and so cannot supply cluster labels"
+        )
+    return resolved
