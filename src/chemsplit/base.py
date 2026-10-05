@@ -1183,8 +1183,10 @@ def resolve_group_splitter(
     :param param_name: the parameter's name, for error messages.
     :param owner: the owning class name, for error messages.
     :param design_kwargs: kwargs for a string-resolved splitter.
-    :param random_state: seed for a string-resolved splitter, needed because ``get_splitter``
-        otherwise draws OS entropy. Ignored for an instance, or if ``design_kwargs`` seeds it.
+    :param random_state: seed for a string-resolved splitter. Not applied to an instance, nor
+        when ``design_kwargs`` sets one. Note that a caller invoking the resolved splitter's
+        ``_group_labels(ctx)`` seeds it from ``ctx`` regardless, so this only matters for a
+        splitter that reads its own ``random_state``.
     :raises ParameterError: if ``design`` resolves to something that is not group-forming.
     :return: the resolved splitter, or ``None``.
     """

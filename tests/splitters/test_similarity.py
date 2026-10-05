@@ -894,6 +894,23 @@ class TestLeaveOneClusterOutSplitter:
         assert resolved is clusterer
         assert resolved.random_state == 7
 
+    def test_owner_seed_drives_the_grouping_not_the_clusterer_seed(self):
+        """A clusterer used as a grouping source draws from the seed bundle it is handed, which
+        is the owner's, so its own random_state does not reach the grouping. Pinning this: the
+        alternative -- an inner seed quietly overriding the top-level one -- would break
+        reproducing a whole split from one random_state."""
+        smiles = make_scaffold_families(n_scaffolds=6, per_scaffold=8, seed=0).smiles
+
+        def groups(clusterer, owner_seed):
+            splitter = LeaveOneClusterOutSplitter(clusterer=clusterer, random_state=owner_seed)
+            return splitter.compute_groups(smiles).tolist()
+
+        baseline = groups("sphere_exclusion", 1)
+        for own_seed in (7, 999, None):
+            assert groups(SphereExclusionSplitter(random_state=own_seed), 1) == baseline
+
+        assert groups(SphereExclusionSplitter(random_state=7), 2) != baseline
+
     def test_string_clusterer_keeps_the_string_in_params(self):
         splitter = LeaveOneClusterOutSplitter(clusterer="butina")
         assert splitter.get_params()["clusterer"] == "butina"

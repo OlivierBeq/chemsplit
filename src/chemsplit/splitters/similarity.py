@@ -2824,9 +2824,12 @@ class LeaveOneClusterOutSplitter(GroupSplitter):
 
     Notes
     -----
-    A string ``clusterer`` is instantiated with a seed derived from this splitter's own
-    ``random_state`` (``purpose="leave_one_cluster_out.clusterer"``), so the grouping stays
-    reproducible; an instance keeps whatever ``random_state`` the caller gave it.
+    The grouping is driven by this splitter's own ``random_state``, whichever form
+    ``clusterer`` takes: a clusterer used as a grouping source draws from the seed bundle it is
+    handed, which is this splitter's. A clusterer instance's own ``random_state`` is therefore
+    not consulted here, unlike when that instance is used as a splitter in its own right. A
+    string is additionally instantiated with a seed derived from
+    ``purpose="leave_one_cluster_out.clusterer"``.
 
     Advantages
     ----------
@@ -3038,10 +3041,12 @@ class BalancedMultiTaskSplitter(GroupSplitter):
 
     Notes
     -----
-    A string ``clusterer`` is instantiated with a seed derived from this splitter's own
-    ``random_state`` (``purpose="balanced_multi_task.clusterer"``) unless ``clusterer_kwargs``
-    sets ``random_state`` itself, so the grouping stays reproducible; an instance keeps whatever
-    ``random_state`` the caller gave it.
+    The grouping is driven by this splitter's own ``random_state``, whichever form
+    ``clusterer`` takes: a clusterer used as a grouping source draws from the seed bundle it is
+    handed, which is this splitter's. A clusterer instance's own ``random_state`` is therefore
+    not consulted here, unlike when that instance is used as a splitter in its own right. A
+    string is additionally instantiated with a seed derived from
+    ``purpose="balanced_multi_task.clusterer"``, unless ``clusterer_kwargs`` sets one.
 
     Advantages
     ----------
