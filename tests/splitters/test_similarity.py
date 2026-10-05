@@ -7,6 +7,7 @@ import json
 import numpy as np
 import pytest
 
+from chemsplit.base import resolve_group_splitter
 from chemsplit.datasets import make_scaffold_families
 from chemsplit.exceptions import (
     ConfigurationError,
@@ -871,10 +872,9 @@ class TestLeaveOneClusterOutSplitter:
         assert folds[0] == folds[1] == folds[2]
 
     def test_string_clusterer_is_seeded_from_the_owner(self):
-        """A string-resolved clusterer must inherit a seed derived from this splitter's own
-        random_state. A bare get_splitter() would default to random_state=None (OS entropy), so
-        the grouping would not be reproducible at all -- the SphereExclusionSplitter instance
-        below shows exactly that failure mode."""
+        """A string-resolved clusterer is instantiated with a seed derived from this splitter's
+        own random_state, so the grouping is reproducible under that seed and moves with it. A
+        bare get_splitter() would default to random_state=None, i.e. OS entropy."""
         smiles = make_scaffold_families(n_scaffolds=6, per_scaffold=8, seed=0).smiles
 
         def tests_of(seed):
@@ -884,13 +884,15 @@ class TestLeaveOneClusterOutSplitter:
         assert tests_of(1) == tests_of(1)
         assert tests_of(1) != tests_of(2)
 
-        def unseeded():
-            splitter = LeaveOneClusterOutSplitter(
-                clusterer=SphereExclusionSplitter(random_state=None)
-            )
-            return [r.test.tolist() for r in splitter.split_result(smiles)]
-
-        assert unseeded() != unseeded()
+    def test_clusterer_instance_passes_through_resolution_untouched(self):
+        """Only a string design is seeded from the owner. An instance is handed back as-is,
+        with its own random_state left alone."""
+        clusterer = SphereExclusionSplitter(random_state=7)
+        resolved = resolve_group_splitter(
+            clusterer, "clusterer", owner="LeaveOneClusterOutSplitter", random_state=123
+        )
+        assert resolved is clusterer
+        assert resolved.random_state == 7
 
     def test_string_clusterer_keeps_the_string_in_params(self):
         splitter = LeaveOneClusterOutSplitter(clusterer="butina")
