@@ -1297,7 +1297,6 @@ class AdversarialSplitter(SimilarityParamsMixin, BaseSplitter):
             seed = int(seed_for(ctx.rng_seeds, "adv.cv", it).integers(0, 2**31 - 1))
             clf = (
                 LogisticRegression(
-                    penalty="l2",
                     C=1.0,
                     solver="liblinear",
                     max_iter=1000,

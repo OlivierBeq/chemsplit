@@ -991,6 +991,7 @@ class DensityClusterSplitter(_SimilarityGroupBase):
                 min_cluster_size=self.min_cluster_size,
                 min_samples=self.min_samples,
                 metric="precomputed",
+                copy=False,
             ).fit_predict(D)
         n = ctx.n
         noise = np.nonzero(labels == -1)[0]

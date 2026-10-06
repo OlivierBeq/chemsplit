@@ -131,7 +131,9 @@ class _ClusterCountMixin:
                 n_clusters=k, linkage="ward", metric="euclidean"
             ).fit_predict(Z)
         else:  # hdbscan
-            labels = HDBSCAN(min_cluster_size=max(2, Z.shape[0] // (2 * k))).fit_predict(Z)
+            labels = HDBSCAN(
+                min_cluster_size=max(2, Z.shape[0] // (2 * k)), copy=False
+            ).fit_predict(Z)
             noise = labels == -1
             if noise.any():
                 next_id = int(labels.max()) + 1 if (labels != -1).any() else 0
@@ -567,8 +569,8 @@ class ProjectionSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitte
                 self.n_jobs,
             )
             mds = MDS(
-                n_components=self.n_components, dissimilarity="precomputed", random_state=seed,
-                normalized_stress="auto",
+                n_components=self.n_components, metric="precomputed", random_state=seed,
+                normalized_stress="auto", init="random",
             )
             Z = mds.fit_transform(D)
         else:  # kernel_pca
