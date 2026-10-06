@@ -65,6 +65,23 @@ def test_resolve_sizes_arithmetic_invariants_and_determinism(design):
 
 
 @pytest.mark.core
+@given(
+    st.integers(min_value=200, max_value=10**6),
+    st.integers(min_value=1, max_value=98),
+    st.integers(min_value=1, max_value=98),
+)
+@settings(deadline=None, max_examples=300)
+def test_resolve_sizes_accepts_any_fractions_that_fill_n(n, valid_pct, test_pct):
+    """Fractions summing to 1.0 always resolve, and to exactly n."""
+    if valid_pct + test_pct > 99:
+        return
+    valid_size, test_size = valid_pct / 100, test_pct / 100
+    train_size = 1.0 - valid_size - test_size
+    sizes = resolve_sizes(n, train_size, valid_size, test_size)
+    assert sizes.n_train + sizes.n_valid + sizes.n_test == n
+
+
+@pytest.mark.core
 @given(st.floats(min_value=0, max_value=1e6, allow_nan=False, allow_infinity=False))
 def test_floor_round_matches_its_own_definition(x):
     """floor_round is exactly floor(x + 0.5)."""

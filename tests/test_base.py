@@ -154,6 +154,32 @@ def test_resolve_sizes_leftover_goes_to_train():
     assert r.n_train == 6  # 5 + leftover(1)
 
 
+@pytest.mark.parametrize("n", [20717, 7, 11, 1009, 123457])
+def test_resolve_sizes_fractions_filling_n_never_exceed_it(n):
+    """Fractions summing to 1.0 round up one by one and used to overshoot n."""
+    r = resolve_sizes(n, 0.8, 0.1, 0.1)
+    assert r.n_train + r.n_valid + r.n_test == n
+    assert r.n_train >= 1 and r.n_test >= 1
+
+
+def test_resolve_sizes_rounding_overshoot_comes_off_train_first():
+    # 16574/2072/2072 == 20718; train gives the record back, as it would absorb a residual.
+    r = resolve_sizes(20717, 0.8, 0.1, 0.1)
+    assert (r.n_train, r.n_valid, r.n_test) == (16573, 2072, 2072)
+
+
+def test_resolve_sizes_rounding_overshoot_spares_explicit_int_counts():
+    # train is a spelled-out count, so valid gives the record back instead.
+    r = resolve_sizes(20717, 16574, None, 0.1)
+    assert (r.n_train, r.n_valid, r.n_test) == (16574, 2071, 2072)
+
+
+def test_resolve_sizes_overshoot_before_remainder_absorption():
+    # 0.5/0.5 of 7 rounds up to 4/4 before valid absorbs anything.
+    r = resolve_sizes(7, 0.5, None, 0.5)
+    assert (r.n_train, r.n_valid, r.n_test) == (3, 0, 4)
+
+
 def test_resolve_sizes_int_zero_rejected_per_pseudocode():
     with pytest.raises(ParameterError):
         resolve_sizes(10, 0, None, 5)

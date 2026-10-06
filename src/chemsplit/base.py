@@ -11,6 +11,7 @@ import abc
 import dataclasses
 import inspect
 import json
+import math
 import re
 from collections.abc import Iterator
 from typing import Any, ClassVar, Literal
@@ -344,18 +345,21 @@ class _ResolvedSizes:
 
 _UNSET = object()
 
+#: Relative slack when testing whether fractions fit ``n`` in exact arithmetic.
+_EXACT_SUM_TOLERANCE = 1e-9
 
-def _resolve_one(value: Any, n: int, field_name: str) -> Any:
+
+def _resolve_one(value: Any, n: int, field_name: str) -> tuple[Any, float]:
     """Resolve one ``*_size`` value to ``_UNSET``, an int count, or a rounded fraction of ``n``.
 
     :param value: ``None``, an int count, or a float fraction in ``[0, 1]``.
     :param n: number of records.
     :param field_name: parameter name, used in error messages.
     :raises ParameterError: if ``value`` is a bool, an out-of-range number, or another type.
-    :return: ``_UNSET`` for ``None``, otherwise a record count.
+    :return: the record count (``_UNSET`` for ``None``) and its unrounded request.
     """
     if value is None:
-        return _UNSET
+        return _UNSET, 0.0
     if isinstance(value, bool):
         raise ParameterError(f"{field_name}: bool is not a valid size spec, got {value!r}")
     if isinstance(value, (int, np.integer)):
@@ -363,16 +367,44 @@ def _resolve_one(value: Any, n: int, field_name: str) -> Any:
             raise ParameterError(
                 f"{field_name}: int size spec must satisfy 1 <= value <= n ({n}), got {value!r}"
             )
-        return int(value)
+        return int(value), float(value)
     if isinstance(value, (float, np.floating)):
         if not (0.0 <= value <= 1.0):
             raise ParameterError(
                 f"{field_name}: float size spec must satisfy 0.0 <= value <= 1.0, got {value!r}"
             )
         if value == 0.0:
-            return 0
-        return floor_round(value * n)
+            return 0, 0.0
+        return floor_round(value * n), float(value) * n
     raise ParameterError(f"{field_name}: invalid size spec {value!r} ({type(value).__name__})")
+
+
+def _shave_rounding_excess(
+    resolved: dict[str, Any],
+    exact: dict[str, float],
+    fractional: tuple[str, ...],
+    excess: int,
+) -> None:
+    """Give ``excess`` records back off fraction-derived counts, in place.
+
+    Train gives back first, as it also absorbs a positive residual, then valid, then test --
+    never below a floored exact share, and never off a count spelled out as an int.
+
+    :param resolved: counts keyed by partition; mutated in place.
+    :param exact: the unrounded request behind each count.
+    :param fractional: partitions whose count came from a fraction.
+    :param excess: number of records to give back; must be positive.
+    """
+    for key in ("train", "valid", "test"):
+        if excess <= 0:
+            return
+        if key not in fractional:
+            continue
+        lower = max(math.floor(exact[key]), 0 if key == "valid" else 1)
+        take = min(excess, resolved[key] - lower)
+        if take > 0:
+            resolved[key] -= take
+            excess -= take
 
 
 def resolve_sizes(
@@ -386,6 +418,11 @@ def resolve_sizes(
     At most one of the three may be left unset, in which case it absorbs the remainder. An
     integer ``0`` is rejected; pass ``0.0`` or ``None`` for a deliberately empty partition.
 
+    Fractions are rounded half up one by one, so fractions filling ``n`` can overshoot it:
+    ``0.8``/``0.1``/``0.1`` of 20717 wants 20718. That is rounding, not over-specification, so
+    the overshoot comes off train, then valid, then test; only sizes exceeding ``n`` in exact
+    arithmetic raise.
+
     :param n: number of records.
     :param train_size: int count, float fraction, or ``None`` to infer.
     :param valid_size: int count, float fraction, or ``None`` to infer.
@@ -394,19 +431,40 @@ def resolve_sizes(
         train or test partition.
     :return: the resolved ``n_train``/``n_valid``/``n_test`` counts.
     """
-    resolved = {
+    specs = {
         "train": _resolve_one(train_size, n, "train_size"),
         "valid": _resolve_one(valid_size, n, "valid_size"),
         "test": _resolve_one(test_size, n, "test_size"),
     }
+    resolved = {key: count for key, (count, _) in specs.items()}
+    exact = {key: request for key, (_, request) in specs.items()}
+    fractional = tuple(
+        key
+        for key, value in (("train", train_size), ("valid", valid_size), ("test", test_size))
+        if isinstance(value, (float, np.floating))
+    )
     n_unset = sum(1 for v in resolved.values() if v is _UNSET)
 
     if n_unset == 3:
-        resolved["train"] = floor_round(0.8 * n)
-        resolved["test"] = floor_round(0.2 * n)
-        resolved["valid"] = 0
-    elif n_unset == 1:
+        resolved["train"], exact["train"] = floor_round(0.8 * n), 0.8 * n
+        resolved["test"], exact["test"] = floor_round(0.2 * n), 0.2 * n
+        resolved["valid"], exact["valid"] = 0, 0.0
+        fractional = ("train", "test")
+    elif n_unset == 2:
+        raise ParameterError(
+            "ambiguous size spec: at most one of train_size/valid_size/test_size "
+            "may be None"
+        )
+
+    # Drop records that exist only because each fraction rounded up, before anything absorbs
+    # the remainder.
+    known_sum = sum(v for v in resolved.values() if v is not _UNSET)
+    exact_sum = sum(exact[key] for key, v in resolved.items() if v is not _UNSET)
+    if known_sum > n and exact_sum <= n + _EXACT_SUM_TOLERANCE * max(n, 1):
+        _shave_rounding_excess(resolved, exact, fractional, known_sum - n)
         known_sum = sum(v for v in resolved.values() if v is not _UNSET)
+
+    if n_unset == 1:
         remainder = n - known_sum
         if remainder < 0:
             raise ParameterError(
@@ -415,11 +473,6 @@ def resolve_sizes(
         for key, value in resolved.items():
             if value is _UNSET:
                 resolved[key] = remainder
-    elif n_unset == 2:
-        raise ParameterError(
-            "ambiguous size spec: at most one of train_size/valid_size/test_size "
-            "may be None"
-        )
     # n_unset == 0: nothing to absorb yet.
 
     count_tr, count_va, count_te = resolved["train"], resolved["valid"], resolved["test"]
