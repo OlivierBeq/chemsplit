@@ -27,7 +27,7 @@ SMILES_POOL = [
     "CCCCCCO", "CCCCCCN", "c1ccc2ccccc2c1", "CC(=O)OC", "CCOC(=O)C",
     "CCCCCCCCO", "CCCCCCCCN", "c1ccc(F)cc1", "c1ccc(Cl)cc1", "c1ccc(Br)cc1",
     "CN1CCCCC1", "O=C1CCCCC1", "OC1CCCCC1", "NC1CCCCC1", "CC1CCCCC1",
-    "c1cc2ccccc2cc1", "CCN(CC)CC", "CCOCC", "CC#N", "CC=O",
+    "c1ccc2ncccc2c1", "CCN(CC)CC", "CCOCC", "CC#N", "CC=O",
 ]
 
 
