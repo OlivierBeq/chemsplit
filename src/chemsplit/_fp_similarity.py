@@ -15,8 +15,12 @@ __all__ = [
     "EPS",
     "SimilarityParamsMixin",
     "compute_distance_matrix",
+    "compute_neighbor_lists",
+    "distance_range",
     "compute_similarity_matrix",
+    "dense_matrix_fits",
     "guard_memory",
+    "rectangular_distances",
     "resolve_featurizer",
 ]
 
@@ -158,6 +162,123 @@ def _pairwise(
     feat = resolve_featurizer(featurizer)
     F = ctx.get_features(feat)
     return pairwise_distances(F, metric=metric, n_jobs=n_jobs)
+
+
+def dense_matrix_fits(n: int, max_memory_bytes: int, copies: int = 1) -> bool:
+    """Report whether the dense path is within budget, without raising.
+
+    Lets a splitter take the dense route when affordable -- faster, since the matrix is reused --
+    and an equivalent blocked route otherwise, rather than failing outright. Both return identical
+    values.
+
+    :param n: the record count.
+    :param max_memory_bytes: the ceiling.
+    :param copies: live ``n x n`` matrices, as for :func:`guard_memory`.
+    :return: ``True`` if the dense matrix fits.
+    """
+    return n * n * (_BYTES_PER_PAIR_IN_FLIGHT + 8 * (copies - 1)) <= max_memory_bytes
+
+
+def rectangular_distances(
+    ctx: Any,
+    featurizer: str | Featurizer,
+    metric: MetricName,
+    rows: Any,
+    cols: Any,
+    n_jobs: int = 1,
+) -> np.ndarray:
+    """Distances between two index subsets, without building the full matrix.
+
+    :param ctx: the split context supplying the records.
+    :param featurizer: an alias or a featurizer instance.
+    :param metric: the distance metric.
+    :param rows: left-hand record indices.
+    :param cols: right-hand record indices.
+    :param n_jobs: worker count. Results never depend on it.
+    :return: a ``(len(rows), len(cols))`` distance block.
+    """
+    feat = resolve_featurizer(featurizer)
+    F = ctx.get_features(feat)
+    return pairwise_distances(
+        F[np.asarray(rows)], F[np.asarray(cols)], metric=metric, n_jobs=n_jobs
+    )
+
+
+def distance_range(
+    ctx: Any,
+    featurizer: str | Featurizer,
+    metric: MetricName,
+    *,
+    n_jobs: int = 1,
+    block_rows: int = 2048,
+) -> tuple[float, float]:
+    """Off-diagonal minimum and maximum distance, computed blockwise.
+
+    Mirrors the dense ``D.max()`` and diagonal-masked ``D.min()``, so a
+    ``radius_is="fraction_of_range"`` threshold is identical without an ``n x n`` matrix.
+
+    :param ctx: the split context supplying the records.
+    :param featurizer: an alias or a featurizer instance.
+    :param metric: the distance metric.
+    :param n_jobs: worker count. Results never depend on it.
+    :param block_rows: rows per block.
+    :return: ``(min, max)`` over the off-diagonal entries.
+    """
+    feat = resolve_featurizer(featurizer)
+    F = ctx.get_features(feat)
+    n = F.shape[0]
+    d_min, d_max = float("inf"), float("-inf")
+    for start in range(0, n, block_rows):
+        stop = min(start + block_rows, n)
+        block = pairwise_distances(F[start:stop], F, metric=metric, n_jobs=n_jobs)
+        d_max = max(d_max, float(block.max()))
+        # hide this block's slice of the diagonal before taking the minimum
+        rows = np.arange(stop - start)
+        block[rows, rows + start] = np.inf
+        d_min = min(d_min, float(block.min()))
+    return d_min, d_max
+
+
+def compute_neighbor_lists(
+    ctx: Any,
+    featurizer: str | Featurizer,
+    metric: MetricName,
+    cutoff: float,
+    *,
+    eps: float,
+    n_jobs: int = 1,
+    block_rows: int = 2048,
+) -> list[np.ndarray]:
+    """Radius-neighbour lists, built blockwise so no ``n x n`` matrix is materialised.
+
+    Peak memory is ``block_rows * n``, not ``n * n``: at n=100000 the dense float64 matrix is 80 GB
+    against 1.6 GB per block.
+
+    Bit-identical to slicing the dense matrix -- the kernel is integer-exact, so blocking cannot
+    shift a value across the cutoff, and the same comparison and ordering are applied.
+
+    :param ctx: the split context supplying the records.
+    :param featurizer: an alias or a featurizer instance.
+    :param metric: the distance metric.
+    :param cutoff: the neighbour radius, as a distance.
+    :param eps: the caller's float-comparison tolerance, added to ``cutoff`` exactly as the dense
+        path does.
+    :param n_jobs: worker count. Results never depend on it.
+    :param block_rows: rows per block.
+    :return: per record, the ascending indices within the cutoff, excluding itself.
+    """
+    feat = resolve_featurizer(featurizer)
+    F = ctx.get_features(feat)
+    n = F.shape[0]
+    out: list[np.ndarray] = []
+    for start in range(0, n, block_rows):
+        stop = min(start + block_rows, n)
+        block = pairwise_distances(F[start:stop], F, metric=metric, n_jobs=n_jobs)
+        for row_offset in range(stop - start):
+            i = start + row_offset
+            idx = np.nonzero(block[row_offset] <= cutoff + eps)[0]
+            out.append(np.sort(idx[idx != i]))
+    return out
 
 
 def compute_distance_matrix(

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+from collections.abc import Sequence
 from typing import Any, ClassVar, Literal
 
 import numpy as np
@@ -20,8 +21,12 @@ from chemsplit._fp_similarity import (
     EPS,
     SimilarityParamsMixin,
     compute_distance_matrix,
+    compute_neighbor_lists,
     compute_similarity_matrix,
+    dense_matrix_fits,
+    distance_range,
     guard_memory,
+    rectangular_distances,
     resolve_featurizer,
 )
 from chemsplit._optimize import BalanceProblem, solve_balance
@@ -233,6 +238,76 @@ def _validate_radius(splitter: Any, radius: float, radius_is: str) -> None:
             raise ParameterError(f"radius must be > 0, got {radius!r}")
     elif not (0.0 < radius < 1.0):
         raise ParameterError(f"radius must be in (0,1) for radius_is={radius_is!r}, got {radius!r}")
+
+
+def _picked_diagnostics(
+    picked: list[int],
+    n: int,
+    D: np.ndarray | None,
+    ctx: _Context,
+    featurizer: Any,
+    metric: Any,
+    n_jobs: int,
+    block: int = 1024,
+) -> tuple[float, float]:
+    """Minimum within-selection distance and worst-case coverage, blockwise.
+
+    Replaces an ``O(k^2)`` Python double loop with bounded numpy reductions, at identical values --
+    they reach ``SplitResult.metadata`` and so the goldens.
+
+    :param picked: the selected indices, in selection order.
+    :param n: the record count.
+    :param D: the dense distance matrix, or ``None`` to fetch blocks on demand.
+    :param ctx: the split context.
+    :param featurizer: the featurizer, for the matrix-free path.
+    :param metric: the distance metric, for the matrix-free path.
+    :param n_jobs: worker count. Results never depend on it.
+    :param block: rows per block.
+    :return: the minimum pairwise distance within ``picked`` (``inf`` for fewer than two), and the
+        maximum over all records of their distance to the nearest picked record (``nan`` if
+        nothing was picked).
+    """
+    if not picked:
+        return float("inf"), float("nan")
+
+    def rows(row_idx: Sequence[int], col_idx: Sequence[int]) -> np.ndarray:
+        if D is not None:
+            return D[np.ix_(list(row_idx), list(col_idx))]
+        return rectangular_distances(ctx, featurizer, metric, list(row_idx), list(col_idx), n_jobs)
+
+    min_pairwise = float("inf")
+    k = len(picked)
+    for start in range(0, k, block):
+        stop = min(start + block, k)
+        sub_block = rows(picked[start:stop], picked)
+        # keep only b > a in selection order, matching the nested loop this replaced
+        a_idx = np.arange(start, stop)[:, None]
+        b_idx = np.arange(k)[None,:]
+        masked = np.where(b_idx > a_idx, sub_block, np.inf)
+        if masked.size:
+            min_pairwise = min(min_pairwise, float(masked.min()))
+
+    worst = -np.inf
+    for start in range(0, n, block):
+        stop = min(start + block, n)
+        sub_block = rows(range(start, stop), picked)
+        worst = max(worst, float(sub_block.min(axis=1).max()))
+    return min_pairwise, float(worst)
+
+
+def _resolve_radius_without_matrix(self: Any, ctx: _Context) -> float:
+    """``_resolve_radius`` for the matrix-free path, using a blocked distance range.
+
+    :param self: the splitter, for ``radius``/``radius_is`` and the featurizer settings.
+    :param ctx: the split context.
+    :return: the distance threshold.
+    """
+    if self.radius_is == "distance":
+        return float(self.radius)
+    if self.radius_is == "similarity":
+        return 1.0 - float(self.radius)
+    d_min, d_max = distance_range(ctx, self.featurizer, self.metric, n_jobs=self.n_jobs)
+    return d_min + float(self.radius) * (d_max - d_min)
 
 
 def _resolve_radius(D: np.ndarray, radius: float, radius_is: str) -> float:
@@ -545,9 +620,24 @@ class ButinaSplitter(_SimilarityGroupBase):
             raise ParameterError(f"invalid singleton_policy: {singleton_policy!r}")
 
     def _group_labels(self, ctx: _Context) -> IndexArray:
-        D = _dist_matrix(self, ctx)
         dist_cutoff = self.cutoff if self.cutoff_is == "distance" else 1.0 - self.cutoff
-        clusters = _clustering.butina(D, dist_cutoff, reorder=self.reorder)
+        # Butina reads only neighbour lists, plus a few singleton-to-centroid distances for
+        # singleton_policy="nearest_cluster". The dense matrix is faster when it fits; otherwise
+        # build the lists blockwise rather than refuse -- identical clusters, linear peak memory.
+        D: np.ndarray | None = None
+        if dense_matrix_fits(ctx.n, self.max_memory_bytes):
+            D = _dist_matrix(self, ctx)
+            clusters = _clustering.butina(D, dist_cutoff, reorder=self.reorder)
+        else:
+            neigh = compute_neighbor_lists(
+                ctx,
+                self.featurizer,
+                self.metric,
+                dist_cutoff,
+                eps=_clustering.EPS,
+                n_jobs=self.n_jobs,
+            )
+            clusters = _clustering.butina_from_neighbors(neigh, ctx.n, reorder=self.reorder)
         n = ctx.n
         labels = np.empty(n, dtype=np.int64)
         singleton_idx = [k for k, c in enumerate(clusters) if len(c) == 1]
@@ -562,12 +652,18 @@ class ButinaSplitter(_SimilarityGroupBase):
                     )
                 )
             else:
-                for k in singleton_idx:
-                    rec = clusters[k][0]
-                    centroids = [clusters[j][0] for j in non_singleton]
-                    nearest = argmin_tiebreak(lambda c: float(D[rec, c]), centroids)
-                    target = non_singleton[centroids.index(nearest)]
-                    clusters[target].append(rec)
+                # loop-invariant: only non-singleton clusters grow, so centroids do not change
+                centroids = [clusters[j][0] for j in non_singleton]
+                singleton_recs = [clusters[k][0] for k in singleton_idx]
+                if D is not None:
+                    block = D[np.ix_(singleton_recs, centroids)]
+                else:
+                    block = rectangular_distances(
+                        ctx, self.featurizer, self.metric, singleton_recs, centroids, self.n_jobs
+                    )
+                for row, k in enumerate(singleton_idx):
+                    nearest_col = row_argmin(block[row : row + 1])[0]
+                    clusters[non_singleton[int(nearest_col)]].append(clusters[k][0])
                 clusters = [c for k, c in enumerate(clusters) if k not in singleton_idx]
         elif self.singleton_policy == "shared_group" and len(singleton_idx) > 1:
             merged = [clusters[k][0] for k in singleton_idx]
@@ -673,15 +769,31 @@ class SphereExclusionSplitter(_SimilarityGroupBase):
             raise ParameterError(f"invalid order: {order!r}")
 
     def _group_labels(self, ctx: _Context) -> IndexArray:
-        D = _dist_matrix(self, ctx)
         n = ctx.n
-        threshold = _resolve_radius(D, self.radius, self.radius_is)
+        # One row per representative is all it reads, so rows can be produced on demand when a
+        # dense matrix will not fit. Identical clusters: same rows, threshold and scan order.
+        use_dense = dense_matrix_fits(n, self.max_memory_bytes)
+        if use_dense:
+            D = _dist_matrix(self, ctx)
+            threshold = _resolve_radius(D, self.radius, self.radius_is)
+        else:
+            threshold = _resolve_radius_without_matrix(self, ctx)
         scan = (
             seed_for(ctx.rng_seeds, "sphere_exclusion.order", 0).permutation(n).tolist()
             if self.order == "random"
             else None
         )
-        reps, clusters = _clustering.sphere_exclusion(D, threshold, order=scan)
+        if use_dense:
+            reps, clusters = _clustering.sphere_exclusion(D, threshold, order=scan)
+        else:
+            reps, clusters = _clustering.sphere_exclusion_rows(
+                n,
+                lambda i: rectangular_distances(
+                    ctx, self.featurizer, self.metric, [i], range(n), self.n_jobs
+                )[0],
+                threshold,
+                order=scan,
+            )
         labels = np.empty(n, dtype=np.int64)
         for cid, members in enumerate(clusters):
             labels[members] = cid
@@ -1384,7 +1496,6 @@ class MaxMinSplitter(_SimilarityBase):
             raise ParameterError(f"swap_fraction must be in [0, 0.5], got {swap_fraction!r}")
 
     def _partition(self, ctx: _Context) -> list[SplitResult]:
-        D = _dist_matrix(self, ctx)
         n = ctx.n
         n_picks = self.n_picks if self.n_picks is not None else (
             ctx.sizes.n_train if self.picked_goes_to == "train" else ctx.sizes.n_test
@@ -1392,7 +1503,26 @@ class MaxMinSplitter(_SimilarityBase):
         if not (1 <= n_picks < n):
             raise ParameterError(f"n_picks must satisfy 1 <= n_picks < n, got {n_picks}")
         rng = seed_for(ctx.rng_seeds, "maxmin.init", 0) if self.init == "random" else None
-        picked = _clustering.maxmin_pick(D, n_picks, init=self.init, rng=rng)
+        # One column per pick. The dense matrix is faster when it fits; past that, fetch columns in
+        # wide blocks rather than refuse. The running minimum stays exact, so the picks match.
+        D: np.ndarray | None = None
+        if dense_matrix_fits(n, self.max_memory_bytes) or self.init in (
+            "kennard_stone",
+            "most_peripheral",
+        ):
+            # these two inits need the full matrix to seed themselves
+            D = _dist_matrix(self, ctx)
+            picked = _clustering.maxmin_pick(D, n_picks, init=self.init, rng=rng)
+        else:
+            first = int(rng.integers(0, n)) if rng is not None else 0
+            picked = _clustering.maxmin_pick_columns(
+                n,
+                lambda js: rectangular_distances(
+                    ctx, self.featurizer, self.metric, range(n), js, self.n_jobs
+                ),
+                n_picks,
+                first,
+            )
         swap_meta: dict[str, Any] = {}
         if self.swap_fraction > 0:
             picked_set = set(picked)
@@ -1414,11 +1544,9 @@ class MaxMinSplitter(_SimilarityBase):
             swap_meta = {"swapped_out": swapped_out, "swapped_in": swapped_in}
         rem_rng = seed_for(ctx.rng_seeds, "maxmin.remainder", 0)
         buckets = _fill_remainder(picked, n, ctx.sizes, rem_rng, self.picked_goes_to)
-        min_pairwise = float("inf")
-        for a in range(len(picked)):
-            for b in picked[a + 1:]:
-                min_pairwise = min(min_pairwise, D[picked[a], b])
-        coverage = float(np.max(np.min(D[:, picked], axis=1))) if picked else float("nan")
+        min_pairwise, coverage = _picked_diagnostics(
+            picked, n, D, ctx, self.featurizer, self.metric, self.n_jobs
+        )
         result = SplitResult(
             train=buckets["train"],
             valid=buckets["valid"],

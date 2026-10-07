@@ -22,14 +22,17 @@ EPS = 1e-6
 
 __all__ = [
     "butina",
+    "butina_from_neighbors",
     "duplex_order",
     "kennard_stone",
     "leader",
     "maxmin_pick",
+    "maxmin_pick_columns",
     "optisim_pick",
     "optisim_pick_columns",
     "spectral_partition",
     "sphere_exclusion",
+    "sphere_exclusion_rows",
 ]
 
 
@@ -55,8 +58,22 @@ def butina(D: np.ndarray, cutoff: float, reorder: bool = False) -> list[list[int
         original formulation.
     :return: clusters in creation order, each starting with its centroid.
     """
-    n = D.shape[0]
-    neigh = _neighbor_lists(D, cutoff)
+    return butina_from_neighbors(_neighbor_lists(D, cutoff), D.shape[0], reorder=reorder)
+
+
+def butina_from_neighbors(
+    neigh: Sequence[np.ndarray], n: int, reorder: bool = False
+) -> list[list[int]]:
+    """Taylor-Butina clustering from precomputed radius-neighbour lists.
+
+    The neighbour lists are all this algorithm reads from the distance matrix, and they can be
+    built blockwise -- so no ``n x n`` matrix, and bit-identical either way.
+
+    :param neigh: per record, the ascending indices within the cutoff, excluding itself.
+    :param n: the record count.
+    :param reorder: recompute neighbour counts after each cluster is taken.
+    :return: clusters in creation order, each starting with its centroid.
+    """
     assigned = np.zeros(n, dtype=bool)
     clusters: list[list[int]] = []
 
@@ -128,7 +145,26 @@ def sphere_exclusion(
     :return: the representatives, and per representative the points it claimed, itself
         included.
     """
-    n = D.shape[0]
+    return sphere_exclusion_rows(D.shape[0], lambda i: D[i], radius, order=order)
+
+
+def sphere_exclusion_rows(
+    n: int,
+    row: Callable[[int], np.ndarray],
+    radius: float,
+    order: Sequence[int] | None = None,
+) -> tuple[list[int], list[list[int]]]:
+    """Greedy sphere-exclusion from a row callable instead of a dense matrix.
+
+    One row per representative is all it reads, so rows on demand remove the ``n x n`` matrix.
+    Bit-identical: same rows, same radius, same scan order.
+
+    :param n: the record count.
+    :param row: returns row ``i`` of the distance matrix, length ``n``.
+    :param radius: the exclusion radius.
+    :param order: the scan order. ``None`` uses ascending index.
+    :return: the representatives, and per representative the points it claimed, itself included.
+    """
     scan = list(range(n)) if order is None else list(order)
     excluded = np.zeros(n, dtype=bool)
     reps: list[int] = []
@@ -137,10 +173,9 @@ def sphere_exclusion(
         if excluded[i]:
             continue
         reps.append(i)
-        within = np.nonzero(D[i] <= radius + EPS)[0]
+        within = np.nonzero(row(i) <= radius + EPS)[0]
         group = [int(j) for j in within if not excluded[j]]
-        for j in group:
-            excluded[j] = True
+        excluded[group] = True
         groups.append(group)
     return reps, groups
 
@@ -187,6 +222,59 @@ def maxmin_pick(
         taken[next_i] = True
         np.minimum(mind, D[:, next_i], out=mind)
 
+    return picked
+
+
+def maxmin_pick_columns(
+    n: int,
+    columns: Callable[[Sequence[int]], np.ndarray],
+    n_picks: int,
+    first: int,
+    batch: int = 512,
+) -> list[int]:
+    """Greedy MaxMin from a column-block callable, without an ``n x n`` matrix.
+
+    Exactly :func:`maxmin_pick`, reorganised so distances arrive in wide blocks. The running
+    minimum stays **exact**, so the argmax is always the true next pick; batching only decides
+    when distances are fetched. Single columns are bandwidth-bound, so fetching a block of
+    candidates at once is nearly free.
+
+    :param n: the record count.
+    :param columns: given ascending indices ``js``, returns the ``(n, len(js))`` distance block.
+    :param n_picks: how many points to select.
+    :param first: the index of the first pick, chosen by the caller's ``init`` rule.
+    :param batch: how many columns to fetch per block.
+    :return: the picked indices, in selection order.
+    """
+    taken = np.zeros(n, dtype=bool)
+    taken[first] = True
+    picked = [first]
+    mind = columns([first])[:, 0].astype(np.float64, copy=True)
+    held: dict[int, np.ndarray] = {}
+
+    while len(picked) < n_picks:
+        if bool(taken.all()):
+            break
+        candidate = masked_argmax(mind, taken)
+        if candidate not in held:
+            # Refill with this candidate plus the next most promising ones, so the block
+            # serves several consecutive picks. Which extras are prefetched cannot affect the
+            # result -- `held` is only a cache, and every `mind` update uses the exact column of
+            # the record actually picked -- so an ordinary argsort is fine here, with no
+            # tie-breaking obligation.
+            ranked = np.argsort(np.where(taken, -np.inf, mind), kind="stable")[::-1]
+            wanted = [candidate]
+            for i in ranked[:batch]:
+                if len(wanted) >= batch:
+                    break
+                if int(i) != candidate and not taken[i]:
+                    wanted.append(int(i))
+            wanted = sorted(wanted)
+            block = columns(wanted)
+            held = {j: block[:, r] for r, j in enumerate(wanted)}
+        np.minimum(mind, held.pop(candidate), out=mind)
+        picked.append(candidate)
+        taken[candidate] = True
     return picked
 
 
