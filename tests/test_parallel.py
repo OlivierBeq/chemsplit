@@ -169,3 +169,45 @@ def test_cache_can_be_disabled_without_changing_results() -> None:
         pp.clear_digest_cache()
     assert uncached.forced_discard == cached.forced_discard
     assert (uncached.dedup_group_labels is None) == (cached.dedup_group_labels is None)
+
+
+@pytest.mark.parametrize("splitter_id", ["murcko_scaffold", "generic_scaffold"])
+def test_scaffold_keys_resolve_in_worker_processes(splitter_id: str) -> None:
+    """Key functions must be importable by a worker that never imported the splitter module.
+
+    A spawned worker has an empty registry, so resolving by name alone raised KeyError and broke
+    every scaffold splitter under ``n_jobs>1``.
+    """
+    smiles = _library(_N)
+
+    def run(n_jobs: int) -> list:
+        splitter = get_splitter(
+            splitter_id,
+            random_state=0,
+            train_size=0.8,
+            valid_size=0.0,
+            test_size=0.2,
+            n_jobs=n_jobs,
+        )
+        return splitter.split_result(smiles)
+
+    for ref, got in zip(run(1), run(-1), strict=True):
+        assert np.array_equal(got.train, ref.train)
+        assert np.array_equal(got.test, ref.test)
+        assert np.array_equal(got.groups, ref.groups)
+
+
+def test_molmap_chunk_works_without_prior_registration() -> None:
+    """The worker entry point must not depend on anything the parent registered."""
+    from chemsplit import _molmap
+
+    target = _molmap._TARGETS["scaffold.murcko"]
+    saved = dict(_molmap._FUNCS)
+    try:
+        _molmap._FUNCS.clear()  # emulate a fresh worker interpreter
+        keys = _molmap._chunk(["c1ccccc1CC", "CCO", None], target=target, params=(False,))
+    finally:
+        _molmap._FUNCS.update(saved)
+    assert keys[0] == "c1ccccc1"
+    assert keys[1] == ""  # no ring system, so no Murcko scaffold
+    assert keys[2] == ""  # absent molecule
