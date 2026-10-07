@@ -1780,9 +1780,7 @@ class DecoyBenchmarkSplitter(GroupSplitter):
             m = Chem.MolFromSmiles(s)
             decoy_mols.append(m)
         # the matrix below is the rectangular actives-by-decoys block, not a square over both
-        guard_memory(
-            len(active_idx), 2 * 1024**3, type(self).__name__, cols=len(decoy_mols)
-        )
+
 
         active_props = np.asarray([self._props(mols[i]) for i in active_idx])
         missing = np.full(len(self.match_properties), np.inf)
@@ -1800,7 +1798,25 @@ class DecoyBenchmarkSplitter(GroupSplitter):
         )
         from chemsplit.metrics import pairwise_distances
 
-        S_ad = 1.0 - pairwise_distances(active_fp, decoy_fp, metric="tanimoto")
+        # The loop below reads one active's row at a time, so rows are produced on demand when
+        # the full actives-by-decoys block will not fit. Each row is a wide fetch, so this is no
+        # slower per row than slicing a materialised block.
+        dense_ad = dense_matrix_fits(len(active_idx), 2 * 1024**3, cols=len(decoy_mols))
+        S_ad = (
+            1.0 - pairwise_distances(active_fp, decoy_fp, metric="tanimoto")
+            if dense_ad
+            else None
+        )
+
+        def ad_row(pos: int) -> np.ndarray:
+            if S_ad is not None:
+                return S_ad[pos]
+            return (
+                1.0
+                - pairwise_distances(
+                    active_fp[pos : pos + 1], decoy_fp, metric="tanimoto", n_jobs=self.n_jobs
+                )[0]
+            )
 
         tol = np.asarray(self.match_tolerance, dtype=np.float64)
         used = np.zeros(len(decoy_mols), dtype=bool)
@@ -1815,7 +1831,8 @@ class DecoyBenchmarkSplitter(GroupSplitter):
                 continue
             diffs = np.abs(decoy_props[avail] - active_props[pos])
             prop_ok = np.all(diffs <= tol[None,:] + _EPS, axis=1)
-            topo_ok = S_ad[pos, avail] < self.topology_dissimilarity - _EPS
+            row = ad_row(pos)
+            topo_ok = row[avail] < self.topology_dissimilarity - _EPS
             cand = avail[prop_ok & topo_ok]
             if cand.size < self.decoy_ratio:
                 shortfalls[a] = self.decoy_ratio - int(cand.size)
@@ -1828,7 +1845,7 @@ class DecoyBenchmarkSplitter(GroupSplitter):
                 chosen = cand[order[: self.decoy_ratio]]
             used[chosen] = True
             active_decoys[a] = chosen.tolist()
-            sims_used.extend(float(S_ad[pos, c]) for c in chosen)
+            sims_used.extend(float(row[c]) for c in chosen)
 
         n_pool_used = int(used.sum())
         n_actives_kept = int(len(active_idx))

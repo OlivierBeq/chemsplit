@@ -175,7 +175,9 @@ def _pairwise(
     return pairwise_distances(F, metric=metric, n_jobs=n_jobs)
 
 
-def dense_matrix_fits(n: int, max_memory_bytes: int, copies: int = 1) -> bool:
+def dense_matrix_fits(
+    n: int, max_memory_bytes: int, copies: int = 1, cols: int | None = None
+) -> bool:
     """Report whether the dense path is within budget, without raising.
 
     Lets a splitter take the dense route when affordable -- faster, since the matrix is reused --
@@ -185,9 +187,11 @@ def dense_matrix_fits(n: int, max_memory_bytes: int, copies: int = 1) -> bool:
     :param n: the record count.
     :param max_memory_bytes: the ceiling.
     :param copies: live ``n x n`` matrices, as for :func:`guard_memory`.
+    :param cols: columns, when the block is rectangular. Defaults to ``n``.
     :return: ``True`` if the dense matrix fits.
     """
-    return n * n * (_BYTES_PER_PAIR_IN_FLIGHT + 8 * (copies - 1)) <= max_memory_bytes
+    m = n if cols is None else cols
+    return n * m * (_BYTES_PER_PAIR_IN_FLIGHT + 8 * (copies - 1)) <= max_memory_bytes
 
 
 def rectangular_distances(
