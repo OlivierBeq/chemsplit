@@ -345,6 +345,54 @@ def _top_pairs(
     return [(-i, -j) for _d, i, j in ordered]
 
 
+def _blocked_knn_graph(
+    ctx: _Context,
+    featurizer: Any,
+    metric: Any,
+    k: int,
+    n_jobs: int,
+    block_rows: int = 2048,
+) -> Any:
+    """Symmetric sparse k-nearest-neighbour similarity graph, built blockwise.
+
+    Each row keeps its ``k`` most similar records (self excluded), selected with
+    ``argpartition`` -- O(n) per row rather than the O(n log n) of a full sort, and with ties
+    resolved by ascending index so the graph is deterministic.
+
+    :param ctx: the split context.
+    :param featurizer: an alias or a featurizer instance.
+    :param metric: the distance metric.
+    :param k: neighbours per row.
+    :param n_jobs: worker count. Results never depend on it.
+    :param block_rows: rows per block.
+    :return: a symmetric CSR similarity graph.
+    """
+    F = ctx.get_features(resolve_featurizer(featurizer))
+    n = F.shape[0]
+    rows_idx: list[np.ndarray] = []
+    cols_idx: list[np.ndarray] = []
+    vals: list[np.ndarray] = []
+    for start in range(0, n, block_rows):
+        stop = min(start + block_rows, n)
+        block = 1.0 - pairwise_distances(F[start:stop], F, metric=metric, n_jobs=n_jobs)
+        for r in range(stop - start):
+            i = start + r
+            row = block[r].copy()
+            row[i] = -np.inf  # a record is not its own neighbour
+            take = min(k, n - 1)
+            cand = np.argpartition(-row, take - 1)[:take]
+            # deterministic order among equal similarities: by value, then by index
+            cand = cand[np.lexsort((cand, -row[cand]))]
+            rows_idx.append(np.full(take, i, dtype=np.int64))
+            cols_idx.append(cand.astype(np.int64))
+            vals.append(row[cand])
+    graph = sp.csr_matrix(
+        (np.concatenate(vals), (np.concatenate(rows_idx), np.concatenate(cols_idx))),
+        shape=(n, n),
+    )
+    return graph.maximum(graph.T)
+
+
 def _blocked_max_cdist(y: np.ndarray, block: int = 2048) -> float:
     """Largest pairwise Euclidean distance among the rows of ``y``, without an ``n x n`` matrix.
 
@@ -1739,22 +1787,33 @@ class SpectralSplitter(_SimilarityGroupBase):
     def _group_labels(self, ctx: _Context) -> IndexArray:
         if self.graph == "landmark":
             return self._landmark_labels(ctx)
-        S = _sim_matrix(self, ctx)
         n = ctx.n
-        np.fill_diagonal(S, 0.0)
-        if self.graph == "full":
-            W = S
-        elif self.graph == "threshold":
-            W = np.where(S > self.threshold + EPS, S, 0.0)
-        else:  # knn
-            k = min(self.knn_k, n - 1)
-            W = np.zeros_like(S)
-            for i in range(n):
-                nn = np.argsort(-S[i])[:k]
-                W[i, nn] = S[i, nn]
-            W = np.maximum(W, W.T)
         if self.knn_k >= n and self.graph == "knn":
             raise ParameterError(f"knn_k={self.knn_k} must be < n={n}")
+        # "full" and "threshold" graphs are dense by definition. A knn graph is sparse, so past
+        # the dense ceiling build it blockwise and keep it sparse all the way through the
+        # eigensolve. This splitter is already declared non-bit-exact (eigendecomposition is not
+        # reproducible across BLAS builds) and its golden is compared by tolerance, so the
+        # sparse route's tie-breaking among equal similarities is within its existing contract.
+        sparse_knn = self.graph == "knn" and not dense_matrix_fits(n, self.max_memory_bytes)
+        if sparse_knn:
+            W = _blocked_knn_graph(
+                ctx, self.featurizer, self.metric, min(self.knn_k, n - 1), self.n_jobs
+            )
+        else:
+            S = _sim_matrix(self, ctx)
+            np.fill_diagonal(S, 0.0)
+            if self.graph == "full":
+                W = S
+            elif self.graph == "threshold":
+                W = np.where(S > self.threshold + EPS, S, 0.0)
+            else:  # knn
+                k = min(self.knn_k, n - 1)
+                W = np.zeros_like(S)
+                for i in range(n):
+                    nn = np.argsort(-S[i])[:k]
+                    W[i, nn] = S[i, nn]
+                W = np.maximum(W, W.T)
         rng = seed_for(ctx.rng_seeds, "spectral.v0", 0)
         labels = _clustering.spectral_partition(
             W,
@@ -1764,6 +1823,7 @@ class SpectralSplitter(_SimilarityGroupBase):
             assign=self.assign,
             rng=rng,
             random_state=int(seed_for(ctx.rng_seeds, "spectral.kmeans", 0).integers(0, 2**31 - 1)),
+            allow_sparse=sparse_knn,
         )
         self._last_meta = {
             "n_clusters": int(len(set(labels.tolist()))),

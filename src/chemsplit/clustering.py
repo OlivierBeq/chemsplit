@@ -642,6 +642,7 @@ def spectral_partition(
     assign: Literal["kmeans", "discretize"] = "kmeans",
     rng: np.random.Generator | None = None,
     random_state: int = 0,
+    allow_sparse: bool = False,
 ) -> np.ndarray:
     """Laplacian-eigenmap spectral partition.
 
@@ -655,13 +656,18 @@ def spectral_partition(
     :param assign: cluster the embedding with k-means, or with the discretize rule.
     :param rng: unused; ``random_state`` seeds k-means.
     :param random_state: seed passed to k-means.
+    :param allow_sparse: keep a sparse ``W`` sparse throughout, so nothing ``n x n`` is
+        allocated. Off by default: the dense route is faster when it fits, and leaving it as the
+        default keeps existing results untouched.
     :return: a dense-label-encoded int array of length ``n``.
     """
-    if sp.issparse(W):
+    keep_sparse = allow_sparse and sp.issparse(W)
+    if sp.issparse(W) and not keep_sparse:
         W = W.toarray()
-    W = np.asarray(W, dtype=np.float64)
+    if not keep_sparse:
+        W = np.asarray(W, dtype=np.float64)
     n = W.shape[0]
-    deg = W.sum(axis=1)
+    deg = np.asarray(W.sum(axis=1)).ravel()
     isolated = deg <= 0.0
     active = np.nonzero(~isolated)[0]
 
@@ -669,20 +675,36 @@ def spectral_partition(
     next_label = 0
 
     if active.size > 0:
-        Wa = W[np.ix_(active, active)]
-        dega = Wa.sum(axis=1)
-        # Scaling by a diagonal matrix is a broadcast, not a matmul: the matmul form was O(n^3)
-        # and allocated extra n x n matrices. Bit-identical -- the dropped terms are exact 0.0 * x.
-        if laplacian == "unnormalized":
-            L = -Wa.copy()
-            L[np.diag_indices(len(active))] += dega
-        elif laplacian == "rw":
-            L = -(1.0 / dega)[:, None] * Wa
-            L[np.diag_indices(len(active))] += 1.0
-        else:  # "sym"
-            dinv_sqrt = 1.0 / np.sqrt(dega)
-            L = -(dinv_sqrt[:, None] * Wa * dinv_sqrt[None,:])
-            L[np.diag_indices(len(active))] += 1.0
+        if keep_sparse:
+            # Same Laplacian, built with sparse diagonal scaling so nothing n x n is allocated.
+            # Only reachable when the caller opts in, so the dense path above is untouched.
+            Wa = sp.csr_matrix(W)[active][:, active]
+            dega = np.asarray(Wa.sum(axis=1)).ravel()
+            m = len(active)
+            if laplacian == "unnormalized":
+                L = sp.diags(dega) - Wa
+            elif laplacian == "rw":
+                L = sp.eye(m, format="csr") - sp.diags(1.0 / dega) @ Wa
+            else:  # "sym"
+                dinv_sqrt = sp.diags(1.0 / np.sqrt(dega))
+                L = sp.eye(m, format="csr") - dinv_sqrt @ Wa @ dinv_sqrt
+            L = sp.csr_matrix(L)
+        else:
+            Wa = W[np.ix_(active, active)]
+            dega = Wa.sum(axis=1)
+            # Scaling by a diagonal matrix is a broadcast, not a matmul: the matmul form was
+            # O(n^3) and allocated extra n x n matrices. Bit-identical -- the dropped terms are
+            # exact 0.0 * x.
+            if laplacian == "unnormalized":
+                L = -Wa.copy()
+                L[np.diag_indices(len(active))] += dega
+            elif laplacian == "rw":
+                L = -(1.0 / dega)[:, None] * Wa
+                L[np.diag_indices(len(active))] += 1.0
+            else:  # "sym"
+                dinv_sqrt = 1.0 / np.sqrt(dega)
+                L = -(dinv_sqrt[:, None] * Wa * dinv_sqrt[None,:])
+                L[np.diag_indices(len(active))] += 1.0
 
         k = min(n_clusters + (1 if drop_first else 0), len(active) - 1)
         k = max(k, 1)
@@ -691,14 +713,18 @@ def spectral_partition(
             rng = np.random.default_rng(random_state)
         v0 = rng.standard_normal(L.shape[0])
 
-        if len(active) <= k + 1 or len(active) < 50:
+        if not keep_sparse and (len(active) <= k + 1 or len(active) < 50):
             # small enough for a dense eigensolve, which also avoids ARPACK trouble on tiny
             # matrices); still deterministic (LAPACK's symmetric eigensolver, no v0 needed).
             vals, vecs = np.linalg.eigh(L)
         else:
             from scipy.sparse.linalg import eigsh
 
-            vals, vecs = eigsh(L, k=k, which="SM", v0=v0, tol=0.0, maxiter=5000)
+            # Shift-invert rather than which="SM": for a Laplacian's smallest eigenvalues the
+            # SM/SA modes are both unreliable and slow -- 276 s at n=4000 against 17 s here, and
+            # outright non-convergence by n=10000 (5000 iterations, zero eigenvectors), which is
+            # the ArpackNoConvergence this splitter has always raised at that size.
+            vals, vecs = eigsh(L, k=k, sigma=0.0, which="LM", v0=v0)
 
         order = np.argsort(vals, kind="stable")
         vecs = vecs[:, order]
