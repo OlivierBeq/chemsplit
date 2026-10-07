@@ -112,3 +112,4 @@ def test_blocked_neighbour_lists_match_the_dense_path() -> None:
         assert butina_from_neighbors(got, n, reorder=reorder) == butina(
             dense, cutoff, reorder=reorder
         )
+
