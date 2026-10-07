@@ -535,6 +535,8 @@ def duplex_order_access(
     targets: Sequence[int],
     column: Callable[[int], np.ndarray],
     farthest_pair: Callable[[np.ndarray], tuple[int, int]],
+    columns: Callable[[Sequence[int]], np.ndarray] | None = None,
+    batch: int = 512,
 ) -> list[list[int]]:
     """DUPLEX partitioning from a column callable instead of a dense matrix.
 
@@ -545,6 +547,11 @@ def duplex_order_access(
     :param targets: the record count per partition. Must sum to ``n``.
     :param column: maps a record index to its distances to every record.
     :param farthest_pair: maps an ascending pool of indices to its farthest-apart pair.
+    :param columns: optional batch form of ``column``. DUPLEX assigns *every* record, so it needs
+        n columns; fetching them one at a time is memory-bandwidth-bound, and prefetching the
+        most likely next picks amortises that. Which extras are prefetched cannot change a
+        result -- the cache only decides when a column is fetched.
+    :param batch: columns per prefetch when ``columns`` is given.
     :return: each partition's records, in the order they were added.
     """
     if sum(targets) != n:
@@ -553,10 +560,37 @@ def duplex_order_access(
     members: list[list[int]] = [[] for _ in targets]
     mind = [np.full(n, np.inf) for _ in targets]
 
+    held: dict[int, np.ndarray] = {}
+
+    def col_of(i: int) -> np.ndarray:
+        if columns is None:
+            return column(i)
+        cached = held.pop(i, None)
+        if cached is not None:
+            return cached
+        return column(i)
+
+    def prefetch(scores: np.ndarray) -> None:
+        """Cache columns for the records most likely to be picked next."""
+        if columns is None:
+            return
+        for j in list(held):
+            if assigned[j]:
+                del held[j]
+        if len(held) >= batch // 2:
+            return
+        ranked = np.argsort(np.where(assigned, -np.inf, scores), kind="stable")[::-1]
+        wanted = [int(j) for j in ranked[:batch] if not assigned[j] and int(j) not in held]
+        if not wanted:
+            return
+        wanted = sorted(wanted)
+        block = columns(wanted)
+        held.update({j: block[:, r].copy() for r, j in enumerate(wanted)})
+
     def add(p: int, i: int) -> None:
         members[p].append(i)
         assigned[i] = True
-        mind[p] = np.minimum(mind[p], column(i))
+        mind[p] = np.minimum(mind[p], col_of(i))
 
     for p, target in enumerate(targets):
         if target <= 0:
@@ -575,6 +609,7 @@ def duplex_order_access(
             if len(members[p]) >= target or assigned.all():
                 continue
             score = np.where(assigned, -np.inf, mind[p])
+            prefetch(mind[p])
             add(p, int(row_argmin(-score[None, :])[0]))
             progressed = True
         if not progressed:

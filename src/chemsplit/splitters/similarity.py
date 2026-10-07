@@ -2803,7 +2803,7 @@ class DuplexSplitter(_SimilarityBase):
         names = ("train", "test", "valid")
         targets = (ctx.sizes.n_train, ctx.sizes.n_test, ctx.sizes.n_valid)
         parts = _clustering.duplex_order_access(
-            n, targets, dist.column, dist.farthest_pair_in_pool
+            n, targets, dist.column, dist.farthest_pair_in_pool, columns=dist.columns
         )
         buckets = {
             name: np.sort(np.asarray(part, dtype=np.int64))
@@ -3012,10 +3012,24 @@ class DOptimalSplitter(BaseSplitter):
             return list(pool), {}
         idx = np.asarray(pool, dtype=np.int64)
         if self.init == "kennard_stone":
-            guard_memory(len(pool), self.max_memory_bytes, type(self).__name__)
+            # Distances here are Euclidean on the low-dimensional design scores, so columns are
+            # cheap to produce on demand -- no |pool| x |pool| matrix needed.
             scores = X[idx, 1:]
-            D = cdist(scores, scores)
-            start = [int(idx[j]) for j in _clustering.kennard_stone(D, k)[:k]]
+            m = len(pool)
+            if dense_matrix_fits(m, self.max_memory_bytes):
+                D = cdist(scores, scores)
+                local = _clustering.kennard_stone(D, k)[:k]
+            else:
+                i0, j0 = _blocked_seed_pair(
+                    m, lambda a, b: cdist(scores[a:b], scores, metric="euclidean")
+                )
+                local = _clustering.maxmin_pick_columns(
+                    m,
+                    lambda js: cdist(scores, scores[np.asarray(list(js))], metric="euclidean"),
+                    k,
+                    [i0, j0],
+                ).picked[:k]
+            start = [int(idx[j]) for j in local]
         else:
             rng = seed_for(ctx.rng_seeds, "d_optimal.init", stage)
             start = sorted(int(j) for j in rng.choice(idx, size=k, replace=False))

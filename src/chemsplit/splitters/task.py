@@ -16,6 +16,8 @@ from rdkit import Chem
 from chemsplit import scaffolds as _scaffolds
 from chemsplit._fp_similarity import (
     blocked_max_similarity_to,
+    blocked_threshold_counts,
+    blocked_threshold_pairs,
     compute_distance_matrix,
     compute_neighbor_lists,
     compute_similarity_matrix,
@@ -34,7 +36,8 @@ from chemsplit.base import (
     _Context,
     assign_groups,
 )
-from chemsplit.clustering import butina
+from chemsplit.clustering import EPS as _clustering_EPS
+from chemsplit.clustering import butina, butina_from_neighbors
 from chemsplit.determinism import argmax_tiebreak, seed_for, seeded_python_random, stable_sort
 from chemsplit.exceptions import (
     ConfigurationError,
@@ -192,20 +195,45 @@ class HiSplitter(GroupSplitter):
     def _conflict_components(
         self, ctx: _Context
     ) -> tuple[list[int], dict[int, list[int]], int, np.ndarray]:
-        guard_memory(ctx.n, self.max_memory_bytes, type(self).__name__)
         feat = get_featurizer(self.featurizer)
-        D = compute_distance_matrix(
-            ctx, feat, self.metric, self.max_memory_bytes, type(self).__name__, self.n_jobs
-        )
-        S = 1.0 - D
-        clusters = butina(D, cutoff=1.0 - self.coarse_cutoff, reorder=False)
+        dense = dense_matrix_fits(ctx.n, self.max_memory_bytes)
+        coarse = 1.0 - self.coarse_cutoff
+        if dense:
+            D = compute_distance_matrix(
+                ctx, feat, self.metric, self.max_memory_bytes, type(self).__name__, self.n_jobs
+            )
+            S: np.ndarray | None = 1.0 - D
+            clusters = butina(D, cutoff=coarse, reorder=False)
+        else:
+            S = None
+            neigh = compute_neighbor_lists(
+                ctx, feat, self.metric, coarse, eps=_clustering_EPS, n_jobs=self.n_jobs
+            )
+            clusters = butina_from_neighbors(neigh, ctx.n, reorder=False)
         n_clusters = len(clusters)
 
+        # Two clusters conflict exactly when some record pair across them exceeds the threshold,
+        # so the record-level threshold graph settles every cluster pair in one pass. That
+        # replaces an O(k^2) scan that extracted a submatrix per cluster pair -- with k near n on
+        # a diverse library, that was the dominant cost even when the matrix fitted.
+        cluster_of = np.empty(ctx.n, dtype=np.int64)
+        for cid, members_ in enumerate(clusters):
+            cluster_of[members_] = cid
         uf = UnionFind(n_clusters)
-        for a in range(n_clusters):
-            for b in range(a + 1, n_clusters):
-                sub = S[np.ix_(clusters[a], clusters[b])]
-                if sub.size and sub.max() > self.threshold + _EPS:
+        if S is not None:
+            pair_iter = (
+                (i, np.nonzero(S[i][i + 1:] > self.threshold + _EPS)[0] + i + 1, None)
+                for i in range(ctx.n)
+            )
+        else:
+            pair_iter = blocked_threshold_pairs(
+                ctx, feat, self.metric, self.threshold, eps=_EPS, n_jobs=self.n_jobs
+            )
+        for i, js, _vals in pair_iter:
+            a = int(cluster_of[i])
+            for j in js:
+                b = int(cluster_of[j])
+                if a != b:
                     uf.union(a, b)
         comps = uf.components()
         comp_records: dict[int, list[int]] = {}
@@ -275,6 +303,7 @@ class HiSplitter(GroupSplitter):
         target_test = ctx.sizes.n_test
         deviation = abs(len(test) - target_test) / max(1, ctx.n)
         max_discard = int(self.max_discard_frac * ctx.n)
+        cross_counts: dict[int, int] | None = None
         if deviation > self.size_tolerance and self.max_discard_frac > 0 and train and test:
             train_set = set(train)
             test_list = list(test)
@@ -283,10 +312,20 @@ class HiSplitter(GroupSplitter):
                 and len(discard) < max_discard
                 and test_list
             ):
-                train_idx = sorted(train_set)
-                cross_counts = {
-                    t: int(np.sum(S[t, train_idx] > self.threshold + _EPS)) for t in test_list
-                }
+                # `train_set` is unchanged by this loop, so each count is constant: compute the
+                # table once instead of rebuilding it every iteration.
+                if cross_counts is None:
+                    train_idx = sorted(train_set)
+                    if S is not None:
+                        cross_counts = {
+                            t: int(np.sum(S[t, train_idx] > self.threshold + _EPS))
+                            for t in test_list
+                        }
+                    else:
+                        cross_counts = blocked_threshold_counts(
+                            ctx, get_featurizer(self.featurizer), self.metric, self.threshold,
+                            rows=test_list, cols=train_idx, eps=_EPS, n_jobs=self.n_jobs,
+                        )
                 if max(cross_counts.values(), default=0) == 0:
                     break
                 worst = argmax_tiebreak(lambda t: cross_counts[t], sorted(test_list))
@@ -312,10 +351,18 @@ class HiSplitter(GroupSplitter):
         max_cross_similarity = 0.0
         cross_violates = False
         if train_arr.size and test_arr.size:
-            cross_sub = S[np.ix_(test_arr, train_arr)]
             # same dtype and EPS as the stage-2 conflict check, so verification can't misfire
-            cross_violates = bool(np.any(cross_sub > self.threshold + _EPS))
-            max_cross_similarity = float(cross_sub.max())
+            if S is not None:
+                cross_sub = S[np.ix_(test_arr, train_arr)]
+                cross_violates = bool(np.any(cross_sub > self.threshold + _EPS))
+                max_cross_similarity = float(cross_sub.max())
+            else:
+                max_sim = blocked_max_similarity_to(
+                    ctx, get_featurizer(self.featurizer), self.metric, train_arr,
+                    n_jobs=self.n_jobs,
+                )[test_arr]
+                cross_violates = bool(np.any(max_sim > self.threshold + _EPS))
+                max_cross_similarity = float(max_sim.max())
 
         if self.verify and cross_violates:
             raise InvariantError(
