@@ -102,17 +102,13 @@ def _block_ranges(n: int, block_size: int) -> Iterator[tuple[int, int]]:
 def _tanimoto_block(
     words_a: np.ndarray, pop_a: np.ndarray, words_b: np.ndarray, pop_b: np.ndarray
 ) -> np.ndarray:
-    """float64 Tanimoto distance block, shape (len(a), len(b))."""
-    na, nb = words_a.shape[0], words_b.shape[0]
-    inter = np.zeros((na, nb), dtype=np.int64)
-    for w in range(words_a.shape[1]):
-        anded = np.bitwise_and(words_a[:, w][:, None], words_b[:, w][None,:])
-        inter += _popcount_u64(anded)
-    union = pop_a[:, None].astype(np.int64) + pop_b[None,:].astype(np.int64) - inter
-    sim = np.ones((na, nb), dtype=np.float64)  # both-zero convention: similarity 1.0
-    nonzero = union > 0
-    sim[nonzero] = inter[nonzero] / union[nonzero]
-    return 1.0 - sim
+    """float64 Tanimoto distance block, shape (len(a), len(b)).
+
+    Delegates to the compiled kernel in :mod:`chemsplit._kernels`.
+    """
+    from chemsplit import _kernels
+
+    return _kernels.tanimoto_block(words_a, pop_a, words_b, pop_b)
 
 
 def _dice_block(

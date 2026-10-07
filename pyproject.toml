@@ -33,7 +33,9 @@ classifiers = [
 ]
 
 dependencies = [
-    "numpy>=1.24,<3",
+    "joblib>=1.3",
+    "numba>=0.61",
+    "numpy>=1.24,<2.6",
     "scipy>=1.10",
     "scikit-learn>=1.3",
     "rdkit>=2023.09.1",

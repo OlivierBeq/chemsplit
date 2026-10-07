@@ -780,6 +780,7 @@ class BaseSplitter(sklearn.base.BaseEstimator, abc.ABC):
             standardize=kw.get("standardize", False),
             on_duplicates=kw.get("on_duplicates", "warn"),
             group_forming=self.group_forming,
+            n_jobs=self.n_jobs,
         )
 
         bundle = make_seed_bundle(self.random_state)
@@ -998,6 +999,7 @@ class GroupSplitter(BaseSplitter):
             standardize=kw.get("standardize", False),
             on_duplicates=kw.get("on_duplicates", "ignore"),
             group_forming=True,
+            n_jobs=self.n_jobs,
         )
         bundle = make_seed_bundle(self.random_state)
         ctx = _Context(

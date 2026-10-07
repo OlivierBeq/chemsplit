@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import dataclasses
+import functools
 import threading
 from collections.abc import Sequence
 from typing import Any, Literal
@@ -11,12 +12,14 @@ from typing import Any, Literal
 import numpy as np
 import pandas as pd
 
+from chemsplit import _parallel
 from chemsplit.exceptions import (
     ColumnError,
     ConfigurationError,
     DuplicateRecordError,
     DuplicateWarning,
     InputKindError,
+    InvariantError,
     MoleculeParseError,
     ParseWarning,
     StandardizationWarning,
@@ -311,6 +314,98 @@ def _key_of_standardized(
     return key, True
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class _Digest:
+    """Everything ``run_pipeline`` needs from one molecule's standardised form.
+
+    Plain scalars only: this crosses a process boundary, and returning a molecule would cost more
+    than the standardisation it saves.
+    """
+
+    key: str
+    used_fallback: bool
+    differs: bool
+
+
+def _digest_smiles_chunk(
+    smiles_chunk: Sequence[str],
+    *,
+    config: StandardizeConfig,
+    want_differs: bool,
+) -> list[_Digest | None]:
+    """Standardise a chunk of SMILES and reduce each to a :class:`_Digest`.
+
+    The unit of work for :func:`chemsplit._parallel.ordered_map`.
+
+    :param smiles_chunk: the SMILES strings.
+    :param config: standardisation settings.
+    :param want_differs: also report whether standardisation changed the molecule; costs two extra
+        canonicalisations and is only needed for :class:`StandardizationWarning`.
+    :return: one digest per input, or ``None`` where it did not parse or standardisation failed.
+    """
+    from rdkit import Chem
+
+    out: list[_Digest | None] = []
+    for smi in smiles_chunk:
+        mol = Chem.MolFromSmiles(smi, sanitize=True)
+        if mol is None:
+            out.append(None)
+            continue
+        try:
+            std = standardize(mol, config)
+            key, used_fallback = _key_of_standardized(std, config)
+            differs = bool(want_differs and Chem.MolToSmiles(std) != Chem.MolToSmiles(mol))
+        except Exception:
+            out.append(None)
+            continue
+        out.append(_Digest(key=key, used_fallback=used_fallback, differs=differs))
+    return out
+
+
+def _digest_mols(
+    mols: Sequence[Any], config: StandardizeConfig, *, want_differs: bool
+) -> list[_Digest | None]:
+    """Serial :func:`_digest_smiles_chunk` equivalent for molecules supplied directly.
+
+    Not parallelised: pickling molecules to a worker costs more than it saves.
+
+    :param mols: the molecules, possibly containing ``None``.
+    :param config: standardisation settings.
+    :param want_differs: as for :func:`_digest_smiles_chunk`.
+    :return: one digest per molecule, or ``None`` where it was absent or failed.
+    """
+    from rdkit import Chem
+
+    out: list[_Digest | None] = []
+    for mol in mols:
+        if mol is None:
+            out.append(None)
+            continue
+        try:
+            std = standardize(mol, config)
+            key, used_fallback = _key_of_standardized(std, config)
+            differs = bool(want_differs and Chem.MolToSmiles(std) != Chem.MolToSmiles(mol))
+        except Exception:
+            out.append(None)
+            continue
+        out.append(_Digest(key=key, used_fallback=used_fallback, differs=differs))
+    return out
+
+
+def _group_by_key(digests: Sequence[_Digest | None]) -> dict[str, list[int]]:
+    """Group record indices by deduplication key, in first-appearance order.
+
+    :param digests: the per-record digests, ``None`` where there is no key.
+    :return: key to the ascending indices sharing it.
+    """
+    keyed: dict[str, list[int]] = {}
+    for i, digest in enumerate(digests):
+        if digest is None:
+            continue
+        keyed.setdefault(digest.key, []).append(i)
+    return keyed
+
+
 def find_duplicates(
     mols: Sequence[Any], config: StandardizeConfig | None = None
 ) -> tuple[dict[str, list[int]], list[int]]:
@@ -420,6 +515,7 @@ def run_pipeline(
     on_duplicates: Literal["warn", "raise", "ignore", "group"] = "warn",
     group_forming: bool = False,
     config: StandardizeConfig | None = None,
+    n_jobs: int | None = 1,
 ) -> PipelineResult:
     """Parse, standardise and deduplicate ``X`` before a split.
 
@@ -437,6 +533,8 @@ def run_pipeline(
     :param group_forming: whether the calling splitter forms groups, which decides whether
         duplicates can be grouped.
     :param config: standardisation settings, or ``None`` for the defaults.
+    :param n_jobs: worker count for the per-molecule standardisation pass. Results do not
+        depend on it: chunks are contiguous and reassembled in input order.
     :raises MoleculeParseError: if a record fails to parse and ``on_parse_error="raise"``.
     :raises DuplicateRecordError: if duplicates exist and ``on_duplicates="raise"``.
     :raises ConfigurationError: if ``on_duplicates="group"`` is asked of a splitter that forms
@@ -476,42 +574,42 @@ def run_pipeline(
         mols = list(X)
         smiles_list = None
 
-    # Standardise at most once per molecule and share the result between the diagnostic
-    # warning below and the duplicate scan further down: both used to standardise
-    # independently, which doubled the dominant cost of every split.
-    std_mols: list[Any] | None = None
+    # Standardise once per molecule and share it with both consumers below: they used to
+    # standardise independently, doubling the dominant cost of every split.
+    digests: list[_Digest | None] | None = None
     if mols is not None and (not standardize or on_duplicates != "ignore"):
         cfg_once = config or StandardizeConfig()
-        # Both original failure behaviours are preserved: the duplicate scan propagated, the
-        # diagnostic swallowed. Only suppress when the diagnostic is the sole consumer.
-        suppress = on_duplicates == "ignore"
-        std_mols = []
-        for mol in mols:
-            if mol is None:
-                std_mols.append(None)
-                continue
-            if not suppress:
-                std_mols.append(globals()["standardize"](mol, cfg_once))
-                continue
-            try:
-                std_mols.append(globals()["standardize"](mol, cfg_once))
-            except Exception:
-                std_mols.append(None)
+        want_differs = not standardize
+        if smiles_list is not None and _parallel.will_parallelize(len(smiles_list), n_jobs):
+            # Re-derive from the SMILES so the work can be shipped to worker processes as
+            # strings: pickling RDKit molecules is what makes the obvious parallelisation slower
+            # than the serial loop. The re-parse is only worth paying when workers are actually
+            # used -- in-process it is pure waste, since `mols` is already parsed, and charging
+            # it to the default n_jobs=1 path would be a 36% regression.
+            digests = _parallel.ordered_map(
+                functools.partial(
+                    _digest_smiles_chunk, config=cfg_once, want_differs=want_differs
+                ),
+                smiles_list,
+                n_jobs=n_jobs,
+            )
+        else:
+            digests = _digest_mols(mols, cfg_once, want_differs=want_differs)
+
+        if on_duplicates != "ignore":
+            # A digest is None for an unparseable record (fine) or a standardisation failure (not),
+            # so re-run the offenders serially to raise exactly what the old code raised.
+            for i, (mol, digest) in enumerate(zip(mols, digests, strict=True)):
+                if mol is not None and digest is None:
+                    globals()["standardize"](mol, cfg_once)
+                    raise InvariantError(  # pragma: no cover - the line above must raise
+                        f"record {i} failed standardisation in a worker but not in the parent"
+                    )
 
     if mols is not None and not standardize:
         # standardisation is off by default, so warn once if stripping would change anything
-        assert std_mols is not None
-        n_differs = 0
-        for mol, std in zip(mols, std_mols, strict=True):
-            if mol is None or std is None:
-                continue
-            try:
-                from rdkit import Chem
-
-                if Chem.MolToSmiles(std) != Chem.MolToSmiles(mol):
-                    n_differs += 1
-            except Exception:
-                continue
+        assert digests is not None
+        n_differs = sum(1 for d in digests if d is not None and d.differs)
         if n_differs:
             warn_with_details(
                 StandardizationWarning(
@@ -523,8 +621,8 @@ def run_pipeline(
 
     dedup_group_labels = None
     if mols is not None and on_duplicates != "ignore":
-        assert std_mols is not None
-        keyed, _fallbacks = _find_duplicates_from_standardized(std_mols, config)
+        assert digests is not None
+        keyed = _group_by_key(digests)
         dup_keys = {k: v for k, v in keyed.items() if len(v) > 1}
         if dup_keys:
             n_affected = sum(len(v) for v in dup_keys.values())
