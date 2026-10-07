@@ -204,7 +204,9 @@ def pairwise_distances(
     :param Xf: the left-hand feature matrix.
     :param Yf: the right-hand feature matrix, or ``None`` to use ``Xf``.
     :param metric: the metric name.
-    :param n_jobs: worker count. Single-process today; results never depend on it.
+    :param n_jobs: worker count. The binary-metric kernels are already multi-threaded
+        internally (BLAS, or numba's ``prange``), so this is advisory; results never depend
+        on it.
     :param block_size: rows per block.
     :raises UnknownMetricError: if ``metric`` is not recognised.
     :return: an ``(n, m)`` float32 matrix.

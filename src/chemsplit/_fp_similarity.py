@@ -38,12 +38,18 @@ def resolve_featurizer(spec_or_instance: str | Featurizer, **kw: Any) -> Featuri
     return get_featurizer(spec_or_instance, **kw)
 
 
+_BYTES_PER_PAIR_IN_FLIGHT = 12
+"""Peak bytes per entry for one :func:`~chemsplit.metrics.pairwise_distances` call: the float64
+accumulator plus the float32 copy it returns, both live at the downcast."""
+
+
 def guard_memory(
     n: int,
     max_memory_bytes: int,
     splitter_name: str,
     *,
     alternatives: list[str] | None = None,
+    copies: int = 1,
 ) -> None:
     """Refuse to build an ``n x n`` matrix that would not fit.
 
@@ -53,11 +59,16 @@ def guard_memory(
     :param max_memory_bytes: the ceiling.
     :param splitter_name: the caller, for the error message.
     :param alternatives: splitters to suggest instead, or ``None`` for the defaults.
-    :raises ScalabilityError: if a float32 ``n x n`` matrix would exceed the ceiling. The
+    :param copies: how many ``n x n`` float64 matrices the caller holds live at once. The default
+        of ``1`` already covers the two that :func:`~chemsplit.metrics.pairwise_distances` itself
+        needs; pass more where the caller keeps additional ones, as ``SPXYSplitter`` does.
+    :raises ScalabilityError: if the estimated peak would exceed the ceiling. The
         :class:`~chemsplit.exceptions.ScalabilityError` names the splitter, ``n``, the bytes
         needed and a few alternatives.
     """
-    required = n * n * 4
+    # The old n*n*4 estimate under-counted by ~3x, so a process could be OOM-killed well below the
+    # nominal ceiling instead of raising a diagnosable ScalabilityError.
+    required = n * n * (_BYTES_PER_PAIR_IN_FLIGHT + 8 * (copies - 1))
     if required <= max_memory_bytes:
         return
     if alternatives is None:
@@ -70,7 +81,7 @@ def guard_memory(
         ]
     alt_text = "; ".join(f"({chr(97 + i)}) {a}" for i, a in enumerate(alternatives))
     raise ScalabilityError(
-        f"{splitter_name}: a dense {n}x{n} matrix would require {required:,} bytes, "
+        f"{splitter_name}: a dense {n}x{n} matrix would peak at {required:,} bytes, "
         f"exceeding max_memory_bytes={max_memory_bytes:,}. Alternatives: {alt_text}."
     )
 

@@ -1506,6 +1506,9 @@ class SPXYSplitter(_SimilarityBase):
 
     def _partition(self, ctx: _Context) -> list[SplitResult]:
         n = ctx.n
+        # Three float64 n x n matrices are live at once below (feature, label, and their sum), so
+        # the default single-matrix budget would let this start a split it cannot finish.
+        guard_memory(n, self.max_memory_bytes, type(self).__name__, copies=3)
         D_x = _dist_matrix(self, ctx).astype(np.float64)
         y = np.asarray(ctx.y, dtype=np.float64)
         y = y.reshape(n, -1)
