@@ -15,8 +15,11 @@ from rdkit import Chem
 
 from chemsplit import scaffolds as _scaffolds
 from chemsplit._fp_similarity import (
+    blocked_max_similarity_to,
     compute_distance_matrix,
+    compute_neighbor_lists,
     compute_similarity_matrix,
+    dense_matrix_fits,
     guard_memory,
 )
 from chemsplit._ga import mutate_bits
@@ -473,15 +476,31 @@ class LoSplitter(GroupSplitter):
     ) -> tuple[IndexArray, list[list[int]], set[int], np.ndarray, float]:
         y = np.asarray(ctx.y, dtype=np.float64)
         y1 = y[:, self.task_index] if y.ndim == 2 else y
-        guard_memory(ctx.n, self.max_memory_bytes, type(self).__name__)
         feat = get_featurizer(self.featurizer)
-        S = compute_similarity_matrix(
-            ctx, feat, self.metric, self.max_memory_bytes, type(self).__name__, self.n_jobs
-        )
-        neigh = [
-            set(np.nonzero(S[i] >= self.threshold - _EPS)[0].tolist()) - {i}
-            for i in range(ctx.n)
-        ]
+        # Only the similarity-threshold neighbour sets are read from the matrix, so build them
+        # blockwise when a dense one will not fit. Identical sets either way.
+        if dense_matrix_fits(ctx.n, self.max_memory_bytes):
+            S = compute_similarity_matrix(
+                ctx, feat, self.metric, self.max_memory_bytes, type(self).__name__, self.n_jobs
+            )
+            neigh = [
+                set(np.nonzero(S[i] >= self.threshold - _EPS)[0].tolist()) - {i}
+                for i in range(ctx.n)
+            ]
+        else:
+            S = None
+            neigh = [
+                set(a.tolist())
+                for a in compute_neighbor_lists(
+                    ctx,
+                    feat,
+                    self.metric,
+                    self.threshold,
+                    eps=_EPS,
+                    mode="similarity_ge",
+                    n_jobs=self.n_jobs,
+                )
+            ]
 
         available = set(range(ctx.n))
         clusters: list[list[int]] = []
@@ -526,9 +545,18 @@ class LoSplitter(GroupSplitter):
             ceiling = self.threshold
         test_list = sorted(test_set)
         leak: set[int] = set()
-        for r in sorted(available):
-            if S[r, test_list].max() > ceiling + _EPS:
-                leak.add(r)
+        if S is not None:
+            for r in sorted(available):
+                if S[r, test_list].max() > ceiling + _EPS:
+                    leak.add(r)
+        else:
+            # the same reduction as S[r, test_list].max(), blockwise
+            max_sim = blocked_max_similarity_to(
+                ctx, get_featurizer(self.featurizer), self.metric, test_list, n_jobs=self.n_jobs
+            )
+            for r in sorted(available):
+                if max_sim[r] > ceiling + _EPS:
+                    leak.add(r)
         discard_set = leak
         train_set = available - leak
 

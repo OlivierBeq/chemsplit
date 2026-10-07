@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, ClassVar, Literal
 
 import numpy as np
@@ -20,6 +20,10 @@ from chemsplit import clustering as _clustering
 from chemsplit._fp_similarity import (
     EPS,
     SimilarityParamsMixin,
+    blocked_farthest_pair,
+    blocked_row_means,
+    blocked_threshold_counts,
+    blocked_threshold_pairs,
     compute_distance_matrix,
     compute_neighbor_lists,
     compute_similarity_matrix,
@@ -28,6 +32,7 @@ from chemsplit._fp_similarity import (
     guard_memory,
     rectangular_distances,
     resolve_featurizer,
+    similarity_columns,
 )
 from chemsplit._optimize import BalanceProblem, solve_balance
 from chemsplit._unionfind import UnionFind, dense_label_encode
@@ -44,7 +49,11 @@ from chemsplit.base import (
 from chemsplit.determinism import (
     argmax_tiebreak,
     argmin_tiebreak,
+    first_argmax_2d,
+    first_ge_2d,
     floor_round,
+    masked_argmax,
+    masked_argmin,
     row_argmin,
     seed_for,
     stable_sort,
@@ -295,6 +304,288 @@ def _picked_diagnostics(
     return min_pairwise, float(worst)
 
 
+def _blocked_max_cdist(y: np.ndarray, block: int = 2048) -> float:
+    """Largest pairwise Euclidean distance among the rows of ``y``, without an ``n x n`` matrix.
+
+    :param y: the label rows.
+    :param block: rows per band.
+    :return: the maximum distance, ``0.0`` for fewer than two rows.
+    """
+    n = y.shape[0]
+    if n < 2:
+        return 0.0
+    best = 0.0
+    for start in range(0, n, block):
+        stop = min(start + block, n)
+        best = max(best, float(cdist(y[start:stop], y, metric="euclidean").max()))
+    return best
+
+
+def _blocked_seed_pair(
+    n: int, band: Callable[[int, int], np.ndarray], block: int = 2048
+) -> tuple[int, int]:
+    """Lexicographically smallest ``i < j`` pair within ``EPS`` of the maximum, from row bands.
+
+    Two passes -- one for the maximum, one for the first qualifying pair -- so no matrix is held.
+    Same tie-break as the dense Kennard-Stone seed search.
+
+    :param n: the record count.
+    :param band: maps ``(start, stop)`` to those rows against every record.
+    :param block: rows per band.
+    :return: the seed pair.
+    """
+    best = -np.inf
+    for start in range(0, n, block):
+        stop = min(start + block, n)
+        rows = np.arange(stop - start)[:, None]
+        cols = np.arange(n)[None,:]
+        masked = np.where(cols > rows + start, band(start, stop), -np.inf)
+        if masked.size:
+            best = max(best, float(masked.max()))
+    for start in range(0, n, block):
+        stop = min(start + block, n)
+        rows = np.arange(stop - start)[:, None]
+        cols = np.arange(n)[None,:]
+        masked = np.where(cols > rows + start, band(start, stop), -np.inf)
+        if bool((masked >= best - _clustering.EPS).any()):
+            i, j = first_ge_2d(masked, best - _clustering.EPS)
+            return start + i, j
+    return 0, min(1, n - 1)
+
+
+class _Distances:
+    """Uniform access to a splitter's pairwise distances, dense or blocked.
+
+    Holds the dense matrix when it fits the caller's budget -- it is faster, since every slice is
+    then free -- and otherwise serves the same values from blocked recomputation. Every method
+    returns what indexing the dense matrix would have returned, so a splitter written against
+    this interface behaves identically at any size.
+
+    :param splitter: the calling splitter, for its featurizer/metric/budget/``n_jobs``.
+    :param ctx: the split context.
+    :param copies: live ``n x n`` matrices the caller needs, as for ``guard_memory``.
+    :param as_float64: upcast the dense matrix, matching callers that did so themselves.
+    """
+
+    def __init__(
+        self, splitter: Any, ctx: _Context, *, copies: int = 1, as_float64: bool = False
+    ) -> None:
+        self._s = splitter
+        self._ctx = ctx
+        self._f64 = as_float64
+        self.n = ctx.n
+        self.dense: np.ndarray | None = None
+        if dense_matrix_fits(ctx.n, splitter.max_memory_bytes, copies):
+            D = _dist_matrix(splitter, ctx)
+            self.dense = D.astype(np.float64) if as_float64 else D
+
+    def fetch(self, rows: Sequence[int], cols: Sequence[int]) -> np.ndarray:
+        """Distances between two index sets, from the dense matrix or recomputed.
+
+        The one place blocked results are produced, so ``as_float64`` applies to them too --
+        it has to, since a float32 row sum differs from a float64 one.
+        """
+        if self.dense is not None:
+            return self.dense[np.ix_(list(rows), list(cols))]
+        block = rectangular_distances(
+            self._ctx, self._s.featurizer, self._s.metric, list(rows), list(cols), self._s.n_jobs
+        )
+        return block.astype(np.float64) if self._f64 else block
+
+    def columns(self, js: Sequence[int]) -> np.ndarray:
+        """Distance columns for ``js``, shape ``(n, len(js))``."""
+        return self.fetch(range(self.n), list(js))
+
+    def column(self, j: int) -> np.ndarray:
+        """Distance column for record ``j``, shape ``(n,)``."""
+        return self.columns([j])[:, 0]
+
+    def pair(self, i: int, j: int) -> float:
+        """Distance between two records."""
+        return float(self.fetch([i], [j])[0, 0])
+
+    def row_means(self) -> np.ndarray:
+        """Per-record mean distance to every record, shape ``(n,)``."""
+        if self.dense is not None:
+            return self.dense.mean(axis=1)
+        return blocked_row_means(
+            self._ctx, self._s.featurizer, self._s.metric, n_jobs=self._s.n_jobs
+        )
+
+    def farthest_pair(self) -> tuple[int, int]:
+        """The most distant pair, ties to the lexicographically smallest."""
+        if self.dense is not None:
+            return first_argmax_2d(np.triu(self.dense, k=1))
+        return blocked_farthest_pair(
+            self._ctx, self._s.featurizer, self._s.metric, n_jobs=self._s.n_jobs
+        )
+
+    def max_upper(self, block: int = 2048) -> float:
+        """Largest distance over the ``i < j`` pairs."""
+        if self.dense is not None:
+            iu = np.triu_indices(self.n, k=1)
+            return float(self.dense[iu].max())
+        best = -np.inf
+        for start in range(0, self.n, block):
+            stop = min(start + block, self.n)
+            sub = self._band(start, stop)
+            rows = np.arange(stop - start)[:, None]
+            cols = np.arange(self.n)[None,:]
+            masked = np.where(cols > rows + start, sub, -np.inf)
+            if masked.size:
+                best = max(best, float(masked.max()))
+        return best
+
+    def first_pair_at_least(self, value: float, block: int = 2048) -> tuple[int, int]:
+        """Lexicographically smallest ``i < j`` pair of at least ``value``."""
+        for start in range(0, self.n, block):
+            stop = min(start + block, self.n)
+            sub = self._band(start, stop)
+            rows = np.arange(stop - start)[:, None]
+            cols = np.arange(self.n)[None,:]
+            masked = np.where(cols > rows + start, sub, -np.inf)
+            if bool((masked >= value).any()):
+                i, j = first_ge_2d(masked, value)
+                return start + i, j
+        raise ValueError("first_pair_at_least(): no pair reaches the given value")
+
+    def row_argmin_to(self, cols: Sequence[int], block: int = 2048) -> np.ndarray:
+        """Per record, the position within ``cols`` of its nearest member, ties to the first."""
+        cols = list(cols)
+        out = np.empty(self.n, dtype=np.int64)
+        for start in range(0, self.n, block):
+            stop = min(start + block, self.n)
+            out[start:stop] = row_argmin(self.fetch(range(start, stop), cols))
+        return out
+
+    def row_sums_within(self, idx: Sequence[int], block: int = 2048) -> np.ndarray:
+        """Row sums of the sub-matrix restricted to ``idx``, in ``idx`` order."""
+        idx = list(idx)
+        out = np.empty(len(idx), dtype=np.float64)
+        for start in range(0, len(idx), block):
+            stop = min(start + block, len(idx))
+            out[start:stop] = self.fetch(idx[start:stop], idx).sum(axis=1)
+        return out
+
+    def max_overall(self, block: int = 2048) -> float:
+        """Largest distance anywhere, diagonal included (which is zero)."""
+        if self.dense is not None:
+            return float(self.dense.max()) if self.dense.size else 0.0
+        best = 0.0
+        for start in range(0, self.n, block):
+            stop = min(start + block, self.n)
+            sub = self.fetch(range(start, stop), range(self.n))
+            if sub.size:
+                best = max(best, float(sub.max()))
+        return best
+
+    def row_sums(self, block: int = 2048) -> np.ndarray:
+        """Per-record sum of distances to every record."""
+        if self.dense is not None:
+            return self.dense.sum(axis=1)
+        out = np.empty(self.n, dtype=np.float64)
+        for start in range(0, self.n, block):
+            stop = min(start + block, self.n)
+            out[start:stop] = self.fetch(range(start, stop), range(self.n)).sum(axis=1)
+        return out
+
+    def max_min_to(self, cols: Sequence[int], block: int = 2048) -> float:
+        """Worst-case coverage: ``max_i min_{j in cols} D[i, j]``."""
+        cols = list(cols)
+        if not cols:
+            return float("nan")
+        if self.dense is not None:
+            return float(np.max(np.min(self.dense[:, cols], axis=1)))
+        worst = -np.inf
+        for start in range(0, self.n, block):
+            stop = min(start + block, self.n)
+            worst = max(worst, float(self.fetch(range(start, stop), cols).min(axis=1).max()))
+        return worst
+
+    def farthest_pair_in_pool(self, pool: np.ndarray, block: int = 2048) -> tuple[int, int]:
+        """Farthest-apart pair within ``pool`` (ascending), ties to the smallest pair.
+
+        Pool-local row-major order is lexicographic in global indices too, since ``pool`` is
+        ascending, so the dense tie-break carries over unchanged.
+        """
+        pool = np.asarray(pool)
+        m = pool.size
+        if m < 2:
+            return int(pool[0]), int(pool[0])
+
+        def band(a: int, b: int) -> np.ndarray:
+            return self.fetch(pool[a:b], pool)
+
+        best = -np.inf
+        for a in range(0, m, block):
+            b = min(a + block, m)
+            rows = np.arange(b - a)[:, None]
+            cols = np.arange(m)[None,:]
+            masked = np.where(cols > rows + a, band(a, b), -np.inf)
+            if masked.size:
+                best = max(best, float(masked.max()))
+        for a in range(0, m, block):
+            b = min(a + block, m)
+            rows = np.arange(b - a)[:, None]
+            cols = np.arange(m)[None,:]
+            masked = np.where(cols > rows + a, band(a, b), -np.inf)
+            if bool((masked >= best - EPS).any()):
+                i, j = first_ge_2d(masked, best - EPS)
+                return int(pool[a + i]), int(pool[j])
+        return int(pool[0]), int(pool[1])
+
+    def _band(self, start: int, stop: int) -> np.ndarray:
+        """Rows ``[start, stop)`` against every record."""
+        return self.fetch(range(start, stop), range(self.n))
+
+    def min_between(self, rows: Sequence[int], cols: Sequence[int], block: int = 1024) -> float:
+        """Smallest distance between two index sets, ``inf`` if either is empty."""
+        rows, cols = list(rows), list(cols)
+        if not rows or not cols:
+            return float("inf")
+        best = float("inf")
+        for start in range(0, len(rows), block):
+            chunk = rows[start : start + block]
+            sub = self.fetch(chunk, cols)
+            if sub.size:
+                best = min(best, float(sub.min()))
+        return best
+
+    def count_pairs_at_least(self, value: float, block: int = 2048) -> int:
+        """How many ``i < j`` pairs are at least ``value``."""
+        if self.dense is not None:
+            iu = np.triu_indices(self.n, k=1)
+            return int(np.sum(self.dense[iu] >= value))
+        total = 0
+        for start in range(0, self.n, block):
+            stop = min(start + block, self.n)
+            sub = self.fetch(range(start, stop), range(self.n))
+            rows = np.arange(stop - start)[:, None]
+            cols = np.arange(self.n)[None,:]
+            total += int(np.sum((sub >= value) & (cols > rows + start)))
+        return total
+
+
+def _default_butina_clusters(ctx: _Context, splitter_name: str, n_jobs: int = 1) -> list[list[int]]:
+    """Butina clusters at the default ECFP4/Tanimoto 0.35 cutoff, without an ``n x n`` matrix.
+
+    Butina reads only radius-neighbour lists, which can be built blockwise, so the fallback
+    clusterer works at any size. Bit-identical to the dense route.
+
+    :param ctx: the split context.
+    :param splitter_name: the caller, for error messages.
+    :param n_jobs: worker count. Results never depend on it.
+    :return: clusters in creation order, each starting with its centroid.
+    """
+    if dense_matrix_fits(ctx.n, 2 * 1024**3):
+        D = compute_distance_matrix(ctx, "ecfp4", "tanimoto", 2 * 1024**3, splitter_name, 1)
+        return _clustering.butina(D, 0.35, reorder=False)
+    neigh = compute_neighbor_lists(
+        ctx, "ecfp4", "tanimoto", 0.35, eps=_clustering.EPS, n_jobs=n_jobs
+    )
+    return _clustering.butina_from_neighbors(neigh, ctx.n, reorder=False)
+
+
 def _resolve_radius_without_matrix(self: Any, ctx: _Context) -> float:
     """``_resolve_radius`` for the matrix-free path, using a blocked distance range.
 
@@ -419,13 +710,24 @@ class SimilarityThresholdSplitter(_SimilarityGroupBase):
             raise ParameterError(f"max_discard_frac must be in [0,1), got {max_discard_frac!r}")
 
     def _group_labels(self, ctx: _Context) -> IndexArray:
-        S = _sim_matrix(self, ctx)
         n = ctx.n
+        # Each strategy reads the matrix through one reduction that can be streamed, so a dense
+        # matrix is only built when it fits and is cheaper. Identical results either way.
+        use_dense = dense_matrix_fits(n, self.max_memory_bytes)
+        S = _sim_matrix(self, ctx) if use_dense else None
         if self.strategy == "graph_component":
             uf = UnionFind(n)
-            for i in range(n):
-                row = S[i]
-                js = np.nonzero(row[i + 1:] > self.threshold + EPS)[0] + i + 1
+            if S is not None:
+                pairs = (
+                    (i, np.nonzero(S[i][i + 1:] > self.threshold + EPS)[0] + i + 1, None)
+                    for i in range(n)
+                )
+            else:
+                pairs = blocked_threshold_pairs(
+                    ctx, self.featurizer, self.metric, self.threshold,
+                    eps=EPS, n_jobs=self.n_jobs,
+                )
+            for i, js, _vals in pairs:
                 for j in js:
                     uf.union(i, int(j))
             labels = np.asarray(
@@ -451,12 +753,22 @@ class SimilarityThresholdSplitter(_SimilarityGroupBase):
             test = set(perm[b: b + ctx.sizes.n_test].tolist())
             discarded: set[int] = set()
             max_discard = int(self.max_discard_frac * n)
+            # `train` never changes in this loop, so each record's violation count is constant:
+            # count once instead of rebuilding the whole table on every iteration.
+            train_list = sorted(train)
+            if not train_list:
+                counts = {t: 0 for t in test}
+            elif S is not None:
+                counts = {
+                    t: int(np.sum(S[t, train_list] > self.threshold + EPS)) for t in sorted(test)
+                }
+            else:
+                counts = blocked_threshold_counts(
+                    ctx, self.featurizer, self.metric, self.threshold,
+                    rows=sorted(test), cols=train_list, eps=EPS, n_jobs=self.n_jobs,
+                )
             while True:
-                violations: dict[int, int] = {}
-                for t in test:
-                    cnt = int(np.sum(S[t, list(train)] > self.threshold + EPS)) if train else 0
-                    if cnt > 0:
-                        violations[t] = cnt
+                violations = {t: c for t, c in counts.items() if t in test and c > 0}
                 if not violations:
                     break
                 worst = argmax_tiebreak(lambda t: violations[t], sorted(violations))
@@ -480,24 +792,38 @@ class SimilarityThresholdSplitter(_SimilarityGroupBase):
         if self.seed_selection == "random":
             rng = seed_for(ctx.rng_seeds, "similarity.seed", 0)
             s = int(rng.integers(0, n))
-        elif self.seed_selection == "most_central":
-            mean_d = 1.0 - S.mean(axis=1)
-            s = argmin_tiebreak(lambda i: mean_d[i], range(n))
-        else:  # most_peripheral
-            mean_d = 1.0 - S.mean(axis=1)
-            s = argmax_tiebreak(lambda i: mean_d[i], range(n))
+        else:
+            mean_s = (
+                S.mean(axis=1)
+                if S is not None
+                else blocked_row_means(
+                    ctx, self.featurizer, self.metric, similarity=True, n_jobs=self.n_jobs
+                )
+            )
+            mean_d = 1.0 - mean_s
+            pick = argmin_tiebreak if self.seed_selection == "most_central" else argmax_tiebreak
+            s = pick(lambda i: mean_d[i], range(n))
+        # max-similarity-to-test is a running maximum: one column per added record, instead of
+        # rescanning every candidate against the whole test set on every pick.
+        def sim_column(j: int) -> np.ndarray:
+            if S is not None:
+                return S[:, j]
+            return similarity_columns(ctx, self.featurizer, self.metric, [j], self.n_jobs)[:, 0]
+
         test = {s}
+        max_to_test = np.array(sim_column(s), dtype=np.float32, copy=True)
+        taken = np.zeros(n, dtype=bool)
+        taken[s] = True
         n_test_target = max(1, ctx.sizes.n_test)
         while len(test) < n_test_target:
-            cand = [i for i in range(n) if i not in test]
-            if not cand:
+            if bool(taken.all()):
                 break
-            best = argmax_tiebreak(lambda i: float(np.max(S[i, list(test)])), cand)
+            best = masked_argmax(max_to_test, taken)
             test.add(best)
+            taken[best] = True
+            np.maximum(max_to_test, sim_column(best), out=max_to_test)
         train = [
-            i
-            for i in range(n)
-            if i not in test and float(np.max(S[i, list(test)])) <= self.threshold + EPS
+            i for i in range(n) if i not in test and float(max_to_test[i]) <= self.threshold + EPS
         ]
         discard = [i for i in range(n) if i not in test and i not in train]
         if not self.allow_discard and discard:
@@ -1089,11 +1415,22 @@ class DensityClusterSplitter(_SimilarityGroupBase):
             raise ParameterError(f"invalid noise_policy: {noise_policy!r}")
 
     def _group_labels(self, ctx: _Context) -> IndexArray:
-        D = _dist_matrix(self, ctx)
+        # DBSCAN reads only the eps-neighbour lists, which can be built blockwise; HDBSCAN builds
+        # a minimum spanning tree over all pairs and genuinely needs the dense matrix.
+        dense = dense_matrix_fits(ctx.n, self.max_memory_bytes) or self.algorithm != "dbscan"
+        dist = _Distances(self, ctx) if dense else None
+        D = dist.dense if dist is not None else None
         if self.algorithm == "dbscan":
-            labels = DBSCAN(
-                eps=self.eps, min_samples=self.min_samples, metric="precomputed"
-            ).fit_predict(D)
+            if D is not None:
+                labels = DBSCAN(
+                    eps=self.eps, min_samples=self.min_samples, metric="precomputed"
+                ).fit_predict(D)
+            else:
+                neigh = compute_neighbor_lists(
+                    ctx, self.featurizer, self.metric, self.eps,
+                    eps=0.0, include_self=True, n_jobs=self.n_jobs,
+                )
+                labels = _clustering.dbscan_from_neighbors(neigh, self.min_samples, ctx.n)
         else:
             try:
                 from sklearn.cluster import HDBSCAN
@@ -1117,8 +1454,15 @@ class DensityClusterSplitter(_SimilarityGroupBase):
                 self._last_noise_idx = noise.copy()
             elif self.noise_policy == "distribute" and (labels != -1).any():
                 core_idx = np.nonzero(labels != -1)[0]
+                if D is None:
+                    dist = _Distances(self, ctx)
                 for i in noise:
-                    nearest = argmin_tiebreak(lambda c: float(D[i, c]), core_idx.tolist())
+                    col = D[i] if D is not None else dist.fetch([i], core_idx.tolist())[0]
+                    nearest = (
+                        argmin_tiebreak(lambda c: float(col[c]), core_idx.tolist())
+                        if D is not None
+                        else int(core_idx[row_argmin(col[None, :])[0]])
+                    )
                     labels[i] = labels[nearest]
             # own_groups: leave at -1 and convert to singleton labels below
         if noise.size == n:
@@ -1521,7 +1865,7 @@ class MaxMinSplitter(_SimilarityBase):
                     ctx, self.featurizer, self.metric, range(n), js, self.n_jobs
                 ),
                 n_picks,
-                first,
+                [first],
             )
         picked = detail.picked
         swap_meta: dict[str, Any] = {}
@@ -1640,20 +1984,29 @@ class SPXYSplitter(_SimilarityBase):
 
     def _partition(self, ctx: _Context) -> list[SplitResult]:
         n = ctx.n
-        # Two float64 n x n matrices are live below: feature distances (accumulated in place) and
-        # label distances. The single-matrix default would start a split it cannot finish.
-        guard_memory(n, self.max_memory_bytes, type(self).__name__, copies=2)
-        D_x = _dist_matrix(self, ctx).astype(np.float64)
-        y = np.asarray(ctx.y, dtype=np.float64)
-        y = y.reshape(n, -1)
-        D_y = cdist(y, y, metric="euclidean")
-        degenerate = []
-        for name, M in (("feature", D_x), ("label", D_y)):
-            m = float(M.max()) if M.size else 0.0
-            if m > 0.0:
-                M /= m
-            else:
-                degenerate.append(name)
+        y = np.asarray(ctx.y, dtype=np.float64).reshape(n, -1)
+        # SPXY selects on the sum of two max-normalised distance matrices. Both the normalising
+        # maxima and the Kennard-Stone selection read the sum only as columns, so neither matrix
+        # has to be materialised.
+        dense = dense_matrix_fits(n, self.max_memory_bytes, 2)
+        D_x = _dist_matrix(self, ctx).astype(np.float64) if dense else None
+        D_y = cdist(y, y, metric="euclidean") if dense else None
+        if dense:
+            maxima = {
+                "feature": float(D_x.max()) if D_x.size else 0.0,
+                "label": float(D_y.max()) if D_y.size else 0.0,
+            }
+        else:
+            dist_x = _Distances(self, ctx, as_float64=True)
+            maxima = {
+                "feature": dist_x.max_overall(),
+                "label": _blocked_max_cdist(y),
+            }
+        degenerate = [name for name, m in maxima.items() if m <= 0.0]
+        if dense:
+            for name, M in (("feature", D_x), ("label", D_y)):
+                if maxima[name] > 0.0:
+                    M /= maxima[name]
         if degenerate:
             warn_with_details(
                 DegenerateClusterWarning(
@@ -1662,16 +2015,40 @@ class SPXYSplitter(_SimilarityBase):
                     details={"zero_terms": degenerate},
                 )
             )
-        # Accumulate in place: a third n x n matrix pushed peak past the 2 GiB default at
-        # n=10000, so remove the need for it rather than raise the budget.
-        D_x += D_y
-        D = D_x
-        del D_y
         n_picks = ctx.sizes.n_train
-        picked = _clustering.kennard_stone(D, n_picks)[:n_picks]
+        if dense:
+            # Accumulate in place: a third n x n matrix pushed peak past the 2 GiB default at
+            # n=10000, so remove the need for it rather than raise the budget.
+            D_x += D_y
+            D = D_x
+            del D_y
+            picked = _clustering.kennard_stone(D, n_picks)[:n_picks]
+            coverage = (
+                float(np.max(np.min(D[:, picked], axis=1))) if picked else float("nan")
+            )
+        else:
+            # The combined matrix is the sum of two max-normalised ones. Produce its row bands and
+            # columns on demand; Kennard-Stone reads nothing else.
+            fx = maxima["feature"]
+            fy = maxima["label"]
+
+            def combined(rows: Sequence[int], cols: Sequence[int]) -> np.ndarray:
+                rows, cols = list(rows), list(cols)
+                out = np.zeros((len(rows), len(cols)), dtype=np.float64)
+                if fx > 0.0:
+                    out += dist_x.fetch(rows, cols) / fx
+                if fy > 0.0:
+                    out += cdist(y[np.asarray(rows)], y[np.asarray(cols)], "euclidean") / fy
+                return out
+
+            i0, j0 = _blocked_seed_pair(n, lambda a, b: combined(range(a, b), range(n)))
+            detail = _clustering.maxmin_pick_columns(
+                n, lambda js: combined(range(n), js), n_picks, [i0, j0]
+            )
+            picked = detail.picked[:n_picks]
+            coverage = detail.coverage if picked else float("nan")
         rem_rng = seed_for(ctx.rng_seeds, "spxy.remainder", 0)
         buckets = _fill_remainder(picked, n, ctx.sizes, rem_rng, "train")
-        coverage = float(np.max(np.min(D[:, picked], axis=1))) if picked else float("nan")
         result = SplitResult(
             train=buckets["train"],
             valid=buckets["valid"],
@@ -1815,15 +2192,21 @@ class OptiSimSplitter(_SimilarityGroupBase):
             )
         return super().compute_groups(X, y, **kw)
 
-    def _select(self, ctx: _Context, n_picks: int) -> tuple[np.ndarray, list[int], float, int]:
-        D = _dist_matrix(self, ctx)
+    def _select(self, ctx: _Context, n_picks: int) -> tuple[Any, list[int], float, int]:
+        # OptiSim reads one column per selected record, so the column-oriented form runs at any
+        # size; the dense matrix is only built when it fits and is cheaper.
+        dist = _Distances(self, ctx)
         n = ctx.n
         if not (1 <= n_picks < n):
             raise ParameterError(f"n_picks must satisfy 1 <= n_picks < n, got {n_picks}")
-        threshold = _resolve_radius(D, self.radius, self.radius_is)
+        threshold = (
+            _resolve_radius(dist.dense, self.radius, self.radius_is)
+            if dist.dense is not None
+            else _resolve_radius_without_matrix(self, ctx)
+        )
         k = self.subsample_size if self.subsample_size is not None else max(1, -(-n // 20))
         rng = seed_for(ctx.rng_seeds, "optisim.draw", 0)
-        picked = _clustering.optisim_pick(D, n_picks, k, threshold, rng)
+        picked = _clustering.optisim_pick_columns(n, dist.column, n_picks, k, threshold, rng)
         if len(picked) < n_picks:
             warn_with_details(
                 DegenerateClusterWarning(
@@ -1832,17 +2215,15 @@ class OptiSimSplitter(_SimilarityGroupBase):
                     details={"n_picks": n_picks, "n_selected": len(picked)},
                 )
             )
-        return D, picked, threshold, k
+        return dist, picked, threshold, k
 
     def _group_labels(self, ctx: _Context) -> IndexArray:
         n = ctx.n
         n_picks = self.n_picks if self.n_picks is not None else _resolve_cluster_count(n, "auto")
-        D, centres, threshold, k = self._select(ctx, n_picks)
+        dist, centres, threshold, k = self._select(ctx, n_picks)
         slot = list(range(len(centres)))
-        labels = np.asarray(
-            [argmin_tiebreak(lambda c: float(D[i, centres[c]]), slot) for i in range(n)],
-            dtype=np.int64,
-        )
+        # nearest centre per record: one blocked row-argmin instead of an O(n*k) Python scan
+        labels = dist.row_argmin_to(centres)
         clusters = [np.flatnonzero(labels == c).tolist() for c in slot]
         self._last_meta = {
             "mode": self.mode,
@@ -1871,10 +2252,10 @@ class OptiSimSplitter(_SimilarityGroupBase):
         n_picks = self.n_picks if self.n_picks is not None else (
             ctx.sizes.n_train if self.picked_goes_to == "train" else ctx.sizes.n_test
         )
-        D, picked, threshold, k = self._select(ctx, n_picks)
+        dist, picked, threshold, k = self._select(ctx, n_picks)
         rem_rng = seed_for(ctx.rng_seeds, "optisim.remainder", 0)
         buckets = _fill_remainder(picked, n, ctx.sizes, rem_rng, self.picked_goes_to)
-        coverage = float(np.max(np.min(D[:, picked], axis=1)))
+        coverage = dist.max_min_to(picked)
         result = SplitResult(
             train=buckets["train"],
             valid=buckets["valid"],
@@ -2017,11 +2398,11 @@ class MinimalTestSetDissimilaritySplitter(_SimilarityBase):
 
     @staticmethod
     def _select(
-        D: np.ndarray, y: np.ndarray, pool: list[int], k: int
+        dist: Any, y: np.ndarray, pool: list[int], k: int
     ) -> tuple[list[int], list[list[int]]]:
         """Pick one minimal-total-dissimilarity record per activity bin.
 
-        :param D: the pairwise distance matrix.
+        :param dist: the distance accessor.
         :param y: the label column to bin on.
         :param pool: candidate record indices.
         :param k: how many records to pick, i.e. how many bins to cut.
@@ -2030,7 +2411,7 @@ class MinimalTestSetDissimilaritySplitter(_SimilarityBase):
         if k <= 0:
             return [], []
         idx = np.asarray(pool, dtype=np.int64)
-        totals = D[np.ix_(idx, idx)].sum(axis=1)
+        totals = dist.row_sums_within(idx)
         total_of = {int(r): float(t) for r, t in zip(idx, totals, strict=True)}
         ranked = stable_sort(list(pool), key=lambda r: y[r], desc=True)
         m = len(ranked)
@@ -2049,14 +2430,15 @@ class MinimalTestSetDissimilaritySplitter(_SimilarityBase):
     def _partition(self, ctx: _Context) -> list[SplitResult]:
         n = ctx.n
         y = _label_column(self, ctx)
-        D = _dist_matrix(self, ctx).astype(np.float64)
-        test, test_edges = self._select(D, y, list(range(n)), ctx.sizes.n_test)
+        # Only within-pool row sums and the global row sums are read, both of which stream.
+        dist = _Distances(self, ctx, as_float64=True)
+        test, test_edges = self._select(dist, y, list(range(n)), ctx.sizes.n_test)
         test_set = set(test)
         remaining = [i for i in range(n) if i not in test_set]
-        valid, _ = self._select(D, y, remaining, ctx.sizes.n_valid)
+        valid, _ = self._select(dist, y, remaining, ctx.sizes.n_valid)
         valid_set = set(valid)
         train = [i for i in remaining if i not in valid_set]
-        totals = D.sum(axis=1)
+        totals = dist.row_sums()
         result = SplitResult(
             train=np.asarray(train, dtype=np.int64),
             valid=np.sort(np.asarray(valid, dtype=np.int64)),
@@ -2417,16 +2799,18 @@ class DuplexSplitter(_SimilarityBase):
 
     def _partition(self, ctx: _Context) -> list[SplitResult]:
         n = ctx.n
-        D = _dist_matrix(self, ctx).astype(np.float64)
+        dist = _Distances(self, ctx, as_float64=True)
         names = ("train", "test", "valid")
         targets = (ctx.sizes.n_train, ctx.sizes.n_test, ctx.sizes.n_valid)
-        parts = _clustering.duplex_order(D, targets)
+        parts = _clustering.duplex_order_access(
+            n, targets, dist.column, dist.farthest_pair_in_pool
+        )
         buckets = {
             name: np.sort(np.asarray(part, dtype=np.int64))
             for name, part in zip(names, parts, strict=True)
         }
         coverage = {
-            name: float(np.max(np.min(D[:, buckets[name]], axis=1)))
+            name: dist.max_min_to(buckets[name])
             for name in names
             if buckets[name].size
         }
@@ -2740,43 +3124,37 @@ class MaxDissimilaritySplitter(_SimilarityBase):
         self._validate_similarity_params()
 
     def _partition(self, ctx: _Context) -> list[SplitResult]:
-        D = _dist_matrix(self, ctx)
         n = ctx.n
-        guard_memory(n, self.max_memory_bytes, type(self).__name__)
+        # Only columns, one seed pair and two reductions are read, all of which stream.
+        dist = _Distances(self, ctx)
         if self.seed_pair == "max_distance":
-            iu = np.triu_indices(n, k=1)
-            dvals = D[iu]
-            max_d = dvals.max()
-            cand = [
-                (int(iu[0][k]), int(iu[1][k]))
-                for k in range(len(dvals))
-                if dvals[k] >= max_d - EPS
-            ]
-            a, b = min(cand)
-            n_tied = len(cand)
+            max_d = dist.max_upper()
+            a, b = dist.first_pair_at_least(max_d - EPS)
+            n_tied = dist.count_pairs_at_least(max_d - EPS)
         else:
             rng = seed_for(ctx.rng_seeds, "maxdiss.seed", 0)
             a, b = sorted(rng.choice(n, size=2, replace=False).tolist())
             n_tied = 1
         test = [b]
-        key = D[:, b].copy()
+        key = dist.column(b).copy()
         assigned = np.zeros(n, dtype=bool)
         assigned[b] = True
         n_test = max(1, ctx.sizes.n_test)
         while len(test) < n_test:
-            cand_idx = [i for i in range(n) if not assigned[i]]
-            if not cand_idx:
+            if bool(assigned.all()):
                 break
-            nxt = argmin_tiebreak(lambda i: key[i], cand_idx)
+            # one numpy pass instead of rebuilding an O(n) candidate list per pick
+            nxt = masked_argmin(key, assigned)
             test.append(nxt)
             assigned[nxt] = True
             if self.grow == "nearest_to_set":
-                key = np.minimum(key, D[:, nxt])
+                key = np.minimum(key, dist.column(nxt))
         rest = [i for i in range(n) if not assigned[i]]
         n_valid = ctx.sizes.n_valid
         valid: list[int] = []
         if n_valid > 0:
-            rest_sorted = stable_sort(rest, key=lambda i: D[i, a], desc=True)
+            col_a = dist.column(a)
+            rest_sorted = stable_sort(rest, key=lambda i: col_a[i], desc=True)
             valid = rest_sorted[:n_valid]
         train = [i for i in rest if i not in set(valid)]
         result = SplitResult(
@@ -2791,10 +3169,10 @@ class MaxDissimilaritySplitter(_SimilarityBase):
             metadata={
                 "seed_train": a,
                 "seed_test": b,
-                "seed_distance": float(D[a, b]),
+                "seed_distance": dist.pair(a, b),
                 "n_tied_seed_pairs": n_tied,
                 "min_cross_distance": (
-                    float(min(D[t, tr] for t in test for tr in train))
+                    dist.min_between(test, train)
                     if train and test
                     else float("nan")
                 ),
@@ -3041,8 +3419,7 @@ class LeaveOneClusterOutSplitter(GroupSplitter):
         )
         if clusterer is not None:
             return clusterer._group_labels(ctx)
-        D = compute_distance_matrix(ctx, "ecfp4", "tanimoto", 2 * 1024**3, type(self).__name__, 1)
-        clusters = _clustering.butina(D, 0.35, reorder=False)
+        clusters = _default_butina_clusters(ctx, type(self).__name__, self.n_jobs)
         labels = np.empty(ctx.n, dtype=np.int64)
         for cid, members in enumerate(clusters):
             for m in members:
@@ -3284,8 +3661,7 @@ class BalancedMultiTaskSplitter(GroupSplitter):
         )
         if clusterer is not None:
             return clusterer._group_labels(ctx)
-        D = compute_distance_matrix(ctx, "ecfp4", "tanimoto", 2 * 1024**3, type(self).__name__, 1)
-        clusters = _clustering.butina(D, 0.35, reorder=False)
+        clusters = _default_butina_clusters(ctx, type(self).__name__, self.n_jobs)
         labels = np.empty(ctx.n, dtype=np.int64)
         for cid, members in enumerate(clusters):
             for m in members:

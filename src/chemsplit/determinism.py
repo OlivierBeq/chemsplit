@@ -28,6 +28,7 @@ __all__ = [
     "first_argmax_2d",
     "first_ge_2d",
     "masked_argmax",
+    "masked_argmin",
     "row_argmin",
     "stable_sort",
     "floor_round",
@@ -186,6 +187,31 @@ def masked_argmax(scores: np.ndarray, excluded: np.ndarray) -> int:
         raise ValueError("masked_argmax() called with every entry excluded")
     # numpy's argmax returns the first occurrence of the maximum
     return int(np.argmax(np.where(excluded, -np.inf, scores)))
+
+
+def masked_argmin(scores: np.ndarray, excluded: np.ndarray) -> int:
+    """Vectorised :func:`argmin_tiebreak` over a score vector with some entries excluded.
+
+    The mirror of :func:`masked_argmax`: excluded entries go to ``+inf``, and
+    :func:`numpy.argmin` returns the first occurrence of the minimum, which is the
+    ties-to-smallest-index rule.
+
+    :param scores: the scores to minimise, shape ``(n,)``. Must contain no NaN.
+    :param excluded: boolean mask of entries that may not be selected, shape ``(n,)``.
+    :raises ValueError: if the shapes disagree, or every entry is excluded.
+    :return: the index of the minimum among the non-excluded entries.
+    """
+    scores = np.asarray(scores)
+    excluded = np.asarray(excluded, dtype=bool)
+    if scores.shape != excluded.shape or scores.ndim != 1:
+        raise ValueError(
+            f"masked_argmin() needs two 1-D arrays of equal shape, got {scores.shape} "
+            f"and {excluded.shape}"
+        )
+    if bool(excluded.all()):
+        raise ValueError("masked_argmin() called with every entry excluded")
+    # numpy's argmin returns the first occurrence of the minimum
+    return int(np.argmin(np.where(excluded, np.inf, scores)))
 
 
 def first_ge_2d(M: np.ndarray, value: float) -> tuple[int, int]:

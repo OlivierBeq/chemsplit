@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 
+from chemsplit.determinism import first_argmax_2d
 from chemsplit.exceptions import ParameterError, ScalabilityError
 from chemsplit.featurizers import Featurizer, get_featurizer
 from chemsplit.metrics import MetricName, is_bounded_metric, pairwise_distances
@@ -15,12 +16,18 @@ __all__ = [
     "EPS",
     "SimilarityParamsMixin",
     "compute_distance_matrix",
+    "blocked_farthest_pair",
+    "blocked_max_similarity_to",
+    "blocked_row_means",
+    "blocked_threshold_counts",
+    "blocked_threshold_pairs",
     "compute_neighbor_lists",
     "distance_range",
     "compute_similarity_matrix",
     "dense_matrix_fits",
     "guard_memory",
     "rectangular_distances",
+    "similarity_columns",
     "resolve_featurizer",
 ]
 
@@ -250,6 +257,8 @@ def compute_neighbor_lists(
     cutoff: float,
     *,
     eps: float,
+    mode: str = "distance_le",
+    include_self: bool = False,
     n_jobs: int = 1,
     block_rows: int = 2048,
 ) -> list[np.ndarray]:
@@ -265,11 +274,15 @@ def compute_neighbor_lists(
     :param featurizer: an alias or a featurizer instance.
     :param metric: the distance metric.
     :param cutoff: the neighbour radius, as a distance.
-    :param eps: the caller's float-comparison tolerance, added to ``cutoff`` exactly as the dense
-        path does.
+    :param eps: the caller's float-comparison tolerance, applied exactly as the dense path does.
+    :param mode: ``"distance_le"`` selects ``D <= cutoff + eps``; ``"similarity_ge"`` selects
+        ``1 - D >= cutoff - eps``, mirroring callers that threshold a similarity matrix. The
+        similarity form is computed as ``1.0 - D`` in the same dtype as the dense path rather than
+        rearranged into a distance bound, since the two can disagree by an ULP at the boundary.
+    :param include_self: keep each record in its own list, as DBSCAN's neighbourhoods do.
     :param n_jobs: worker count. Results never depend on it.
     :param block_rows: rows per block.
-    :return: per record, the ascending indices within the cutoff, excluding itself.
+    :return: per record, the ascending indices within the cutoff.
     """
     feat = resolve_featurizer(featurizer)
     F = ctx.get_features(feat)
@@ -278,11 +291,230 @@ def compute_neighbor_lists(
     for start in range(0, n, block_rows):
         stop = min(start + block_rows, n)
         block = pairwise_distances(F[start:stop], F, metric=metric, n_jobs=n_jobs)
+        if mode == "similarity_ge":
+            block = 1.0 - block
         for row_offset in range(stop - start):
             i = start + row_offset
-            idx = np.nonzero(block[row_offset] <= cutoff + eps)[0]
-            out.append(np.sort(idx[idx != i]))
+            row = block[row_offset]
+            keep = row >= cutoff - eps if mode == "similarity_ge" else row <= cutoff + eps
+            idx = np.nonzero(keep)[0]
+            out.append(np.sort(idx) if include_self else np.sort(idx[idx != i]))
     return out
+
+
+def blocked_row_means(
+    ctx: Any,
+    featurizer: str | Featurizer,
+    metric: MetricName,
+    *,
+    similarity: bool = False,
+    n_jobs: int = 1,
+    block_rows: int = 2048,
+) -> np.ndarray:
+    """Per-record mean distance (or similarity) over all records, computed blockwise.
+
+    :param ctx: the split context supplying the records.
+    :param featurizer: an alias or a featurizer instance.
+    :param metric: the distance metric.
+    :param similarity: average ``1 - D`` instead of ``D``.
+    :param n_jobs: worker count. Results never depend on it.
+    :param block_rows: rows per block.
+    :return: the row means, shape ``(n,)``.
+    """
+    feat = resolve_featurizer(featurizer)
+    F = ctx.get_features(feat)
+    n = F.shape[0]
+    out = np.empty(n, dtype=np.float64)
+    for start in range(0, n, block_rows):
+        stop = min(start + block_rows, n)
+        block = pairwise_distances(F[start:stop], F, metric=metric, n_jobs=n_jobs)
+        if similarity:
+            block = 1.0 - block
+        out[start:stop] = block.mean(axis=1)
+    return out
+
+
+def blocked_farthest_pair(
+    ctx: Any,
+    featurizer: str | Featurizer,
+    metric: MetricName,
+    *,
+    n_jobs: int = 1,
+    block_rows: int = 2048,
+    scale: Any = None,
+) -> tuple[int, int]:
+    """The most distant pair, scanned blockwise over the upper triangle.
+
+    Matches the dense ``first_argmax_2d(np.triu(D, 1))``: row-major-first, so ties go to the
+    lexicographically smallest pair.
+
+    :param ctx: the split context supplying the records.
+    :param featurizer: an alias or a featurizer instance.
+    :param metric: the distance metric.
+    :param n_jobs: worker count. Results never depend on it.
+    :param block_rows: rows per block.
+    :param scale: optional callable mapping a ``(rows, n)`` distance block and its row offset to
+        the block actually being maximised, for callers that combine several matrices.
+    :return: the pair ``(i, j)`` with ``i < j``.
+    """
+    feat = resolve_featurizer(featurizer)
+    F = ctx.get_features(feat)
+    n = F.shape[0]
+    best = -np.inf
+    best_pair = (0, min(1, n - 1))
+    for start in range(0, n, block_rows):
+        stop = min(start + block_rows, n)
+        block = pairwise_distances(F[start:stop], F, metric=metric, n_jobs=n_jobs)
+        if scale is not None:
+            block = scale(block, start)
+        # mask the lower triangle and the diagonal of this row band
+        rows = np.arange(stop - start)[:, None]
+        cols = np.arange(n)[None,:]
+        masked = np.where(cols > rows + start, block, -np.inf)
+        i, j = first_argmax_2d(masked)
+        value = float(masked[i, j])
+        if value > best:
+            best = value
+            best_pair = (start + i, j)
+    return best_pair
+
+
+def blocked_threshold_counts(
+    ctx: Any,
+    featurizer: str | Featurizer,
+    metric: MetricName,
+    threshold: float,
+    *,
+    rows: Any,
+    cols: Any,
+    eps: float,
+    n_jobs: int = 1,
+    block_rows: int = 2048,
+) -> dict[int, int]:
+    """Per row, how many of ``cols`` exceed the similarity threshold, computed blockwise.
+
+    :param ctx: the split context supplying the records.
+    :param featurizer: an alias or a featurizer instance.
+    :param metric: the distance metric.
+    :param threshold: the similarity threshold.
+    :param rows: the record indices to count for.
+    :param cols: the record indices to count against.
+    :param eps: float-comparison tolerance, applied as ``> threshold + eps``.
+    :param n_jobs: worker count. Results never depend on it.
+    :param block_rows: rows per block.
+    :return: row index to count.
+    """
+    feat = resolve_featurizer(featurizer)
+    F = ctx.get_features(feat)
+    rows = list(rows)
+    Fc = F[np.asarray(cols)]
+    out: dict[int, int] = {}
+    for start in range(0, len(rows), block_rows):
+        chunk = rows[start : start + block_rows]
+        block = 1.0 - pairwise_distances(F[np.asarray(chunk)], Fc, metric=metric, n_jobs=n_jobs)
+        hits = (block > threshold + eps).sum(axis=1)
+        for r, c in zip(chunk, hits, strict=True):
+            out[int(r)] = int(c)
+    return out
+
+
+def blocked_threshold_pairs(
+    ctx: Any,
+    featurizer: str | Featurizer,
+    metric: MetricName,
+    threshold: float,
+    *,
+    eps: float,
+    n_jobs: int = 1,
+    block_rows: int = 2048,
+) -> Any:
+    """Yield ``(i, j_array)`` with ``j > i`` and similarity above ``threshold``, blockwise.
+
+    The upper-triangle scan behind threshold-graph components and activity-cliff candidates.
+    Rows arrive in ascending order, so a consumer sees pairs in the same order as the dense scan.
+
+    :param ctx: the split context supplying the records.
+    :param featurizer: an alias or a featurizer instance.
+    :param metric: the distance metric.
+    :param threshold: the similarity threshold.
+    :param eps: float-comparison tolerance, applied as ``> threshold + eps``.
+    :param n_jobs: worker count. Results never depend on it.
+    :param block_rows: rows per block.
+    :return: an iterator of ``(i, ascending j indices, their similarities)``, skipping rows with
+        no partner. The values come from the block already in hand, so a consumer that needs them
+        does not have to re-fetch.
+    """
+    feat = resolve_featurizer(featurizer)
+    F = ctx.get_features(feat)
+    n = F.shape[0]
+    for start in range(0, n, block_rows):
+        stop = min(start + block_rows, n)
+        block = 1.0 - pairwise_distances(F[start:stop], F, metric=metric, n_jobs=n_jobs)
+        for row_offset in range(stop - start):
+            i = start + row_offset
+            row = block[row_offset]
+            js = np.nonzero(row[i + 1:] > threshold + eps)[0] + i + 1
+            if js.size:
+                yield i, js, row[js]
+
+
+def blocked_max_similarity_to(
+    ctx: Any,
+    featurizer: str | Featurizer,
+    metric: MetricName,
+    cols: Any,
+    *,
+    n_jobs: int = 1,
+    block_rows: int = 2048,
+) -> np.ndarray:
+    """Per-record maximum similarity to a given set of records, computed blockwise.
+
+    The reduction several splitters apply as ``S[:, cols].max(axis=1)``. Peak memory is
+    ``block_rows * len(cols)`` rather than ``n * n``.
+
+    :param ctx: the split context supplying the records.
+    :param featurizer: an alias or a featurizer instance.
+    :param metric: the distance metric.
+    :param cols: the record indices to measure similarity against.
+    :param n_jobs: worker count. Results never depend on it.
+    :param block_rows: rows per block.
+    :return: the per-record maxima, shape ``(n,)``.
+    """
+    feat = resolve_featurizer(featurizer)
+    F = ctx.get_features(feat)
+    n = F.shape[0]
+    cols = np.asarray(cols)
+    Fc = F[cols]
+    out = np.empty(n, dtype=np.float32)
+    for start in range(0, n, block_rows):
+        stop = min(start + block_rows, n)
+        block = 1.0 - pairwise_distances(F[start:stop], Fc, metric=metric, n_jobs=n_jobs)
+        out[start:stop] = block.max(axis=1)
+    return out
+
+
+def similarity_columns(
+    ctx: Any,
+    featurizer: str | Featurizer,
+    metric: MetricName,
+    cols: Any,
+    n_jobs: int = 1,
+) -> np.ndarray:
+    """Similarity columns for the given record indices, as ``1.0 - D``.
+
+    Matches what ``compute_similarity_matrix`` would have produced for those columns.
+
+    :param ctx: the split context supplying the records.
+    :param featurizer: an alias or a featurizer instance.
+    :param metric: the distance metric.
+    :param cols: the record indices to fetch.
+    :param n_jobs: worker count. Results never depend on it.
+    :return: an ``(n, len(cols))`` similarity block.
+    """
+    feat = resolve_featurizer(featurizer)
+    F = ctx.get_features(feat)
+    block = pairwise_distances(F, F[np.asarray(cols)], metric=metric, n_jobs=n_jobs)
+    return 1.0 - block
 
 
 def compute_distance_matrix(

@@ -24,7 +24,9 @@ EPS = 1e-6
 __all__ = [
     "butina",
     "butina_from_neighbors",
+    "dbscan_from_neighbors",
     "duplex_order",
+    "duplex_order_access",
     "kennard_stone",
     "leader",
     "PickDetail",
@@ -225,6 +227,41 @@ def maxmin_pick(
     return maxmin_pick_detail(D, n_picks, init=init, rng=rng).picked
 
 
+def dbscan_from_neighbors(
+    neigh: Sequence[np.ndarray], min_samples: int, n: int
+) -> np.ndarray:
+    """DBSCAN labels from precomputed eps-neighbour lists.
+
+    Reproduces scikit-learn's ``dbscan_inner`` exactly -- core points seeded in index order, LIFO
+    expansion -- so the labels match ``DBSCAN(metric="precomputed")`` on the dense matrix,
+    including which cluster an ambiguous border point lands in. That matters because the
+    neighbour lists can be built blockwise, while scikit-learn's own *sparse* precomputed path is
+    not equivalent to its dense one (it reports fewer neighbours for the same stored entries).
+
+    :param neigh: per record, the indices within eps, itself included.
+    :param min_samples: neighbour count, self included, that makes a record a core point.
+    :param n: the record count.
+    :return: cluster labels, ``-1`` for noise.
+    """
+    is_core = np.array([len(a) >= min_samples for a in neigh], dtype=bool)
+    labels = np.full(n, -1, dtype=np.int64)
+    label_num = 0
+    for seed in range(n):
+        if labels[seed] != -1 or not is_core[seed]:
+            continue
+        stack = [seed]
+        while stack:
+            i = stack.pop()
+            if labels[i] == -1:
+                labels[i] = label_num
+                if is_core[i]:
+                    for j in neigh[i]:
+                        if labels[j] == -1:
+                            stack.append(int(j))
+        label_num += 1
+    return labels
+
+
 def maxmin_pick_detail(
     D: np.ndarray,
     n_picks: int,
@@ -281,9 +318,9 @@ def maxmin_pick_columns(
     n: int,
     columns: Callable[[Sequence[int]], np.ndarray],
     n_picks: int,
-    first: int,
+    initial: Sequence[int],
     batch: int = 512,
-) -> list[int]:
+) -> PickDetail:
     """Greedy MaxMin from a column-block callable, without an ``n x n`` matrix.
 
     Exactly :func:`maxmin_pick`, reorganised so distances arrive in wide blocks. The running
@@ -294,16 +331,25 @@ def maxmin_pick_columns(
     :param n: the record count.
     :param columns: given ascending indices ``js``, returns the ``(n, len(js))`` distance block.
     :param n_picks: how many points to select.
-    :param first: the index of the first pick, chosen by the caller's ``init`` rule.
+    :param initial: the already-chosen starting picks -- one index for MaxMin, the farthest pair
+        for Kennard-Stone.
     :param batch: how many columns to fetch per block.
     :return: the picks, plus the diagnostics that fall out of the selection for free.
     """
+    initial = list(initial)
     taken = np.zeros(n, dtype=bool)
-    taken[first] = True
-    picked = [first]
-    mind = columns([first])[:, 0].astype(np.float64, copy=True)
+    taken[initial] = True
+    picked = list(initial)
+    block0 = columns(sorted(initial))
+    mind = block0.min(axis=1).astype(np.float64, copy=True)
+    order0 = {j: r for r, j in enumerate(sorted(initial))}
+    # pairs inside the initial set, so min_pairwise covers them as the dense path does
+    at_pick: list[float] = [
+        float(block0[a, order0[b]])
+        for x, a in enumerate(initial)
+        for b in initial[x + 1:]
+    ]
     held: dict[int, np.ndarray] = {}
-    at_pick: list[float] = []
 
     while len(picked) < n_picks:
         if bool(taken.all()):
@@ -479,7 +525,28 @@ def duplex_order(D: np.ndarray, targets: Sequence[int]) -> list[list[int]]:
     :param targets: the record count per partition. Must sum to ``len(D)``.
     :return: each partition's records, in the order they were added.
     """
-    n = D.shape[0]
+    return duplex_order_access(
+        D.shape[0], targets, lambda j: D[:, j], lambda pool: _farthest_pair(D, pool)
+    )
+
+
+def duplex_order_access(
+    n: int,
+    targets: Sequence[int],
+    column: Callable[[int], np.ndarray],
+    farthest_pair: Callable[[np.ndarray], tuple[int, int]],
+) -> list[list[int]]:
+    """DUPLEX partitioning from a column callable instead of a dense matrix.
+
+    One column per assigned record and one farthest-pair search per partition seed is all the
+    algorithm reads, so both can be served blockwise. Identical partitions either way.
+
+    :param n: the record count.
+    :param targets: the record count per partition. Must sum to ``n``.
+    :param column: maps a record index to its distances to every record.
+    :param farthest_pair: maps an ascending pool of indices to its farthest-apart pair.
+    :return: each partition's records, in the order they were added.
+    """
     if sum(targets) != n:
         raise ValueError(f"targets sum to {sum(targets)}, expected n={n}")
     assigned = np.zeros(n, dtype=bool)
@@ -489,7 +556,7 @@ def duplex_order(D: np.ndarray, targets: Sequence[int]) -> list[list[int]]:
     def add(p: int, i: int) -> None:
         members[p].append(i)
         assigned[i] = True
-        mind[p] = np.minimum(mind[p], D[:, i])
+        mind[p] = np.minimum(mind[p], column(i))
 
     for p, target in enumerate(targets):
         if target <= 0:
@@ -498,7 +565,7 @@ def duplex_order(D: np.ndarray, targets: Sequence[int]) -> list[list[int]]:
         if pool.size == 1:
             add(p, int(pool[0]))
             continue
-        i, j = _farthest_pair(D, pool)
+        i, j = farthest_pair(pool)
         add(p, i)
         if target > 1:
             add(p, j)

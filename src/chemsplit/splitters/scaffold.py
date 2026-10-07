@@ -1251,19 +1251,33 @@ class ActivityCliffSplitter(BaseSplitter):
     def _candidate_pairs(self, ctx: _Context, mols: list) -> list[tuple[int, int, float]]:
         n = ctx.n
         if self.similarity == "ecfp":
-            from chemsplit._fp_similarity import compute_similarity_matrix, guard_memory
+            from chemsplit._fp_similarity import (
+                blocked_threshold_pairs,
+                compute_similarity_matrix,
+                dense_matrix_fits,
+            )
             from chemsplit.featurizers import get_featurizer
 
-            guard_memory(n, self.max_memory_bytes, type(self).__name__)
             feat = get_featurizer(self.featurizer)
-            S = compute_similarity_matrix(
-                ctx, feat, self.metric, self.max_memory_bytes, type(self).__name__, self.n_jobs
-            )
+            # Only the above-threshold pairs are read, so stream the upper triangle instead of
+            # materialising it. The nested Python loop this replaces was O(n^2) interpreted even
+            # when the matrix did fit.
+            if dense_matrix_fits(n, self.max_memory_bytes):
+                S = compute_similarity_matrix(
+                    ctx, feat, self.metric, self.max_memory_bytes, type(self).__name__,
+                    self.n_jobs,
+                )
+                rows = (
+                    (i, np.nonzero(S[i][i + 1:] > self.similarity_threshold + _EPS)[0] + i + 1)
+                    for i in range(n)
+                )
+                return [(i, int(j), float(S[i, j])) for i, js in rows for j in js]
             pairs = []
-            for i in range(n):
-                for j in range(i + 1, n):
-                    if S[i, j] > self.similarity_threshold + _EPS:
-                        pairs.append((i, j, float(S[i, j])))
+            for i, js, vals in blocked_threshold_pairs(
+                ctx, feat, self.metric, self.similarity_threshold,
+                eps=_EPS, n_jobs=self.n_jobs,
+            ):
+                pairs.extend((i, int(j), float(v)) for j, v in zip(js, vals, strict=True))
             return pairs
         if self.similarity == "scaffold":
             keys = [
