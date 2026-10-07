@@ -1640,9 +1640,9 @@ class SPXYSplitter(_SimilarityBase):
 
     def _partition(self, ctx: _Context) -> list[SplitResult]:
         n = ctx.n
-        # Three float64 n x n matrices are live at once below (feature, label, and their sum), so
-        # the default single-matrix budget would let this start a split it cannot finish.
-        guard_memory(n, self.max_memory_bytes, type(self).__name__, copies=3)
+        # Two float64 n x n matrices are live below: feature distances (accumulated in place) and
+        # label distances. The single-matrix default would start a split it cannot finish.
+        guard_memory(n, self.max_memory_bytes, type(self).__name__, copies=2)
         D_x = _dist_matrix(self, ctx).astype(np.float64)
         y = np.asarray(ctx.y, dtype=np.float64)
         y = y.reshape(n, -1)
@@ -1662,8 +1662,11 @@ class SPXYSplitter(_SimilarityBase):
                     details={"zero_terms": degenerate},
                 )
             )
-        D = D_x + D_y
-        del D_x, D_y
+        # Accumulate in place: a third n x n matrix pushed peak past the 2 GiB default at
+        # n=10000, so remove the need for it rather than raise the budget.
+        D_x += D_y
+        D = D_x
+        del D_y
         n_picks = ctx.sizes.n_train
         picked = _clustering.kennard_stone(D, n_picks)[:n_picks]
         rem_rng = seed_for(ctx.rng_seeds, "spxy.remainder", 0)
