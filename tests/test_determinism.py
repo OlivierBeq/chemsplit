@@ -108,3 +108,45 @@ def test_floor_round():
     assert det.floor_round(2.4999999) == 2
     assert det.floor_round(0.0) == 0
     assert det.floor_round(-0.4) == 0
+
+
+def test_masked_argmax_matches_argmax_tiebreak_on_tie_heavy_scores():
+    """The vectorised scan must reproduce ties-to-smallest-index exactly.
+
+    Tanimoto matrices are almost entirely tied, so this is where a wrong rule would bite.
+    """
+    rng = np.random.default_rng(0)
+    for trial in range(50):
+        n = int(rng.integers(2, 40))
+        # coarse quantisation => many exact ties
+        scores = np.round(rng.random(n), 1)
+        excluded = rng.random(n) < 0.3
+        excluded[int(rng.integers(0, n))] = False  # keep at least one candidate
+        candidates = [i for i in range(n) if not excluded[i]]
+        expected = det.argmax_tiebreak(lambda i: scores[i], candidates)
+        assert det.masked_argmax(scores, excluded) == expected, trial
+
+
+def test_masked_argmax_rejects_degenerate_input():
+    with pytest.raises(ValueError, match="every entry excluded"):
+        det.masked_argmax(np.zeros(3), np.ones(3, dtype=bool))
+    with pytest.raises(ValueError, match="equal shape"):
+        det.masked_argmax(np.zeros(3), np.zeros(4, dtype=bool))
+
+
+def test_first_argmax_2d_picks_the_lexicographically_smallest_maximal_pair():
+    rng = np.random.default_rng(1)
+    for trial in range(50):
+        n = int(rng.integers(2, 25))
+        M = np.round(rng.random((n, n)), 1)
+        upper = np.triu(M, k=1)
+        if upper.size == 0 or not np.any(upper > 0):
+            continue
+        # the construct this replaced: scan all pairs, keep the smallest maximal (i, j)
+        iu = np.triu_indices(n, k=1)
+        dvals = upper[iu]
+        max_d = dvals.max()
+        expected = min(
+            (int(iu[0][k]), int(iu[1][k])) for k in range(len(dvals)) if dvals[k] >= max_d
+        )
+        assert det.first_argmax_2d(upper) == expected, trial

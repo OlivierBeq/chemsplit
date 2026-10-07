@@ -25,6 +25,8 @@ __all__ = [
     "seeded_python_random",
     "argmax_tiebreak",
     "argmin_tiebreak",
+    "first_argmax_2d",
+    "masked_argmax",
     "row_argmin",
     "stable_sort",
     "floor_round",
@@ -157,6 +159,50 @@ def argmin_tiebreak(func: Callable[[_T], float], items: Iterable[_T]) -> _T:
     if best_item is None:
         raise ValueError("argmin_tiebreak() called with an empty iterable")
     return best_item
+
+
+def masked_argmax(scores: np.ndarray, excluded: np.ndarray) -> int:
+    """Vectorised :func:`argmax_tiebreak` over a score vector with some entries excluded.
+
+    The greedy pick loops rebuilt an O(n) Python candidate list per pick; this is the same
+    reduction in one numpy pass. Equivalent because :func:`numpy.argmax` returns the first
+    occurrence of the maximum -- the ties-to-smallest-index rule -- and excluded entries are
+    pushed to ``-inf``.
+
+    :param scores: the scores to maximise, shape ``(n,)``. Must contain no NaN.
+    :param excluded: boolean mask of entries that may not be selected, shape ``(n,)``.
+    :raises ValueError: if the shapes disagree, or every entry is excluded.
+    :return: the index of the maximum among the non-excluded entries, ties to the smallest index.
+    """
+    scores = np.asarray(scores)
+    excluded = np.asarray(excluded, dtype=bool)
+    if scores.shape != excluded.shape or scores.ndim != 1:
+        raise ValueError(
+            f"masked_argmax() needs two 1-D arrays of equal shape, got {scores.shape} "
+            f"and {excluded.shape}"
+        )
+    if bool(excluded.all()):
+        raise ValueError("masked_argmax() called with every entry excluded")
+    # numpy's argmax returns the first occurrence of the maximum
+    return int(np.argmax(np.where(excluded, -np.inf, scores)))
+
+
+def first_argmax_2d(M: np.ndarray) -> tuple[int, int]:
+    """Row-major-first ``(i, j)`` of the maximum of a 2-D array.
+
+    Replaces a Python scan over all n(n-1)/2 pairs that also materialised ``np.triu_indices``
+    (8n^2 bytes).
+
+    :param M: a 2-D array with at least one element, and no NaN.
+    :raises ValueError: if ``M`` is not 2-D or is empty.
+    :return: the row and column of the maximum, scanning in row-major order.
+    """
+    M = np.asarray(M)
+    if M.ndim != 2 or M.size == 0:
+        raise ValueError(f"first_argmax_2d() needs a non-empty 2-D array, got shape {M.shape}")
+    # argmax on the flattened view returns the first occurrence, i.e. row-major-first
+    flat = int(np.argmax(M))
+    return flat // M.shape[1], flat % M.shape[1]
 
 
 def row_argmin(M: np.ndarray) -> np.ndarray:

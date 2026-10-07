@@ -9,7 +9,13 @@ from typing import Literal
 import numpy as np
 import scipy.sparse as sp
 
-from chemsplit.determinism import argmax_tiebreak, argmin_tiebreak, row_argmin
+from chemsplit.determinism import (
+    argmax_tiebreak,
+    argmin_tiebreak,
+    first_argmax_2d,
+    masked_argmax,
+    row_argmin,
+)
 
 #: Tolerance for the float32 distance matrices used here (~1.2e-7 rounding noise).
 EPS = 1e-6
@@ -170,16 +176,16 @@ def maxmin_pick(
 
     picked = picked[:n_picks]
     mind = np.min(D[:, picked], axis=1) if picked else np.full(n, np.inf)
-    picked_set = set(picked)
+    taken = np.zeros(n, dtype=bool)
+    taken[picked] = True
 
     while len(picked) < n_picks:
-        candidates = [i for i in range(n) if i not in picked_set]
-        if not candidates:
+        if bool(taken.all()):
             break
-        next_i = argmax_tiebreak(lambda idx: mind[idx], candidates)
+        next_i = masked_argmax(mind, taken)
         picked.append(next_i)
-        picked_set.add(next_i)
-        mind = np.minimum(mind, D[:, next_i])
+        taken[next_i] = True
+        np.minimum(mind, D[:, next_i], out=mind)
 
     return picked
 
@@ -196,24 +202,21 @@ def kennard_stone(D: np.ndarray, n_picks: int) -> list[int]:
     n = D.shape[0]
     if n < 2:
         return list(range(n))[:n_picks]
-    iu = np.triu_indices(n, k=1)
-    dvals = D[iu]
-    max_d = dvals.max()
-    candidates = [
-        (int(iu[0][k]), int(iu[1][k])) for k in range(len(dvals)) if dvals[k] >= max_d - EPS
-    ]
-    i0, j0 = min(candidates)
+    # Upper triangle, scanned row-major-first: the same smallest-maximal-pair tie-break as the
+    # Python scan, without two n(n-1)/2 index arrays.
+    upper = np.triu(D, k=1)
+    i0, j0 = first_argmax_2d(upper)
     picked = [i0, j0]
     mind = np.minimum(D[:, i0], D[:, j0])
-    picked_set = set(picked)
+    taken = np.zeros(n, dtype=bool)
+    taken[[i0, j0]] = True
     while len(picked) < n_picks:
-        candidates_idx = [i for i in range(n) if i not in picked_set]
-        if not candidates_idx:
+        if bool(taken.all()):
             break
-        next_i = argmax_tiebreak(lambda idx: mind[idx], candidates_idx)
+        next_i = masked_argmax(mind, taken)
         picked.append(next_i)
-        picked_set.add(next_i)
-        mind = np.minimum(mind, D[:, next_i])
+        taken[next_i] = True
+        np.minimum(mind, D[:, next_i], out=mind)
     return picked
 
 
@@ -404,14 +407,18 @@ def spectral_partition(
     if active.size > 0:
         Wa = W[np.ix_(active, active)]
         dega = Wa.sum(axis=1)
+        # Scaling by a diagonal matrix is a broadcast, not a matmul: the matmul form was O(n^3)
+        # and allocated extra n x n matrices. Bit-identical -- the dropped terms are exact 0.0 * x.
         if laplacian == "unnormalized":
-            L = np.diag(dega) - Wa
+            L = -Wa.copy()
+            L[np.diag_indices(len(active))] += dega
         elif laplacian == "rw":
-            Dinv = np.diag(1.0 / dega)
-            L = np.eye(len(active)) - Dinv @ Wa
+            L = -(1.0 / dega)[:, None] * Wa
+            L[np.diag_indices(len(active))] += 1.0
         else:  # "sym"
-            Dinv_sqrt = np.diag(1.0 / np.sqrt(dega))
-            L = np.eye(len(active)) - Dinv_sqrt @ Wa @ Dinv_sqrt
+            dinv_sqrt = 1.0 / np.sqrt(dega)
+            L = -(dinv_sqrt[:, None] * Wa * dinv_sqrt[None,:])
+            L[np.diag_indices(len(active))] += 1.0
 
         k = min(n_clusters + (1 if drop_first else 0), len(active) - 1)
         k = max(k, 1)
