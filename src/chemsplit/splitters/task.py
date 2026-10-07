@@ -1447,7 +1447,11 @@ class AVESplitter(BaseSplitter):
             )
 
     def _ave(
-        self, S: np.ndarray, y: np.ndarray, test_mask: np.ndarray
+        self,
+        S: np.ndarray | None,
+        y: np.ndarray,
+        test_mask: np.ndarray,
+        ctx: _Context | None = None,
     ) -> tuple[float, dict[str, float]]:
         train_mask = ~test_mask
         active = y == 1
@@ -1459,7 +1463,13 @@ class AVESplitter(BaseSplitter):
         def nn_sim(query: np.ndarray, ref: np.ndarray) -> np.ndarray:
             if query.size == 0 or ref.size == 0:
                 return np.zeros(query.size)
-            return S[np.ix_(query, ref)].max(axis=1)
+            if S is not None:
+                return S[np.ix_(query, ref)].max(axis=1)
+            # a per-row maximum, so blocking the rows is exact
+            return blocked_max_similarity_to(
+                ctx, get_featurizer(self.featurizer), self.metric, ref,
+                rows=query, n_jobs=self.n_jobs,
+            )
 
         aa_nn = nn_sim(test_active, train_active)
         ai_nn = nn_sim(test_active, train_inactive)
@@ -1489,11 +1499,16 @@ class AVESplitter(BaseSplitter):
             )
         y = y.astype(np.int64)
 
-        guard_memory(ctx.n, self.max_memory_bytes, type(self).__name__)
+        # Each fitness evaluation reads four per-row maxima over a column subset, all of which
+        # block exactly, so past the dense ceiling they are recomputed instead. Memory stops
+        # being the limit here; the GA's evaluation count is.
         feat = get_featurizer(self.featurizer)
-        S = compute_similarity_matrix(
-            ctx, feat, self.metric, self.max_memory_bytes, type(self).__name__, self.n_jobs
-        )
+        S = None
+        if dense_matrix_fits(ctx.n, self.max_memory_bytes):
+            S = compute_similarity_matrix(
+                ctx, feat, self.metric, self.max_memory_bytes, type(self).__name__,
+                self.n_jobs,
+            )
 
         n_test_target = ctx.sizes.n_test
         n_active = int(np.sum(y == 1))
@@ -1523,7 +1538,7 @@ class AVESplitter(BaseSplitter):
         init_test[active_perm[:n_test_active]] = True
         init_test[inactive_perm[:n_test_inactive]] = True
 
-        ave_initial, _ = self._ave(S, y, init_test)
+        ave_initial, _ = self._ave(S, y, init_test, ctx)
 
         best_mask = init_test
         best_ave = ave_initial
@@ -1534,7 +1549,7 @@ class AVESplitter(BaseSplitter):
             pyrng = seeded_python_random(ctx.rng_seeds, "ave.ga", 0)
 
             def fitness(mask: np.ndarray) -> float:
-                ave, _ = self._ave(S, y, mask)
+                ave, _ = self._ave(S, y, mask, ctx)
                 return -((ave - self.target_bias) ** 2)
 
             def repair(mask: np.ndarray) -> np.ndarray:
@@ -1581,12 +1596,12 @@ class AVESplitter(BaseSplitter):
                 gen_best = max(range(len(population)), key=lambda i: fitnesses[i])
                 if fitnesses[gen_best] > -((best_ave - self.target_bias) ** 2):
                     best_mask = population[gen_best]
-                    best_ave, _ = self._ave(S, y, best_mask)
+                    best_ave, _ = self._ave(S, y, best_mask, ctx)
                 if abs(best_ave - self.target_bias) <= self.tolerance:
                     converged = True
                     break
 
-        ave_final, aucs = self._ave(S, y, best_mask)
+        ave_final, aucs = self._ave(S, y, best_mask, ctx)
         train_idx = np.nonzero(~best_mask)[0].astype(np.int64)
         test_idx = np.nonzero(best_mask)[0].astype(np.int64)
 

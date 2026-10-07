@@ -542,7 +542,13 @@ class ProjectionSplitter(_ClusterCountMixin, SimilarityParamsMixin, GroupSplitte
             )
             F_in = F
             if self.method == "pca" and hasattr(F, "toarray"):
-                F_in = F.toarray()
+                # Densifying costs n * n_bits * 8 bytes once converted to float64 -- 1.6 GB at
+                # n=100000 before sklearn's own copies, which is what used to get this splitter
+                # OOM-killed. TruncatedSVD accepts the sparse matrix directly and does not centre
+                # either way, so past the budget feed it sparse; the two agree to ~2e-13, and
+                # keeping the dense route while it fits leaves smaller runs untouched.
+                if 8 * F.shape[0] * F.shape[1] <= self.max_memory_bytes:
+                    F_in = F.toarray()
             Z = svd.fit_transform(F_in)
             Z = _fix_sign(Z)
             explained_variance_ratio = svd.explained_variance_ratio_.tolist()

@@ -524,7 +524,6 @@ class SIMPDSplitter(BaseSplitter):
 
         from rdkit.Chem import Descriptors
 
-        from chemsplit._fp_similarity import guard_memory
         from chemsplit.clustering import butina
         from chemsplit.featurizers import get_featurizer
         from chemsplit.metrics import pairwise_distances
@@ -534,11 +533,13 @@ class SIMPDSplitter(BaseSplitter):
         mols = ctx.mols
         y = np.asarray(ctx.y, dtype=float)
 
-        guard_memory(n, self.max_memory_bytes, "SIMPDSplitter")
+        # Each fitness evaluation reads one per-row maximum over a column subset, which blocks
+        # exactly, so past the dense ceiling it is recomputed instead. Memory stops being the
+        # limit here; the GA's evaluation count is.
         featurizer = get_featurizer("ecfp4")
-        F = ctx.get_features(featurizer)
-        D = pairwise_distances(F, metric="tanimoto")
-        S = 1.0 - D
+        dense = dense_matrix_fits(n, self.max_memory_bytes)
+        D = pairwise_distances(ctx.get_features(featurizer), metric="tanimoto") if dense else None
+        S = 1.0 - D if D is not None else None
 
         desc_values = {}
         for name in self.descriptors:
@@ -553,7 +554,18 @@ class SIMPDSplitter(BaseSplitter):
         # chemsplit.clustering.butina primitive directly, at ButinaSplitter's own default
         # cutoff, rather than going through the registry.
         if isinstance(self.cluster_for_g_sim, str):
-            clusters = butina(D, cutoff=0.35)
+            clusters = (
+                butina(D, cutoff=0.35)
+                if D is not None
+                else butina_from_neighbors(
+                    compute_neighbor_lists(
+                        ctx, featurizer, "tanimoto", 0.35,
+                        eps=_CLUSTER_EPS, n_jobs=self.n_jobs,
+                    ),
+                    n,
+                    reorder=False,
+                )
+            )
             cluster_of = np.empty(n, dtype=np.int64)
             for cid, members in enumerate(clusters):
                 for m in members:
@@ -587,8 +599,16 @@ class SIMPDSplitter(BaseSplitter):
                         else:
                             pooled_std = 1.0
                         obs[key] = float((a.mean() - b.mean()) / max(pooled_std, 1e-9))
-                sub = S[np.ix_(test_idx, train_idx)]
-                obs["g_sim"] = float(np.mean(sub.max(axis=1))) if sub.size else 0.0
+                if S is not None:
+                    sub = S[np.ix_(test_idx, train_idx)]
+                    obs["g_sim"] = float(np.mean(sub.max(axis=1))) if sub.size else 0.0
+                else:
+                    # a per-row maximum, so blocking the rows is exact
+                    row_max = blocked_max_similarity_to(
+                        ctx, featurizer, "tanimoto", train_idx,
+                        rows=test_idx, n_jobs=self.n_jobs,
+                    )
+                    obs["g_sim"] = float(np.mean(row_max)) if row_max.size else 0.0
             else:
                 obs = dict.fromkeys(target_keys, 0.0)
             return np.array([obs.get(k, 0.0) for k in target_keys], dtype=float)
