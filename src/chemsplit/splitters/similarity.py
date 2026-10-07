@@ -2608,7 +2608,12 @@ def _encode_label_columns(y: Any, label_kind: str, owner: str) -> np.ndarray:
 
 
 def _support_points(
-    Z: np.ndarray, n_points: int, rng: np.random.Generator, max_iter: int, tol: float
+    Z: np.ndarray,
+    n_points: int,
+    rng: np.random.Generator,
+    max_iter: int,
+    tol: float,
+    block_cols: int | None = None,
 ) -> tuple[np.ndarray, int, bool, float]:
     """Support points of the rows of ``Z`` (Mak & Joseph 2018) by the convex-concave fixed point
     ``x_i <- [ (N/n) sum_k (x_i - x_k)/|x_i - x_k| + sum_m z_m/|x_i - z_m| ]
@@ -2624,19 +2629,55 @@ def _support_points(
     ratio = N / n_points
     previous = np.inf
     for it in range(1, max_iter + 1):
-        Dxz = cdist(X, Z)
+        xz_mean, w_sum, wz = _xz_terms(X, Z, block_cols)
         Dxx = cdist(X, X)
-        criterion = float(2.0 * Dxz.mean() - Dxx.mean())
+        criterion = float(2.0 * xz_mean - Dxx.mean())
         if np.isfinite(previous) and previous - criterion <= tol * abs(previous):
             return X, it - 1, True, criterion
         previous = criterion
-        W = 1.0 / np.maximum(Dxz, 1e-12)
         np.fill_diagonal(Dxx, np.inf)
         V = 1.0 / np.maximum(Dxx, 1e-12)
         repulse = X * V.sum(axis=1)[:, None] - V @ X
-        X = np.clip((ratio * repulse + W @ Z) / W.sum(axis=1)[:, None], lo, hi)
-    criterion = float(2.0 * cdist(X, Z).mean() - cdist(X, X).mean())
+        X = np.clip((ratio * repulse + wz) / w_sum[:, None], lo, hi)
+    xz_mean, _w_sum, _wz = _xz_terms(X, Z, block_cols)
+    criterion = float(2.0 * xz_mean - cdist(X, X).mean())
     return X, max_iter, False, criterion
+
+
+def _xz_terms(
+    X: np.ndarray, Z: np.ndarray, block_cols: int | None
+) -> tuple[float, np.ndarray, np.ndarray]:
+    """The three support-point quantities that depend on the ``(k, m)`` point-to-data distances.
+
+    ``mean|x - z|``, ``sum_m 1/|x - z|`` and ``sum_m z/|x - z|``. All three are sums over the data
+    axis, so they accumulate blockwise and the ``(k, m)`` array never has to exist -- it is 48 GB
+    at k=20000, m=100000. Blocking reorders the summation, which perturbs the results in the last
+    bits; the convergence test compares against a 1e-6 *relative* tolerance, nine orders above
+    that, so the iteration count is unaffected in practice. Below the threshold the original
+    single-shot path runs unchanged.
+
+    :param X: the support points, shape ``(k, d)``.
+    :param Z: the data rows, shape ``(m, d)``.
+    :param block_cols: data rows per block, or ``None`` to do it in one shot.
+    :return: the mean distance, the per-point inverse-distance sums, and the weighted data sums.
+    """
+    if block_cols is None:
+        Dxz = cdist(X, Z)
+        W = 1.0 / np.maximum(Dxz, 1e-12)
+        return float(Dxz.mean()), W.sum(axis=1), W @ Z
+    k, m = X.shape[0], Z.shape[0]
+    total = 0.0
+    w_sum = np.zeros(k, dtype=np.float64)
+    wz = np.zeros((k, Z.shape[1]), dtype=np.float64)
+    for start in range(0, m, block_cols):
+        stop = min(start + block_cols, m)
+        chunk = Z[start:stop]
+        d = cdist(X, chunk)
+        total += float(d.sum())
+        w = 1.0 / np.maximum(d, 1e-12)
+        w_sum += w.sum(axis=1)
+        wz += w @ chunk
+    return total / (k * m), w_sum, wz
 
 
 class SupportPointsSplitter(BaseSplitter):
@@ -2763,7 +2804,8 @@ class SupportPointsSplitter(BaseSplitter):
         return Z, n_label_cols
 
     def _guard(self, k: int, m: int) -> None:
-        required = 8 * (3 * k * m + 2 * k * k)
+        # Only the k x k terms are unavoidable now; the k x m ones are accumulated blockwise.
+        required = 8 * (2 * k * k)
         if required > self.max_memory_bytes:
             raise ScalabilityError(
                 f"{type(self).__name__}: {k} support points over {m} records need about "
@@ -2784,21 +2826,30 @@ class SupportPointsSplitter(BaseSplitter):
         self._guard(n_points, m)
         sub = Z[np.asarray(pool, dtype=np.int64)]
         rng = seed_for(ctx.rng_seeds, "support_points.init", stage)
+        # Block the k x m work only when a single array would not fit, so smaller problems keep
+        # the original single-shot arithmetic exactly.
+        block_cols = None if 8 * n_points * m <= self.max_memory_bytes else 4096
         points, n_iter, converged, criterion = _support_points(
-            sub, n_points, rng, self.max_iter, self.tol
+            sub, n_points, rng, self.max_iter, self.tol, block_cols
         )
-        D = cdist(points, sub)
         taken = np.zeros(m, dtype=bool)
         nearest: list[int] = []
-        for i in range(n_points):
-            row = np.where(taken, np.inf, D[i])
+        if block_cols is None:
+            D = cdist(points, sub)
+            rows_iter = (D[i] for i in range(n_points))
+        else:
+            # one support point's distances at a time, which is all the loop below reads
+            rows_iter = (cdist(points[i : i + 1], sub)[0] for i in range(n_points))
+        for row_all in rows_iter:
+            row = np.where(taken, np.inf, row_all)
             j = int(row_argmin(row[None, :])[0])
             taken[j] = True
             nearest.append(j)
         picked_local = nearest if n_points == k else [j for j in range(m) if not taken[j]]
         chosen = sorted(pool[j] for j in picked_local)
         S = sub[np.asarray(nearest, dtype=np.int64)]
-        selected = float(2.0 * cdist(S, sub).mean() - cdist(S, S).mean())
+        sel_mean, _ws, _wz = _xz_terms(S, sub, block_cols)
+        selected = float(2.0 * sel_mean - cdist(S, S).mean())
         return chosen, {
             "n_iterations": n_iter,
             "converged": converged,
