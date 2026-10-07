@@ -1512,10 +1512,10 @@ class MaxMinSplitter(_SimilarityBase):
         ):
             # these two inits need the full matrix to seed themselves
             D = _dist_matrix(self, ctx)
-            picked = _clustering.maxmin_pick(D, n_picks, init=self.init, rng=rng)
+            detail = _clustering.maxmin_pick_detail(D, n_picks, init=self.init, rng=rng)
         else:
             first = int(rng.integers(0, n)) if rng is not None else 0
-            picked = _clustering.maxmin_pick_columns(
+            detail = _clustering.maxmin_pick_columns(
                 n,
                 lambda js: rectangular_distances(
                     ctx, self.featurizer, self.metric, range(n), js, self.n_jobs
@@ -1523,6 +1523,7 @@ class MaxMinSplitter(_SimilarityBase):
                 n_picks,
                 first,
             )
+        picked = detail.picked
         swap_meta: dict[str, Any] = {}
         if self.swap_fraction > 0:
             picked_set = set(picked)
@@ -1544,9 +1545,14 @@ class MaxMinSplitter(_SimilarityBase):
             swap_meta = {"swapped_out": swapped_out, "swapped_in": swapped_in}
         rem_rng = seed_for(ctx.rng_seeds, "maxmin.remainder", 0)
         buckets = _fill_remainder(picked, n, ctx.sizes, rem_rng, self.picked_goes_to)
-        min_pairwise, coverage = _picked_diagnostics(
-            picked, n, D, ctx, self.featurizer, self.metric, self.n_jobs
-        )
+        if swap_meta:
+            # swapping changed `picked` after selection, so the recorded diagnostics no longer
+            # describe it
+            min_pairwise, coverage = _picked_diagnostics(
+                picked, n, D, ctx, self.featurizer, self.metric, self.n_jobs
+            )
+        else:
+            min_pairwise, coverage = detail.min_pairwise, detail.coverage
         result = SplitResult(
             train=buckets["train"],
             valid=buckets["valid"],

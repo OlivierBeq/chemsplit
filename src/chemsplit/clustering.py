@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable, Sequence
 from typing import Literal
 
@@ -26,7 +27,9 @@ __all__ = [
     "duplex_order",
     "kennard_stone",
     "leader",
+    "PickDetail",
     "maxmin_pick",
+    "maxmin_pick_detail",
     "maxmin_pick_columns",
     "optisim_pick",
     "optisim_pick_columns",
@@ -180,7 +183,49 @@ def sphere_exclusion_rows(
     return reps, groups
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class PickDetail:
+    """A greedy selection plus the diagnostics that fall out of it for free.
+
+    ``selection_mind`` is each pick's distance to the nearest already-picked point. That sequence
+    covers every unordered pair in the selection exactly once, so its minimum *is* the minimum
+    pairwise distance -- no ``k x k`` submatrix needed (51 GB at n=100000). ``final_mind`` is every
+    record's distance to its nearest pick, so its maximum is the worst-case coverage.
+    """
+
+    picked: list[int]
+    selection_mind: list[float]
+    final_mind: np.ndarray
+
+    @property
+    def min_pairwise(self) -> float:
+        """Minimum distance between two picked records, ``inf`` for fewer than two picks."""
+        return min(self.selection_mind) if self.selection_mind else float("inf")
+
+    @property
+    def coverage(self) -> float:
+        """Maximum over all records of the distance to the nearest picked record."""
+        return float(self.final_mind.max()) if self.picked else float("nan")
+
+
 def maxmin_pick(
+    D: np.ndarray,
+    n_picks: int,
+    init: Literal["random", "kennard_stone", "most_peripheral", "index_zero"] = "random",
+    rng: np.random.Generator | None = None,
+) -> list[int]:
+    """Greedy MaxMin diversity selection: just the picks.
+
+    :param D: a dense symmetric distance matrix.
+    :param n_picks: how many points to select.
+    :param init: how the first point is chosen.
+    :param rng: generator for ``init="random"``.
+    :return: the picked indices, in selection order.
+    """
+    return maxmin_pick_detail(D, n_picks, init=init, rng=rng).picked
+
+
+def maxmin_pick_detail(
     D: np.ndarray,
     n_picks: int,
     init: Literal["random", "kennard_stone", "most_peripheral", "index_zero"] = "random",
@@ -195,7 +240,7 @@ def maxmin_pick(
     :param n_picks: how many points to select.
     :param init: how the first point is chosen.
     :param rng: generator for ``init="random"``.
-    :return: the picked indices, in selection order.
+    :return: the picks, plus the diagnostics that fall out of the selection for free.
     """
     n = D.shape[0]
     if init == "kennard_stone":
@@ -213,16 +258,18 @@ def maxmin_pick(
     mind = np.min(D[:, picked], axis=1) if picked else np.full(n, np.inf)
     taken = np.zeros(n, dtype=bool)
     taken[picked] = True
+    at_pick = [float(D[a, b]) for i, a in enumerate(picked) for b in picked[i + 1:]]
 
     while len(picked) < n_picks:
         if bool(taken.all()):
             break
         next_i = masked_argmax(mind, taken)
+        at_pick.append(float(mind[next_i]))
         picked.append(next_i)
         taken[next_i] = True
         np.minimum(mind, D[:, next_i], out=mind)
 
-    return picked
+    return PickDetail(picked=picked, selection_mind=at_pick, final_mind=mind)
 
 
 def maxmin_pick_columns(
@@ -244,13 +291,14 @@ def maxmin_pick_columns(
     :param n_picks: how many points to select.
     :param first: the index of the first pick, chosen by the caller's ``init`` rule.
     :param batch: how many columns to fetch per block.
-    :return: the picked indices, in selection order.
+    :return: the picks, plus the diagnostics that fall out of the selection for free.
     """
     taken = np.zeros(n, dtype=bool)
     taken[first] = True
     picked = [first]
     mind = columns([first])[:, 0].astype(np.float64, copy=True)
     held: dict[int, np.ndarray] = {}
+    at_pick: list[float] = []
 
     while len(picked) < n_picks:
         if bool(taken.all()):
@@ -272,10 +320,11 @@ def maxmin_pick_columns(
             wanted = sorted(wanted)
             block = columns(wanted)
             held = {j: block[:, r] for r, j in enumerate(wanted)}
+        at_pick.append(float(mind[candidate]))
         np.minimum(mind, held.pop(candidate), out=mind)
         picked.append(candidate)
         taken[candidate] = True
-    return picked
+    return PickDetail(picked=picked, selection_mind=at_pick, final_mind=mind)
 
 
 def kennard_stone(D: np.ndarray, n_picks: int) -> list[int]:
