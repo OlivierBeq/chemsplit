@@ -13,7 +13,7 @@ import scipy.sparse as sp
 from chemsplit.determinism import (
     argmax_tiebreak,
     argmin_tiebreak,
-    first_argmax_2d,
+    first_ge_2d,
     masked_argmax,
     row_argmin,
 )
@@ -358,10 +358,11 @@ def kennard_stone(D: np.ndarray, n_picks: int) -> list[int]:
     n = D.shape[0]
     if n < 2:
         return list(range(n))[:n_picks]
-    # Upper triangle, scanned row-major-first: the same smallest-maximal-pair tie-break as the
-    # Python scan, without two n(n-1)/2 index arrays.
-    upper = np.triu(D, k=1)
-    i0, j0 = first_argmax_2d(upper)
+    # Lexicographically smallest pair within EPS of the maximum -- not the first pair attaining
+    # the maximum exactly, which is a different record when an earlier pair sits just below it.
+    # Lower triangle and diagonal masked to -inf so they can never qualify.
+    upper = np.where(np.triu(np.ones_like(D, dtype=bool), k=1), D, -np.inf)
+    i0, j0 = first_ge_2d(upper, float(upper.max()) - EPS)
     picked = [i0, j0]
     mind = np.minimum(D[:, i0], D[:, j0])
     taken = np.zeros(n, dtype=bool)

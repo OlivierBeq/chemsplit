@@ -150,3 +150,40 @@ def test_first_argmax_2d_picks_the_lexicographically_smallest_maximal_pair():
             (int(iu[0][k]), int(iu[1][k])) for k in range(len(dvals)) if dvals[k] >= max_d
         )
         assert det.first_argmax_2d(upper) == expected, trial
+
+
+def test_first_ge_2d_prefers_an_earlier_near_miss_over_the_exact_maximum():
+    """The seed-pair rule takes the smallest pair *within tolerance* of the maximum.
+
+    An earlier pair sitting just below the maximum must win over a later pair attaining it
+    exactly. Using a plain argmax here silently picks the wrong seed, which changes the whole
+    selection that follows.
+    """
+    M = np.full((4, 4), -np.inf)
+    M[0, 3] = 0.9999999   # earlier, marginally below the maximum
+    M[1, 2] = 1.0         # the exact maximum
+    assert det.first_ge_2d(M, float(M.max()) - 1e-6) == (0, 3)
+    assert det.first_argmax_2d(M) == (1, 2)
+
+
+def test_first_ge_2d_matches_a_python_scan():
+    rng = np.random.default_rng(3)
+    for trial in range(40):
+        n = int(rng.integers(2, 20))
+        upper = np.triu(np.ones((n, n), dtype=bool), k=1)
+        M = np.where(upper, np.round(rng.random((n, n)), 2), -np.inf)
+        if not np.isfinite(M).any():
+            continue
+        value = float(M.max()) - 1e-6
+        iu = np.triu_indices(n, k=1)
+        expected = min(
+            (int(iu[0][k]), int(iu[1][k]))
+            for k in range(len(iu[0]))
+            if M[iu[0][k], iu[1][k]] >= value
+        )
+        assert det.first_ge_2d(M, value) == expected, trial
+
+
+def test_first_ge_2d_rejects_an_unreachable_value():
+    with pytest.raises(ValueError, match="no entry reaches"):
+        det.first_ge_2d(np.zeros((3, 3)), 1.0)

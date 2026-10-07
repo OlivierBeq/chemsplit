@@ -26,6 +26,7 @@ __all__ = [
     "argmax_tiebreak",
     "argmin_tiebreak",
     "first_argmax_2d",
+    "first_ge_2d",
     "masked_argmax",
     "row_argmin",
     "stable_sort",
@@ -185,6 +186,28 @@ def masked_argmax(scores: np.ndarray, excluded: np.ndarray) -> int:
         raise ValueError("masked_argmax() called with every entry excluded")
     # numpy's argmax returns the first occurrence of the maximum
     return int(np.argmax(np.where(excluded, -np.inf, scores)))
+
+
+def first_ge_2d(M: np.ndarray, value: float) -> tuple[int, int]:
+    """Row-major-first ``(i, j)`` where ``M[i, j] >= value``.
+
+    The tie-break the greedy seed-pair searches use: take the *lexicographically smallest* pair
+    within a tolerance of the maximum, which is not the same as the first pair attaining the
+    maximum exactly -- a slightly smaller but earlier pair wins. Entries outside the region of
+    interest must already be masked to a value below ``value``.
+
+    :param M: a 2-D array with no NaN.
+    :param value: the inclusive lower bound.
+    :raises ValueError: if ``M`` is not 2-D, or no entry reaches ``value``.
+    :return: the row and column of the first qualifying entry, scanning row-major.
+    """
+    M = np.asarray(M)
+    if M.ndim != 2:
+        raise ValueError(f"first_ge_2d() needs a 2-D array, got shape {M.shape}")
+    hits = np.flatnonzero(M.ravel() >= value)  # row-major order == lexicographic (i, j)
+    if hits.size == 0:
+        raise ValueError("first_ge_2d(): no entry reaches the given value")
+    return int(hits[0]) // M.shape[1], int(hits[0]) % M.shape[1]
 
 
 def first_argmax_2d(M: np.ndarray) -> tuple[int, int]:
