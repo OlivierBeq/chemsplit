@@ -8,9 +8,16 @@ from typing import Any, ClassVar, Literal
 
 import numpy as np
 
+from chemsplit._fp_similarity import (
+    blocked_max_similarity_to,
+    compute_neighbor_lists,
+    dense_matrix_fits,
+)
 from chemsplit._ga import mutate_bits
 from chemsplit._unionfind import dense_label_encode
 from chemsplit.base import BaseSplitter, GroupSplitter, SplitResult, Strictness, _Context
+from chemsplit.clustering import EPS as _CLUSTER_EPS
+from chemsplit.clustering import butina_from_neighbors
 from chemsplit.determinism import (
     seed_for,
     seeded_python_random,
@@ -1207,9 +1214,19 @@ class PartySplitter(GroupSplitter):
         from chemsplit.metrics import pairwise_distances
 
         featurizer = get_featurizer("ecfp4")
-        F = ctx.get_features(featurizer)
-        D = pairwise_distances(F, metric="tanimoto")
-        clusters = butina(D, cutoff=0.35)
+        # Butina reads only radius-neighbour lists, which stream; the dense matrix is only built
+        # when it fits and is cheaper.
+        if dense_matrix_fits(ctx.n, 2 * 1024**3):
+            F = ctx.get_features(featurizer)
+            clusters = butina(pairwise_distances(F, metric="tanimoto"), cutoff=0.35)
+        else:
+            clusters = butina_from_neighbors(
+                compute_neighbor_lists(
+                    ctx, featurizer, "tanimoto", 0.35, eps=_CLUSTER_EPS, n_jobs=self.n_jobs
+                ),
+                ctx.n,
+                reorder=False,
+            )
 
         for attempt in range(10):
             if self.synthesis == "cluster":
@@ -1326,8 +1343,10 @@ class PartySplitter(GroupSplitter):
         from chemsplit.metrics import pairwise_distances
 
         featurizer = get_featurizer("ecfp4")
-        F = ctx.get_features(featurizer)
-        S = 1.0 - pairwise_distances(F, metric="tanimoto")
+        dense = dense_matrix_fits(ctx.n, 2 * 1024**3)
+        S = None
+        if dense:
+            S = 1.0 - pairwise_distances(ctx.get_features(featurizer), metric="tanimoto")
         mat = [[0.0] * n_parties_actual for _ in range(n_parties_actual)]
         for a in range(n_parties_actual):
             idx_a = np.nonzero(labels == a)[0]
@@ -1335,6 +1354,13 @@ class PartySplitter(GroupSplitter):
                 idx_b = np.nonzero(labels == b)[0]
                 if len(idx_a) == 0 or len(idx_b) == 0:
                     continue
-                sub = S[np.ix_(idx_a, idx_b)]
-                mat[a][b] = float(np.mean(sub.max(axis=1)))
+                # a per-row maximum, so blocking the rows is exact
+                row_max = (
+                    S[np.ix_(idx_a, idx_b)].max(axis=1)
+                    if S is not None
+                    else blocked_max_similarity_to(
+                        ctx, featurizer, "tanimoto", idx_b, rows=idx_a, n_jobs=self.n_jobs
+                    )
+                )
+                mat[a][b] = float(np.mean(row_max))
         return mat

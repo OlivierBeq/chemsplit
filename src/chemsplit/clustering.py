@@ -560,37 +560,42 @@ def duplex_order_access(
     members: list[list[int]] = [[] for _ in targets]
     mind = [np.full(n, np.inf) for _ in targets]
 
-    held: dict[int, np.ndarray] = {}
+    # One cache per partition: they pick by their own min-distance vector, so a shared cache has
+    # each partition evicting the others' prefetches and almost every pick misses.
+    held: list[dict[int, np.ndarray]] = [{} for _ in targets]
 
-    def col_of(i: int) -> np.ndarray:
+    def col_of(p: int, i: int) -> np.ndarray:
         if columns is None:
             return column(i)
-        cached = held.pop(i, None)
-        if cached is not None:
-            return cached
-        return column(i)
+        cached = held[p].pop(i, None)
+        return cached if cached is not None else column(i)
 
-    def prefetch(scores: np.ndarray) -> None:
-        """Cache columns for the records most likely to be picked next."""
+    def prefetch(p: int, scores: np.ndarray) -> None:
+        """Cache columns for the records this partition is most likely to pick next."""
         if columns is None:
             return
-        for j in list(held):
-            if assigned[j]:
-                del held[j]
-        if len(held) >= batch // 2:
+        mine = held[p]
+        for j in [j for j in mine if assigned[j]]:
+            del mine[j]
+        if len(mine) >= batch // 2:
             return
-        ranked = np.argsort(np.where(assigned, -np.inf, scores), kind="stable")[::-1]
-        wanted = [int(j) for j in ranked[:batch] if not assigned[j] and int(j) not in held]
+        # argpartition, not a full sort: only the top-`batch` set matters, not its order, and the
+        # prefetch set cannot change a pick
+        live = np.where(assigned, -np.inf, scores)
+        take = min(batch, int((~assigned).sum()))
+        if take <= 0:
+            return
+        cand = np.argpartition(-live, take - 1)[:take]
+        wanted = sorted(int(j) for j in cand if not assigned[j] and int(j) not in mine)
         if not wanted:
             return
-        wanted = sorted(wanted)
         block = columns(wanted)
-        held.update({j: block[:, r].copy() for r, j in enumerate(wanted)})
+        mine.update({j: block[:, r].copy() for r, j in enumerate(wanted)})
 
     def add(p: int, i: int) -> None:
         members[p].append(i)
         assigned[i] = True
-        mind[p] = np.minimum(mind[p], col_of(i))
+        mind[p] = np.minimum(mind[p], col_of(p, i))
 
     for p, target in enumerate(targets):
         if target <= 0:
@@ -609,7 +614,7 @@ def duplex_order_access(
             if len(members[p]) >= target or assigned.all():
                 continue
             score = np.where(assigned, -np.inf, mind[p])
-            prefetch(mind[p])
+            prefetch(p, mind[p])
             add(p, int(row_argmin(-score[None, :])[0]))
             progressed = True
         if not progressed:

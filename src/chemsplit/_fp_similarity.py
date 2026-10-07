@@ -473,10 +473,11 @@ def blocked_max_similarity_to(
     metric: MetricName,
     cols: Any,
     *,
+    rows: Any = None,
     n_jobs: int = 1,
     block_rows: int = 2048,
 ) -> np.ndarray:
-    """Per-record maximum similarity to a given set of records, computed blockwise.
+    """Maximum similarity to a given set of records, per row, computed blockwise.
 
     The reduction several splitters apply as ``S[:, cols].max(axis=1)``. Peak memory is
     ``block_rows * len(cols)`` rather than ``n * n``.
@@ -485,19 +486,22 @@ def blocked_max_similarity_to(
     :param featurizer: an alias or a featurizer instance.
     :param metric: the distance metric.
     :param cols: the record indices to measure similarity against.
+    :param rows: the record indices to measure for, or ``None`` for every record.
     :param n_jobs: worker count. Results never depend on it.
     :param block_rows: rows per block.
-    :return: the per-record maxima, shape ``(n,)``.
+    :return: the maxima, one per row, in ``rows`` order.
     """
     feat = resolve_featurizer(featurizer)
     F = ctx.get_features(feat)
-    n = F.shape[0]
     cols = np.asarray(cols)
+    row_idx = np.arange(F.shape[0]) if rows is None else np.asarray(rows)
     Fc = F[cols]
-    out = np.empty(n, dtype=np.float32)
-    for start in range(0, n, block_rows):
-        stop = min(start + block_rows, n)
-        block = 1.0 - pairwise_distances(F[start:stop], Fc, metric=metric, n_jobs=n_jobs)
+    out = np.empty(row_idx.size, dtype=np.float32)
+    for start in range(0, row_idx.size, block_rows):
+        stop = min(start + block_rows, row_idx.size)
+        block = 1.0 - pairwise_distances(
+            F[row_idx[start:stop]], Fc, metric=metric, n_jobs=n_jobs
+        )
         out[start:stop] = block.max(axis=1)
     return out
 
