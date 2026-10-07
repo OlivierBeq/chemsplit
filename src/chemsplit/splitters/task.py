@@ -1704,7 +1704,10 @@ class DecoyBenchmarkSplitter(GroupSplitter):
         for s in self.decoy_pool:
             m = Chem.MolFromSmiles(s)
             decoy_mols.append(m)
-        guard_memory(len(active_idx) + len(decoy_mols), 2 * 1024**3, type(self).__name__)
+        # the matrix below is the rectangular actives-by-decoys block, not a square over both
+        guard_memory(
+            len(active_idx), 2 * 1024**3, type(self).__name__, cols=len(decoy_mols)
+        )
 
         active_props = np.asarray([self._props(mols[i]) for i in active_idx])
         missing = np.full(len(self.match_properties), np.inf)

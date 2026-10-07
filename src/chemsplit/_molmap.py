@@ -14,6 +14,7 @@ import collections
 import dataclasses
 import functools
 import hashlib
+import importlib
 import threading
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -23,6 +24,7 @@ from chemsplit import _parallel
 __all__ = ["KEY_CACHE_MAX_RECORDS", "clear_key_cache", "mapped_keys", "register"]
 
 _FUNCS: dict[str, Callable[..., str]] = {}
+_TARGETS: dict[str, tuple[str, str]] = {}
 
 _CACHE: collections.OrderedDict[str, list[str]] = collections.OrderedDict()
 _LOCK = threading.Lock()
@@ -45,7 +47,24 @@ def register(name: str, fn: Callable[..., str]) -> str:
     if existing is not None and existing is not fn:
         raise ValueError(f"_molmap name {name!r} is already registered to a different function")
     _FUNCS[name] = fn
+    # Record where it lives: a spawned worker has not imported the splitter module, so nothing
+    # name-keyed is populated there.
+    _TARGETS[name] = (fn.__module__, fn.__qualname__)
     return name
+
+
+def _import_target(target: tuple[str, str]) -> Callable[..., str]:
+    """Import and return the function a ``(module, qualname)`` target names.
+
+    Workers receive the target explicitly, since their registry is empty.
+
+    :param target: the defining module and qualified name.
+    :return: the function.
+    """
+    resolved: Any = importlib.import_module(target[0])
+    for part in target[1].split("."):
+        resolved = getattr(resolved, part)
+    return resolved
 
 
 def clear_key_cache() -> None:
@@ -65,18 +84,21 @@ def _cache_key(name: str, params: tuple[Any,...], smiles: Sequence[str | None]) 
 
 
 def _chunk(
-    smiles_chunk: Sequence[str | None], *, name: str, params: tuple[Any,...]
+    smiles_chunk: Sequence[str | None],
+    *,
+    target: tuple[str, str],
+    params: tuple[Any,...],
 ) -> list[str]:
     """Compute keys for a chunk of SMILES. The unit of work shipped to a worker.
 
     :param smiles_chunk: the SMILES, ``None`` for a record with no molecule.
-    :param name: the registered function name.
+    :param target: the defining module and qualified name of the key function.
     :param params: extra positional arguments for the function.
     :return: one key per input; ``""`` where there is no molecule or it did not parse.
     """
     from rdkit import Chem
 
-    fn = _FUNCS[name]
+    fn = _import_target(target)
     out: list[str] = []
     for smi in smiles_chunk:
         if smi is None:
@@ -119,7 +141,9 @@ def mapped_keys(
 
     if _parallel.will_parallelize(len(smiles), n_jobs):
         keys = _parallel.ordered_map(
-            functools.partial(_chunk, name=name, params=params), smiles, n_jobs=n_jobs
+            functools.partial(_chunk, target=_TARGETS[name], params=params),
+            smiles,
+            n_jobs=n_jobs,
         )
     else:
         # in-process: reuse the already-parsed molecules rather than re-parsing the strings
