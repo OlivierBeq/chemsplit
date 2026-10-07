@@ -324,14 +324,19 @@ def blocked_row_means(
     feat = resolve_featurizer(featurizer)
     F = ctx.get_features(feat)
     n = F.shape[0]
-    out = np.empty(n, dtype=np.float64)
+    out: np.ndarray | None = None
     for start in range(0, n, block_rows):
         stop = min(start + block_rows, n)
         block = pairwise_distances(F[start:stop], F, metric=metric, n_jobs=n_jobs)
         if similarity:
             block = 1.0 - block
-        out[start:stop] = block.mean(axis=1)
-    return out
+        means = block.mean(axis=1)
+        if out is None:
+            # keep the block dtype: a float32 row mean is not the float64 one, and these values
+            # reach SplitResult.metadata, so a widened accumulator would shift them
+            out = np.empty(n, dtype=means.dtype)
+        out[start:stop] = means
+    return out if out is not None else np.empty(0, dtype=np.float32)
 
 
 def blocked_farthest_pair(

@@ -304,6 +304,47 @@ def _picked_diagnostics(
     return min_pairwise, float(worst)
 
 
+def _top_pairs(
+    n: int, band: Callable[[int, int], np.ndarray], k: int, block: int = 2048
+) -> list[tuple[int, int]]:
+    """The ``k`` most distant ``i < j`` pairs, ordered by ``(-distance, i, j)``.
+
+    A bounded heap over one blocked sweep, so memory is ``O(k)`` rather than ``O(n^2)``. Callers
+    that consume only a prefix of the full pair ordering get exactly that prefix; a full sort of
+    n(n-1)/2 pairs is impossible past a few tens of thousands of records.
+
+    :param n: the record count.
+    :param band: maps ``(start, stop)`` to those rows against every record.
+    :param k: how many pairs to return.
+    :param block: rows per band.
+    :return: up to ``k`` pairs, most distant first.
+    """
+    import heapq
+
+    # min-heap keyed so the worst-by-the-caller's-order element is popped first
+    heap: list[tuple[float, int, int]] = []
+    for start in range(0, n, block):
+        stop = min(start + block, n)
+        rows = np.arange(stop - start)[:, None]
+        cols = np.arange(n)[None,:]
+        masked = np.where(cols > rows + start, band(start, stop), -np.inf)
+        if len(heap) >= k:
+            cut = heap[0][0]
+            ii, jj = np.nonzero(masked > cut)
+        else:
+            ii, jj = np.nonzero(np.isfinite(masked))
+        for a, b in zip(ii, jj, strict=True):
+            value = float(masked[a, b])
+            item = (value, -(start + int(a)), -int(b))
+            if len(heap) < k:
+                heapq.heappush(heap, item)
+            elif item > heap[0]:
+                heapq.heapreplace(heap, item)
+    # largest distance first, then smallest i, then smallest j
+    ordered = sorted(heap, key=lambda t: (-t[0], -t[1], -t[2]))
+    return [(-i, -j) for _d, i, j in ordered]
+
+
 def _blocked_max_cdist(y: np.ndarray, block: int = 2048) -> float:
     """Largest pairwise Euclidean distance among the rows of ``y``, without an ``n x n`` matrix.
 
@@ -3262,11 +3303,10 @@ class PerimeterSplitter(_SimilarityBase):
         self._validate_similarity_params()
 
     def _partition(self, ctx: _Context) -> list[SplitResult]:
-        D = _dist_matrix(self, ctx)
         n = ctx.n
-        guard_memory(n, self.max_memory_bytes, type(self).__name__)
+        dist = _Distances(self, ctx)
         n_test = ctx.sizes.n_test
-        outlier_score = D.mean(axis=1)
+        outlier_score = dist.row_means()
         fallback_filled = 0
         odd_trim = False
         if self.pair_rule == "outlier_score":
@@ -3274,23 +3314,30 @@ class PerimeterSplitter(_SimilarityBase):
             test = order[:n_test]
             n_pairs_used = 0
         else:
-            iu = np.triu_indices(n, k=1)
-            dvals = D[iu]
-            pair_order = sorted(
-                range(len(dvals)), key=lambda k: (-dvals[k], int(iu[0][k]), int(iu[1][k]))
-            )
-            test: list[int] = []
-            assigned: set[int] = set()
-            n_pairs_used = 0
-            for k in pair_order:
-                if len(test) >= n_test:
+            # The loop below consumes only a prefix of the pair ordering, so fetch the top pairs
+            # rather than sorting all n(n-1)/2 of them. If the prefix runs out before the test set
+            # fills, take more and redo -- the greedy decisions depend only on the ordering, so
+            # any sufficient prefix gives the full-sort answer.
+            max_pairs = n * (n - 1) // 2
+            want = min(max_pairs, max(1024, 4 * n_test))
+            while True:
+                pair_order = _top_pairs(
+                    n, lambda a, b: dist.fetch(range(a, b), range(n)), want
+                )
+                test = []
+                assigned = set()
+                n_pairs_used = 0
+                for i, j in pair_order:
+                    if len(test) >= n_test:
+                        break
+                    if i in assigned or j in assigned:
+                        continue
+                    test.extend([i, j])
+                    assigned.update([i, j])
+                    n_pairs_used += 1
+                if len(test) >= n_test or want >= max_pairs:
                     break
-                i, j = int(iu[0][k]), int(iu[1][k])
-                if i in assigned or j in assigned:
-                    continue
-                test.extend([i, j])
-                assigned.update([i, j])
-                n_pairs_used += 1
+                want = min(max_pairs, want * 4)
             if len(test) > n_test:
                 odd_trim = True
                 test = test[:n_test]
