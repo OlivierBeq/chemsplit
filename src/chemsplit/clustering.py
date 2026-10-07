@@ -272,6 +272,11 @@ def maxmin_pick_detail(
     return PickDetail(picked=picked, selection_mind=at_pick, final_mind=mind)
 
 
+_MAX_HELD_COLUMNS_FACTOR = 16
+"""Retained prefetched columns, as a multiple of ``batch``: ~3 GB at n=100000. Affects speed and
+memory only -- the cache cannot change a pick."""
+
+
 def maxmin_pick_columns(
     n: int,
     columns: Callable[[Sequence[int]], np.ndarray],
@@ -305,21 +310,35 @@ def maxmin_pick_columns(
             break
         candidate = masked_argmax(mind, taken)
         if candidate not in held:
-            # Refill with this candidate plus the next most promising ones, so the block
-            # serves several consecutive picks. Which extras are prefetched cannot affect the
-            # result -- `held` is only a cache, and every `mind` update uses the exact column of
-            # the record actually picked -- so an ordinary argsort is fine here, with no
-            # tie-breaking obligation.
+            # Keep what is already held: tie plateaus push the next pick outside any fixed
+            # prefetch, and discarding unused columns made the cost super-quadratic (only ~52 of
+            # 512 consumed at n=20000). The prefetch set cannot change a pick, so a plain argsort
+            # needs no tie-breaking.
+            for j in [j for j in held if taken[j]]:
+                del held[j]
             ranked = np.argsort(np.where(taken, -np.inf, mind), kind="stable")[::-1]
             wanted = [candidate]
-            for i in ranked[:batch]:
+            for i in ranked:
                 if len(wanted) >= batch:
                     break
-                if int(i) != candidate and not taken[i]:
-                    wanted.append(int(i))
+                j = int(i)
+                if j != candidate and not taken[j] and j not in held:
+                    wanted.append(j)
             wanted = sorted(wanted)
             block = columns(wanted)
-            held = {j: block[:, r] for r, j in enumerate(wanted)}
+            # .copy() matters: a column slice is a view pinning the whole block alive, so
+            # retaining views pinned every block ever fetched -- 12.4 GB at n=100000.
+            held.update({j: block[:, r].copy() for r, j in enumerate(wanted)})
+            cap = _MAX_HELD_COLUMNS_FACTOR * batch
+            if len(held) > cap:
+                # Evict the least promising columns, trimming to the cap: halving the cache on
+                # every overflow churned enough to cost 8x at n=100000.
+                keep = set(wanted)
+                for i in ranked:
+                    if len(keep) >= cap:
+                        break
+                    keep.add(int(i))
+                held = {j: col for j, col in held.items() if j in keep}
         at_pick.append(float(mind[candidate]))
         np.minimum(mind, held.pop(candidate), out=mind)
         picked.append(candidate)
