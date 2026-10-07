@@ -111,3 +111,61 @@ def test_split_result_is_n_jobs_invariant(splitter_id: str, n_jobs: int) -> None
             assert np.array_equal(got.groups, ref.groups)
         # metadata carries computed diagnostics, so it is part of the contract
         assert got.metadata == ref.metadata
+
+
+def test_cache_hit_is_indistinguishable_from_a_cold_call(recwarn: pytest.WarningsRecorder) -> None:
+    """A cached call must reproduce the result *and* the warnings of an uncached one.
+
+    The cache holds digests, not the finished ``PipelineResult``, so warnings stay downstream of it.
+    Otherwise a second split of the same data would silently stop warning about duplicates.
+    """
+    import warnings as _warnings
+
+    from chemsplit import preprocess as pp
+
+    smiles = ["CC(=O)O.[Na+]", "CCO", "OCC", "CCN", "c1ccccc1"]
+
+    def run() -> tuple[object, list[tuple[type, str]]]:
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
+            res = pp.run_pipeline(smiles, None, None, x_kind="smiles", on_duplicates="warn")
+        return res.dedup_group_labels, [(type(w.message), str(w.message)) for w in caught]
+
+    pp.clear_digest_cache()
+    cold_labels, cold_warnings = run()
+    warm_labels, warm_warnings = run()  # served from the cache
+
+    assert warm_warnings == cold_warnings
+    assert any(issubclass(t, Warning) and "duplicate" in m for t, m in cold_warnings)
+    assert (warm_labels is None) == (cold_labels is None)
+    if cold_labels is not None:
+        assert np.array_equal(warm_labels, cold_labels)
+
+
+def test_cache_misses_when_standardisation_settings_change() -> None:
+    from chemsplit import preprocess as pp
+
+    smiles = ["CC(=O)O.[Na+]", "CCO", "CCN"]
+    pp.clear_digest_cache()
+    keep = pp._digest_cache_key(smiles, pp.StandardizeConfig(), True)
+    strip = pp._digest_cache_key(smiles, pp.StandardizeConfig(stereo="strip"), True)
+    no_differs = pp._digest_cache_key(smiles, pp.StandardizeConfig(), False)
+    other_input = pp._digest_cache_key([*smiles, "CCC"], pp.StandardizeConfig(), True)
+    assert len({keep, strip, no_differs, other_input}) == 4
+
+
+def test_cache_can_be_disabled_without_changing_results() -> None:
+    from chemsplit import preprocess as pp
+
+    smiles = _library(600)
+    try:
+        pp.set_digest_cache_enabled(False)
+        uncached = pp.run_pipeline(smiles, None, None, x_kind="smiles")
+        pp.set_digest_cache_enabled(True)
+        pp.clear_digest_cache()
+        cached = pp.run_pipeline(smiles, None, None, x_kind="smiles")
+    finally:
+        pp.set_digest_cache_enabled(True)
+        pp.clear_digest_cache()
+    assert uncached.forced_discard == cached.forced_discard
+    assert (uncached.dedup_group_labels is None) == (cached.dedup_group_labels is None)

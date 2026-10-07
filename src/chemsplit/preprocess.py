@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import collections
 import dataclasses
 import functools
+import hashlib
 import threading
 from collections.abc import Sequence
 from typing import Any, Literal
@@ -27,6 +29,7 @@ from chemsplit.exceptions import (
 )
 
 __all__ = [
+    "DIGEST_CACHE_MAX_RECORDS",
     "StandardizeConfig",
     "ParseFailure",
     "PipelineResult",
@@ -39,6 +42,8 @@ __all__ = [
     "find_duplicates",
     "aggregate_replicates",
     "run_pipeline",
+    "clear_digest_cache",
+    "set_digest_cache_enabled",
 ]
 
 
@@ -392,6 +397,117 @@ def _digest_mols(
     return out
 
 
+_DIGEST_CACHE: collections.OrderedDict[str, list[_Digest | None]] = collections.OrderedDict()
+_DIGEST_CACHE_LOCK = threading.Lock()
+_DIGEST_CACHE_ENABLED = True
+
+DIGEST_CACHE_MAX_RECORDS = 1_000_000
+"""Records the digest cache may hold before evicting oldest. Bounded by records, not entries, so
+one large dataset cannot pin the budget."""
+
+
+def set_digest_cache_enabled(enabled: bool) -> None:
+    """Turn the standardisation cache on or off, and clear it when turning it off.
+
+    :param enabled: whether to cache.
+    """
+    global _DIGEST_CACHE_ENABLED
+    with _DIGEST_CACHE_LOCK:
+        _DIGEST_CACHE_ENABLED = enabled
+        if not enabled:
+            _DIGEST_CACHE.clear()
+
+
+def clear_digest_cache() -> None:
+    """Drop every cached standardisation result."""
+    with _DIGEST_CACHE_LOCK:
+        _DIGEST_CACHE.clear()
+
+
+def _digest_cache_key(
+    smiles: Sequence[str], config: StandardizeConfig, want_differs: bool
+) -> str:
+    """Content hash identifying a standardisation result.
+
+    Keyed on content, not ``id()``: the wrappers pass an equal-but-not-identical list per fold, so
+    an identity key would never hit. Hashing 200k SMILES costs milliseconds.
+
+    :param smiles: the input SMILES.
+    :param config: standardisation settings, which change the result.
+    :param want_differs: also part of the result, so part of the key.
+    :return: a hex digest.
+    """
+    h = hashlib.blake2b(digest_size=16)
+    h.update(repr((dataclasses.astuple(config), want_differs)).encode())
+    h.update(b"\x00")
+    for smi in smiles:
+        h.update(smi.encode("utf-8"))
+        h.update(b"\x00")
+    return h.hexdigest()
+
+
+def _cached_digests(
+    smiles: Sequence[str],
+    config: StandardizeConfig,
+    *,
+    want_differs: bool,
+    n_jobs: int | None,
+) -> list[_Digest | None]:
+    """Standardisation digests for ``smiles``, reusing an earlier identical computation.
+
+    Caching the *digests*, not the whole :class:`PipelineResult`, keeps every warning downstream of
+    the cache, so a hit still re-emits them and is indistinguishable from a cold call.
+
+    :param smiles: the input SMILES.
+    :param config: standardisation settings.
+    :param want_differs: whether the diagnostic comparison is needed.
+    :param n_jobs: worker count for a cold computation.
+    :return: one digest per input, or ``None`` where the record did not parse or failed.
+    """
+    if not _DIGEST_CACHE_ENABLED:
+        return _compute_digests(smiles, config, want_differs=want_differs, n_jobs=n_jobs)
+
+    key = _digest_cache_key(smiles, config, want_differs)
+    with _DIGEST_CACHE_LOCK:
+        hit = _DIGEST_CACHE.get(key)
+        if hit is not None:
+            _DIGEST_CACHE.move_to_end(key)
+            return list(hit)
+
+    digests = _compute_digests(smiles, config, want_differs=want_differs, n_jobs=n_jobs)
+
+    with _DIGEST_CACHE_LOCK:
+        _DIGEST_CACHE[key] = list(digests)
+        _DIGEST_CACHE.move_to_end(key)
+        total = sum(len(v) for v in _DIGEST_CACHE.values())
+        while total > DIGEST_CACHE_MAX_RECORDS and len(_DIGEST_CACHE) > 1:
+            _, evicted = _DIGEST_CACHE.popitem(last=False)
+            total -= len(evicted)
+    return digests
+
+
+def _compute_digests(
+    smiles: Sequence[str],
+    config: StandardizeConfig,
+    *,
+    want_differs: bool,
+    n_jobs: int | None,
+) -> list[_Digest | None]:
+    """Standardise ``smiles``, in worker processes when worthwhile.
+
+    :param smiles: the input SMILES.
+    :param config: standardisation settings.
+    :param want_differs: whether the diagnostic comparison is needed.
+    :param n_jobs: worker count. Results do not depend on it.
+    :return: one digest per input.
+    """
+    return _parallel.ordered_map(
+        functools.partial(_digest_smiles_chunk, config=config, want_differs=want_differs),
+        smiles,
+        n_jobs=n_jobs,
+    )
+
+
 def _group_by_key(digests: Sequence[_Digest | None]) -> dict[str, list[int]]:
     """Group record indices by deduplication key, in first-appearance order.
 
@@ -580,18 +696,14 @@ def run_pipeline(
     if mols is not None and (not standardize or on_duplicates != "ignore"):
         cfg_once = config or StandardizeConfig()
         want_differs = not standardize
-        if smiles_list is not None and _parallel.will_parallelize(len(smiles_list), n_jobs):
-            # Re-derive from the SMILES so the work can be shipped to worker processes as
-            # strings: pickling RDKit molecules is what makes the obvious parallelisation slower
-            # than the serial loop. The re-parse is only worth paying when workers are actually
-            # used -- in-process it is pure waste, since `mols` is already parsed, and charging
-            # it to the default n_jobs=1 path would be a 36% regression.
-            digests = _parallel.ordered_map(
-                functools.partial(
-                    _digest_smiles_chunk, config=cfg_once, want_differs=want_differs
-                ),
-                smiles_list,
-                n_jobs=n_jobs,
+        if smiles_list is not None and (
+            _DIGEST_CACHE_ENABLED or _parallel.will_parallelize(len(smiles_list), n_jobs)
+        ):
+            # Work from the SMILES: cheap to ship to workers and to hash for the cache. The
+            # re-parse only pays off when one of those applies -- charging it to a plain
+            # single-threaded uncached call was a 36% regression.
+            digests = _cached_digests(
+                smiles_list, cfg_once, want_differs=want_differs, n_jobs=n_jobs
             )
         else:
             digests = _digest_mols(mols, cfg_once, want_differs=want_differs)

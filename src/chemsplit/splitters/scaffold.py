@@ -13,6 +13,7 @@ import numpy as np
 from rdkit import Chem
 from rdkit.Chem import rdMMPA
 
+from chemsplit import _molmap
 from chemsplit import scaffolds as _scaffolds
 from chemsplit._unionfind import UnionFind, dense_label_encode
 from chemsplit.base import BaseSplitter, GroupSplitter, SplitResult, Strictness, _Context
@@ -27,6 +28,11 @@ from chemsplit.exceptions import (
     warn_with_details,
 )
 from chemsplit.types import IndexArray
+
+# Registered so worker processes can resolve them without pickling a closure.
+_MURCKO_KEY = _molmap.register("scaffold.murcko", _scaffolds.murcko_scaffold)
+_GENERIC_KEY = _molmap.register("scaffold.generic", _scaffolds.generic_scaffold)
+
 
 __all__ = [
     "MurckoScaffoldSplitter",
@@ -214,10 +220,13 @@ class MurckoScaffoldSplitter(_ScaffoldFamilyBase):
 
     def _group_labels(self, ctx: _Context) -> IndexArray:
         mols = _require_mols(ctx, type(self).__name__)
-        keys = [
-            _scaffolds.murcko_scaffold(m, self.include_chirality) if m is not None else ""
-            for m in mols
-        ]
+        keys = _molmap.mapped_keys(
+            _MURCKO_KEY,
+            (self.include_chirality,),
+            smiles=ctx.smiles,
+            mols=mols,
+            n_jobs=self.n_jobs,
+        )
         keys, forced = _apply_on_empty_scaffold(keys, self.on_empty_scaffold, type(self).__name__)
         _merge_forced_discard(ctx, forced)
         labels_full = dense_label_encode(keys)
@@ -305,7 +314,9 @@ class GenericScaffoldSplitter(_ScaffoldFamilyBase):
 
     def _group_labels(self, ctx: _Context) -> IndexArray:
         mols = _require_mols(ctx, type(self).__name__)
-        keys = [_scaffolds.generic_scaffold(m) if m is not None else "" for m in mols]
+        keys = _molmap.mapped_keys(
+            _GENERIC_KEY, (), smiles=ctx.smiles, mols=mols, n_jobs=self.n_jobs
+        )
         keys, forced = _apply_on_empty_scaffold(keys, self.on_empty_scaffold, type(self).__name__)
         _merge_forced_discard(ctx, forced)
         labels_full = dense_label_encode(keys)
